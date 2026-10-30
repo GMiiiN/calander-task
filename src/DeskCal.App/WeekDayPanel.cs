@@ -23,7 +23,8 @@ public sealed class WeekDayPanel : Panel
             if ((child as FrameworkElement)?.DataContext is not WeekBlockModel block) continue;
             var width = (finalSize.Width - GAP) / block.ColumnCount;
             var top = block.StartMinute / 60.0 * HOUR_HEIGHT;
-            var height = Math.Max(14, (block.EndMinute - block.StartMinute) / 60.0 * HOUR_HEIGHT - 1);
+            var minutes = Math.Max(block.EndMinute - block.StartMinute, CalendarModelBuilder.MIN_BLOCK_MINUTES);
+            var height = minutes / 60.0 * HOUR_HEIGHT - 1;
             child.Arrange(new Rect(GAP + block.Column * width, top, Math.Max(0, width - GAP), height));
         }
         return finalSize;

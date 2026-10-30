@@ -190,6 +190,19 @@ public sealed class CalendarModelBuilderTests : IDisposable
                 Assert.NotEqual(left.Column, right.Column);
     }
 
+    [Fact]
+    public void WeekSeparatesShortBackToBackBlocksThatWouldOverlapOnScreen()
+    {
+        events.Create([
+            new("short1", "2026-10-30") { StartTime = "09:00", EndTime = "09:10" },
+            new("short2", "2026-10-30") { StartTime = "09:10", EndTime = "09:20" },
+            new("after", "2026-10-30") { StartTime = "09:30", EndTime = "10:00" }
+        ]);
+        var blocks = Builder().BuildWeek(TODAY, TODAY).Days[5].Blocks;
+        Assert.Equal(new[] { 0, 1, 0 }, blocks.Select(b => b.Column));
+        Assert.Equal(new[] { 2, 2, 2 }, blocks.Select(b => b.ColumnCount));
+    }
+
     private static DayCellModel Cell(MonthModel model, DateOnly date) => model.Weeks.SelectMany(w => w).Single(d => d.Date == date);
 
     private void Execute(string sql)

@@ -5,6 +5,9 @@ namespace DeskCal.App.Calendar;
 
 public sealed class CalendarModelBuilder(EventRepository events, TodoRepository todos, Database database)
 {
+    // 주간 시간표에서 짧은 일정도 이 길이만큼은 그려진다. 겹침 판단도 이 길이로 해야 화면에서 서로 가리지 않는다.
+    public const int MIN_BLOCK_MINUTES = 30;
+
     private readonly Dictionary<string, string> _colors = ReadColors(database);
 
     public MonthModel BuildMonth(int year, int month, DateOnly today)
@@ -79,7 +82,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         while (groupStart < blocks.Length)
         {
             var groupEnd = groupStart;
-            var latestEnd = blocks[groupStart].EndMinute;
+            var latestEnd = ShownEnd(blocks[groupStart]);
             var columnEnds = new List<int>();
             while (groupEnd < blocks.Length && (groupEnd == groupStart || blocks[groupEnd].StartMinute < latestEnd))
             {
@@ -88,11 +91,11 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
                 if (column < 0)
                 {
                     column = columnEnds.Count;
-                    columnEnds.Add(block.EndMinute);
+                    columnEnds.Add(ShownEnd(block));
                 }
-                else columnEnds[column] = block.EndMinute;
+                else columnEnds[column] = ShownEnd(block);
                 blocks[groupEnd] = block with { Column = column };
-                latestEnd = Math.Max(latestEnd, block.EndMinute);
+                latestEnd = Math.Max(latestEnd, ShownEnd(block));
                 groupEnd++;
             }
             for (var index = groupStart; index < groupEnd; index++)
@@ -101,6 +104,8 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         }
         return blocks;
     }
+
+    private static int ShownEnd(WeekBlockModel block) => Math.Max(block.EndMinute, block.StartMinute + MIN_BLOCK_MINUTES);
 
     private static Dictionary<string, string> ReadColors(Database database)
     {

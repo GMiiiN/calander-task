@@ -45,19 +45,22 @@
             <Border x:Name="Cell" BorderBrush="{StaticResource GridLineBrush}" BorderThickness="0,0,1,1"
                     Padding="6,6,4,4" Background="Transparent">
                 <StackPanel>
-                    <Grid HorizontalAlignment="Left">
-                        <Ellipse x:Name="TodayBadge" Width="18" Height="18" Fill="{StaticResource AccentBrush}"
-                                 Visibility="Collapsed" />
-                        <TextBlock x:Name="DayNumber" Text="{Binding Date.Day}" Style="{StaticResource BaseText}"
-                                   FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </Grid>
+                    <!-- +N은 날짜 줄 오른쪽에 둔다. 6주짜리 달은 칸이 낮아 칩 아래에 두면 잘린다. -->
+                    <DockPanel>
+                        <Button Style="{StaticResource BareButton}" DockPanel.Dock="Right" VerticalAlignment="Center"
+                                Click="OnOverflowClick"
+                                Visibility="{Binding OverflowCount, Converter={StaticResource Visible}}">
+                            <TextBlock Style="{StaticResource BaseText}" FontSize="9" FontWeight="Bold" Padding="2,0"
+                                       Foreground="{StaticResource SubtleBrush}" Text="{Binding OverflowCount, StringFormat=+{0}}" />
+                        </Button>
+                        <Grid HorizontalAlignment="Left">
+                            <Ellipse x:Name="TodayBadge" Width="18" Height="18" Fill="{StaticResource AccentBrush}"
+                                     Visibility="Collapsed" />
+                            <TextBlock x:Name="DayNumber" Text="{Binding Date.Day}" Style="{StaticResource BaseText}"
+                                       FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Grid>
+                    </DockPanel>
                     <ItemsControl ItemsSource="{Binding Chips}" ItemTemplate="{StaticResource ChipTemplate}" />
-                    <Button Style="{StaticResource BareButton}" HorizontalAlignment="Left" Margin="0,4,0,0"
-                            Click="OnOverflowClick"
-                            Visibility="{Binding OverflowCount, Converter={StaticResource Visible}}">
-                        <TextBlock Style="{StaticResource BaseText}" FontSize="9" FontWeight="Bold"
-                                   Foreground="{StaticResource SubtleBrush}" Text="{Binding OverflowCount, StringFormat=+{0}}" />
-                    </Button>
                 </StackPanel>
             </Border>
             <DataTemplate.Triggers>
@@ -283,7 +286,11 @@
                             <DataTemplate DataType="{x:Type cal:WeekDayModel}">
                                 <Border x:Name="AllDay" BorderBrush="{StaticResource GridLineBrush}" BorderThickness="1,0,0,1"
                                         Padding="3,0,3,4" MinHeight="26">
-                                    <ItemsControl ItemsSource="{Binding AllDay}" ItemTemplate="{StaticResource ChipTemplate}" />
+                                    <!-- 종일 항목이 많아도 시간표를 덮지 않도록 높이를 제한하고 휠로 스크롤한다.
+                                         칩 3개 반 높이라 넘치는 항목이 있으면 네 번째 칩이 반쯤 보인다. -->
+                                    <ScrollViewer MaxHeight="70" VerticalScrollBarVisibility="Hidden">
+                                        <ItemsControl ItemsSource="{Binding AllDay}" ItemTemplate="{StaticResource ChipTemplate}" />
+                                    </ScrollViewer>
                                 </Border>
                                 <DataTemplate.Triggers>
                                     <DataTrigger Binding="{Binding IsToday}" Value="True">
