@@ -81,6 +81,44 @@ public sealed class McpToolTests : IAsyncLifetime
     private static string Id(JsonElement value, string field = "event_id") => value.GetProperty(field).GetString()!;
 
     [Fact]
+    public async Task OnlySuccessfulWritesSignalTheApp()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var signal = new ChangeSignal();
+        while (signal.Handle.WaitOne(0)) { }
+        ChangeSignal.Notify();
+        Assert.True(signal.Handle.WaitOne(TimeSpan.FromSeconds(1)));
+        Assert.False(signal.Handle.WaitOne(0));
+
+        async Task<JsonElement> Check(string name, object args, bool error = false, bool writes = true)
+        {
+            var result = await Call(name, args, error);
+            Assert.Equal(writes && !error, signal.Handle.WaitOne(0));
+            return result;
+        }
+
+        var createdEvent = await Check("create_events", new { events = new[] { new { title = "signal", start_date = "2026-11-02" } } });
+        var eventId = Id(createdEvent.GetProperty("events")[0]);
+        await Check("update_event", new { event_id = eventId, title = "updated" });
+        await Check("delete_event", new { event_id = eventId });
+        await Check("restore_event", new { event_id = eventId });
+        var createdTodo = await Check("create_todos", new { todos = new[] { new { title = "signal" } } });
+        var todoId = Id(createdTodo.GetProperty("todos")[0], "todo_id");
+        await Check("update_todo", new { todo_id = todoId, is_done = true });
+        await Check("delete_todo", new { todo_id = todoId });
+        await Check("restore_todo", new { todo_id = todoId });
+
+        await Check("create_events", new { events = new[] { new { title = "bad", start_date = "2026-02-30" } } }, error: true);
+        await Check("create_todos", new { todos = new[] { new { title = "bad", due_date = "2026-02-30" } } }, error: true);
+        foreach (var name in new[] { "update_event", "delete_event", "restore_event" })
+            await Check(name, new { event_id = "00000000000000000000000000000000" }, error: true);
+        foreach (var name in new[] { "update_todo", "delete_todo", "restore_todo" })
+            await Check(name, new { todo_id = "00000000000000000000000000000000" }, error: true);
+        await Check("list_events", new { start_date = "2026-11-02", end_date = "2026-11-02" }, writes: false);
+        await Check("list_todos", new { }, writes: false);
+    }
+
+    [Fact]
     public async Task DiscoversExactlyFourteenToolsWithAnnotationsAndEnums()
     {
         var tools = await _client.ListToolsAsync(cancellationToken: _timeout.Token);

@@ -40,6 +40,7 @@ public sealed class CalendarTools(Database database)
                 "restore_todo" => SetTodoDeleted(input, output, false),
                 _ => throw new ArgumentException("Unknown tool.")
             };
+            if (name is "create_events" or "update_event" or "delete_event" or "restore_event" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo") ChangeSignal.Notify();
         }
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or InvalidOperationException or FormatException or JsonException or SqliteException)
         {
