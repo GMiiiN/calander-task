@@ -495,6 +495,7 @@ Claude Desktop은 `claude_desktop_config.json`의 `mcpServers`에 같은 경로.
 
 - `create_*`의 "전부 성공 또는 전부 실패"는 **로컬 트랜잭션에만** 해당한다. Google 전송은 항목별로 `synced`/`pending`을 보고한다.
 - `update_event`에 `occurrence_id`면 그 회차만(예외 생성). 회차 단위로는 `is_done`과 삭제만 의미 있고, 내용 변경은 시리즈 전체로만. 예외가 있는 시리즈의 `repeat`/`start_date` 변경, Google에서 온 부분집합 밖 규칙의 `repeat` 변경은 거부(§4.4).
+- `update_event`의 `end_time: null`은 "기본값으로 되돌림"이다. 시간 일정은 끝 시각이 항상 있어야 하므로 시작 + 1시간으로 다시 정한다(여러 날에 걸친 일정이면 거부).
 - `restore_event`: `event_id`면 시리즈 복구(개별 취소 회차는 유지), `occurrence_id`면 그 회차 취소만 해제.
 - `list_events`는 200건마다 `cursor`로 페이지. 하루에 200건이 넘어도 빠짐없이 조회 가능.
 
