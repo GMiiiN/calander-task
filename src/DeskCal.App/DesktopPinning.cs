@@ -26,6 +26,7 @@ public sealed class DesktopPinning : IDisposable
     private const int GwlpHwndParent = -8;
     private const long WsExTopMost = 0x00000008;
     private const int ObjIdWindow = 0;
+    private const uint GwOwner = 4;
     private static readonly IntPtr HwndTop = IntPtr.Zero;
     private static readonly IntPtr HwndBottom = new(1);
     private static readonly IntPtr HwndTopMost = new(-1);
@@ -38,6 +39,8 @@ public sealed class DesktopPinning : IDisposable
     private IntPtr _hwnd;
     private IntPtr _winEventHook;
     private bool _isRaising;
+    private bool _isOwned;
+    private readonly System.Windows.Threading.DispatcherTimer _reattachTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly System.Windows.Threading.DispatcherTimer _showDesktopTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
 
     public PinState State { get; private set; } = PinState.Normal;
@@ -57,6 +60,15 @@ public sealed class DesktopPinning : IDisposable
         _hwnd = new WindowInteropHelper(_window).Handle;
         var exStyle = GetWindowLongPtr(_hwnd, GwlExStyle).ToInt64();
         SetWindowLongPtr(_hwnd, GwlExStyle, new IntPtr(exStyle | WsExToolWindow | WsExNoActivate));
+        // 방식 D(§3.3): 바탕화면 아이콘 목록 창을 owner로 두면 셸이 바탕화면의 일부로 취급해 Win+D에도 그대로 남는다.
+        // 아이콘 목록 창을 못 찾는 셸에서만 아래의 Z순서 상태 머신(방식 C)으로 동작한다.
+        _isOwned = AttachToDesktop();
+        if (_isOwned)
+        {
+            HwndSource.FromHwnd(_hwnd)!.AddHook(OwnedWndProc);
+            _reattachTimer.Tick += (_, _) => { if (AttachToDesktop()) _reattachTimer.Stop(); };
+            return;
+        }
         // ShowInTaskbar=False면 WPF가 숨은 owner 창을 붙인다. owner가 우리 창의 Z순서를 끌고 다니므로 끊는다(M-1 진단).
         SetWindowLongPtr(_hwnd, GwlpHwndParent, IntPtr.Zero);
         HwndSource.FromHwnd(_hwnd)!.AddHook(WndProc);
@@ -80,6 +92,13 @@ public sealed class DesktopPinning : IDisposable
     public void EndEditing()
     {
         SetNoActivate(true);
+        if (_isOwned)
+        {
+            // 바탕화면에 붙어 있으면 Z순서는 셸이 정한다. 조정 모드로 꺼냈던 것만 바탕화면 바로 위로 되돌린다.
+            SetState(PinState.Normal);
+            SetWindowPos(_hwnd, HwndBottom, 0, 0, 0, 0, SwpNoActivate | SwpNoMove | SwpNoSize);
+            return;
+        }
         SetState(PinState.Normal);
         if (IsDesktopClass(GetClassName(GetForegroundWindow()))) EnterShowDesktop();
         else SendToBottom();
@@ -118,7 +137,7 @@ public sealed class DesktopPinning : IDisposable
         var className = GetClassName(hwnd);
         Log($"foreground class={className}");
         if (IsDesktopClass(className)) EnterShowDesktop();
-        else if (State == PinState.ShowDesktop && !IsShellOverlayClass(className)) ExitShowDesktop();
+        else if (State == PinState.ShowDesktop && !IsShellOverlayClass(className) && !IsToolWindow(hwnd)) ExitShowDesktop();
     }
 
     // Windows 11의 바탕화면 보기에서는 Progman이 일반 창 위로 올라오고, 우리가 건 TOPMOST가 수백 ms 뒤 외부에서 풀린다(M-1 실측).
@@ -139,8 +158,9 @@ public sealed class DesktopPinning : IDisposable
 
     private void CheckShowDesktop()
     {
-        var className = GetClassName(GetForegroundWindow());
-        if (!IsDesktopClass(className) && !IsShellOverlayClass(className) && className != "")
+        var foreground = GetForegroundWindow();
+        var className = GetClassName(foreground);
+        if (!IsDesktopClass(className) && !IsShellOverlayClass(className) && className != "" && !IsToolWindow(foreground))
         {
             ExitShowDesktop();
             return;
@@ -164,6 +184,40 @@ public sealed class DesktopPinning : IDisposable
     private static bool IsShellOverlayClass(string className) => className is
         "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "Windows.UI.Core.CoreWindow" or
         "NotifyIconOverflowWindow" or "TopLevelWindowForOverflowXamlIsland" or "XamlExplorerHostIslandWindow";
+
+    // owner를 걸고 실제로 걸렸는지 확인한다.
+    private bool AttachToDesktop()
+    {
+        var folderView = FindDesktopFolderView();
+        if (folderView != IntPtr.Zero) SetWindowLongPtr(_hwnd, GwlpHwndParent, folderView);
+        var attached = folderView != IntPtr.Zero && GetWindow(_hwnd, GwOwner) != IntPtr.Zero;
+        Log($"attach owner=0x{folderView.ToInt64():X} ok={attached}");
+        return attached;
+    }
+
+    // Explorer가 다시 시작되면 아이콘 목록 창이 새로 만들어지므로 owner를 다시 건다. 목록 창이 아직 없으면 생길 때까지 1초마다 다시 시도한다.
+    private IntPtr OwnedWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == _taskbarCreatedMessage)
+        {
+            Log("TaskbarCreated (Explorer 재시작)");
+            if (!AttachToDesktop()) _reattachTimer.Start();
+        }
+        return IntPtr.Zero;
+    }
+
+    // 바탕화면 아이콘 목록 창. 셸 보기 창은 Progman 아래 또는 (배경 전환 후) WorkerW 아래에 있다.
+    private static IntPtr FindDesktopFolderView()
+    {
+        var defView = FindWindowEx(FindWindow("Progman", null), IntPtr.Zero, "SHELLDLL_DefView", null);
+        var worker = IntPtr.Zero;
+        while (defView == IntPtr.Zero && (worker = FindWindowEx(IntPtr.Zero, worker, "WorkerW", null)) != IntPtr.Zero)
+            defView = FindWindowEx(worker, IntPtr.Zero, "SHELLDLL_DefView", null);
+        return FindWindowEx(defView, IntPtr.Zero, "SysListView32", null);
+    }
+
+    // 작업 표시줄에 없는 도구 창(다른 바탕화면 위젯 등)은 Win+D 때 잠깐 전경이 되기도 한다. 앱 전환으로 보지 않는다.
+    private static bool IsToolWindow(IntPtr hwnd) => (GetWindowLongPtr(hwnd, GwlExStyle).ToInt64() & WsExToolWindow) != 0;
 
     private void SendToBottom()
     {
@@ -198,6 +252,7 @@ public sealed class DesktopPinning : IDisposable
     public void Dispose()
     {
         _showDesktopTimer.Stop();
+        _reattachTimer.Stop();
         if (_winEventHook != IntPtr.Zero) UnhookWinEvent(_winEventHook);
     }
 
@@ -215,6 +270,9 @@ public sealed class DesktopPinning : IDisposable
     [DllImport("user32.dll")] private static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
     [DllImport("user32.dll")] private static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr FindWindow(string? className, string? title);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string? className, string? title);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] private static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr module, WinEventDelegate callback, uint process, uint thread, uint flags);
     [DllImport("user32.dll")] private static extern bool UnhookWinEvent(IntPtr hook);
