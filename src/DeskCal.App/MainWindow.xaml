@@ -165,14 +165,16 @@
                                     </Button>
                                 </StackPanel>
                             </Border>
-                            <Border Width="26" Height="26" CornerRadius="13" BorderThickness="1" Margin="6,0,0,0"
-                                    BorderBrush="{DynamicResource ControlBorderBrush}" ToolTip="검색은 M3에서 추가됩니다">
-                                <Canvas Width="14" Height="14">
-                                    <Path Data="{StaticResource SearchCircleIcon}" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667" />
-                                    <Path Data="{StaticResource SearchHandleIcon}" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667"
-                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-                                </Canvas>
-                            </Border>
+                            <Button Style="{StaticResource BareButton}" Click="OnSearchClick" Margin="6,0,0,0" ToolTip="검색 (Ctrl+F)">
+                                <Border Width="26" Height="26" CornerRadius="13" BorderThickness="1" Background="Transparent"
+                                        BorderBrush="{DynamicResource ControlBorderBrush}">
+                                    <Canvas Width="14" Height="14">
+                                        <Path Data="{StaticResource SearchCircleIcon}" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667" />
+                                        <Path Data="{StaticResource SearchHandleIcon}" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667"
+                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                                    </Canvas>
+                                </Border>
+                            </Button>
                             <Border Width="1" Height="14" Background="{DynamicResource DividerBrush}" Margin="6,0" />
                             <Button Style="{StaticResource BareButton}" Command="{Binding PreviousCommand}">
                                 <Grid Width="26" Height="26" Background="Transparent">

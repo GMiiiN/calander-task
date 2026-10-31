@@ -156,6 +156,38 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnSearchClick(object sender, RoutedEventArgs e) => ShowSearch();
+
+    // Ctrl+F는 달력 창이 키보드를 받고 있을 때(할 일 입력란 등)만 온다. 평소에는 창이 활성화되지 않기 때문이다.
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        base.OnPreviewKeyDown(e);
+        if (e.Key != Key.F || Keyboard.Modifiers != ModifierKeys.Control) return;
+        e.Handled = true;
+        ShowSearch();
+    }
+
+    // 고른 결과의 날짜로 이동한다. 마감일 없는 할 일은 갈 날짜가 없으므로 편집 창을 연다.
+    private void ShowSearch()
+    {
+        _pinning.BeginEditing();
+        SearchHit? hit;
+        try
+        {
+            var dialog = new SearchDialog(new SearchService(_events, _todos), ReadCategories(), DateOnly.FromDateTime(DateTime.Now));
+            dialog.PlaceOver(this);
+            if (dialog.ShowDialog() != true) return;
+            hit = dialog.SelectedHit;
+        }
+        finally
+        {
+            _pinning.EndEditing();
+        }
+        if (hit is null) return;
+        if (hit.Date is { } date) _viewModel.GoTo(date);
+        else ShowEditor(EditorModel.FromTodo(_todos.Get(hit.Uid)));
+    }
+
     private IReadOnlyList<CategoryOption> ReadCategories()
     {
         using var connection = _database.OpenConnection();

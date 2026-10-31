@@ -186,6 +186,13 @@ public sealed class MainViewModel : ObservableObject
         Refresh();
     }
 
+    public void GoTo(DateOnly date)
+    {
+        _anchor = date;
+        SaveView();
+        Refresh();
+    }
+
     private void Move(int direction)
     {
         _anchor = IsMonthView
