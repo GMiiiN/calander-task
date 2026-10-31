@@ -76,6 +76,12 @@ public partial class SearchDialog : Window
         DialogResult = true;
     }
 
+    // 항목은 입력란이 키보드를 계속 받도록 포커스를 받지 않는다. 그래서 WPF가 클릭으로 선택을 바꾸지 않으므로 직접 고른다.
+    private void OnResultMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (ItemsControl.ContainerFromElement(ResultList, (DependencyObject)e.OriginalSource) is ListBoxItem item) item.IsSelected = true;
+    }
+
     private void OnResultDoubleClick(object sender, MouseButtonEventArgs e) => Choose();
 
     // 입력란에 글자를 넣는 채로 ↑↓로 결과를 고르고 Enter로 이동한다.

@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace DeskCal.Core;
 
 public sealed record SearchHit(string Kind, string Uid, string Title, DateOnly? Date, string? StartTime, string? ColorId, bool IsDone);
@@ -18,12 +20,15 @@ public sealed class SearchService(EventRepository events, TodoRepository todos, 
                      e.ParentEventId is null && e.GoogleRecurringId is null && Matches(e.Title, e.Memo)))
         {
             var date = Validation.Date(value.StartDate);
+            var (startTime, isDone) = (value.StartTime, value.IsDone);
             if (value.RecurrenceRule is not null)
             {
+                // 날짜·시간·완료 여부를 모두 그 회차에서 가져온다(완료·시간 변경된 회차는 예외 기록에 있다).
                 var next = expander.Next(value, records.Where(e => e.ParentEventId == value.EventId), current);
-                if (next is not null) date = DateOnly.FromDateTime(next.Start);
+                if (next is not null)
+                    (date, startTime, isDone) = (DateOnly.FromDateTime(next.Start), next.IsAllDay ? null : next.Start.ToString("HH:mm", CultureInfo.InvariantCulture), next.Event.IsDone);
             }
-            hits.Add(new("event", value.EventUid, value.Title, date, value.StartTime, value.ColorId, value.IsDone));
+            hits.Add(new("event", value.EventUid, value.Title, date, startTime, value.ColorId, isDone));
         }
         hits.AddRange(todos.List("all").Where(t => Matches(t.Title, t.Memo))
             .Select(t => new SearchHit("todo", t.TodoUid, t.Title,

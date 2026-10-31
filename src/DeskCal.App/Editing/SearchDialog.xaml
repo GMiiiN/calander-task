@@ -98,7 +98,7 @@
                                Foreground="{DynamicResource MutedBrush}" Visibility="Collapsed" />
                     <ListBox x:Name="ResultList" MaxHeight="210" Background="Transparent" BorderThickness="0" Focusable="False"
                              ItemContainerStyle="{StaticResource ResultItem}" ItemTemplate="{StaticResource ResultTemplate}"
-                             ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="OnResultDoubleClick" />
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled" PreviewMouseLeftButtonDown="OnResultMouseDown" MouseDoubleClick="OnResultDoubleClick" />
                 </StackPanel>
             </Border>
 

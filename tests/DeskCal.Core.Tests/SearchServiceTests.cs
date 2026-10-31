@@ -65,6 +65,16 @@ public sealed class SearchServiceTests
     }
 
     [Fact]
+    public void RecurrenceHitTakesTimeAndDoneStateFromThatOccurrence()
+    {
+        using var db = new TestDatabase();
+        var series = db.Events.Create([new("match daily", "2026-10-29") { StartTime = "09:00", EndTime = "10:00", Repeat = new("daily") }])[0];
+        db.Events.SetOccurrenceDone(OccurrenceId.Create(series.EventUid, "2026-10-30T00:00:00Z"), true);
+        var hit = Assert.Single(Service(db).Search("match"));
+        Assert.Equal(new SearchHit("event", series.EventUid, "match daily", new(2026, 10, 30), "09:00", null, true), hit);
+    }
+
+    [Fact]
     public void SortsFutureThenUndatedThenRecentPastWithAllDayTimeAndTitleTies()
     {
         using var db = new TestDatabase();
