@@ -1,9 +1,11 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using DeskCal.App.Calendar;
@@ -15,12 +17,17 @@ public partial class MainWindow : Window
 {
     private const double SHADOW_MARGIN = 24;
     private const int FIRST_VISIBLE_HOUR = 8;
+    private const double ADJUST_EDGE = 10;
+    private const int WM_NCHITTEST = 0x0084;
+    private const int HTCAPTION = 2, HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14,
+        HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
     private static readonly string[] WeekdayNames = ["일", "월", "화", "수", "목", "금", "토"];
 
     private readonly MainViewModel _viewModel;
     private readonly Database _database;
     private readonly EventRepository _events;
     private readonly TodoRepository _todos;
+    private readonly SettingStore _settings;
     private readonly DesktopPinning _pinning;
     private readonly WallpaperTone _wallpaperTone;
     private readonly DataVersionWatcher _watcher;
@@ -30,8 +37,16 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMinutes(1) };
     private bool _isClosed;
 
-    /// <summary>사용자가 ⋯ 메뉴로 종료했는지. 아니면 창이 닫혀도 앱이 다시 띄운다.</summary>
+    /// <summary>사용자가 ⋯ 메뉴·트레이로 종료했는지. 아니면 창이 닫혀도 앱이 다시 띄운다.</summary>
     public bool ExitRequested { get; private set; }
+
+    public bool IsAdjusting { get; private set; }
+
+    public void Exit()
+    {
+        ExitRequested = true;
+        Close();
+    }
 
     public MainWindow(Database database)
     {
@@ -39,9 +54,11 @@ public partial class MainWindow : Window
         _database = database;
         _events = new EventRepository(database);
         _todos = new TodoRepository(database);
+        _settings = new SettingStore(database);
         _viewModel = new MainViewModel(database);
         DataContext = _viewModel;
         PlaceWindow();
+        SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)!.AddHook(AdjustHook);
         BuildWeekdayHeader();
         BuildHourGrid();
         UpdateViewToggle();
@@ -152,8 +169,14 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _pinning.EndEditing();
+            EndEditing();
         }
+    }
+
+    // 창이 열린 사이 트레이로 조정 모드를 켰으면 고정 해제를 유지한다. 조정 모드가 끝날 때 되돌린다.
+    private void EndEditing()
+    {
+        if (!IsAdjusting) _pinning.EndEditing();
     }
 
     private void OnSearchClick(object sender, RoutedEventArgs e) => ShowSearch();
@@ -162,7 +185,13 @@ public partial class MainWindow : Window
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         base.OnPreviewKeyDown(e);
-        if (e.Key != Key.F || Keyboard.Modifiers != ModifierKeys.Control) return;
+        if (IsAdjusting && e.Key is Key.Enter or Key.Escape)
+        {
+            e.Handled = true;
+            ToggleAdjust();
+            return;
+        }
+        if (IsAdjusting || e.Key != Key.F || Keyboard.Modifiers != ModifierKeys.Control) return;
         e.Handled = true;
         ShowSearch();
     }
@@ -181,7 +210,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _pinning.EndEditing();
+            EndEditing();
         }
         if (hit is null) return;
         if (hit.Date is { } date) _viewModel.GoTo(date);
@@ -199,15 +228,83 @@ public partial class MainWindow : Window
         return result;
     }
 
-    // 주 모니터 작업 영역 가운데(§3.3). 위치 조정·저장은 M3.
+    // 조정 모드에서 저장한 자리가 있으면 그대로, 없거나 화면 밖으로 벗어났으면 주 모니터 작업 영역 가운데(§3.3).
     private void PlaceWindow()
     {
+        var saved = _settings.Get(BoundsKey())?.Split(',')
+            .Select(part => double.TryParse(part, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : double.NaN).ToArray();
+        if (saved is [var left, var top, var width, var height] && !saved.Any(double.IsNaN))
+        {
+            var screen = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
+                SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+            var visible = Rect.Intersect(new Rect(left, top, Math.Max(width, MinWidth), Math.Max(height, MinHeight)), screen);
+            if (visible.Width >= 200 && visible.Height >= 200)
+            {
+                (Left, Top, Width, Height) = (left, top, Math.Max(width, MinWidth), Math.Max(height, MinHeight));
+                return;
+            }
+        }
         var workArea = SystemParameters.WorkArea;
         // 작은 화면(노트북)에서는 작업 영역 안에 들어가도록 줄인다.
         Width = Math.Max(MinWidth, Math.Min(Width, workArea.Width));
         Height = Math.Max(MinHeight, Math.Min(Height, workArea.Height));
         Left =workArea.Left + (workArea.Width - Width) / 2;
         Top = workArea.Top + (workArea.Height - Height) / 2;
+    }
+
+    // 크기·위치는 화면 구성(모니터마다의 영역, 픽셀)마다 따로 저장한다. 노트북 단독일 때와 모니터를 연결했을 때 자리가 다르기 때문이다.
+    // 전체 외곽만 보면 배치가 바뀌어도 같은 키가 되어 모니터 사이 빈 곳을 복원할 수 있다.
+    private static string BoundsKey() => "window_bounds:" + string.Join(";", System.Windows.Forms.Screen.AllScreens
+        .Select(screen => screen.Bounds).OrderBy(b => b.X).ThenBy(b => b.Y)
+        .Select(b => string.Create(CultureInfo.InvariantCulture, $"{b.X},{b.Y},{b.Width},{b.Height}")));
+
+    // 조정 모드(§3.3): 켜진 동안만 다른 앱 위로 꺼내 옮기고 크기를 바꿀 수 있다. 끝나면 자리를 저장하고 바탕화면으로 돌려보낸다.
+    public void ToggleAdjust()
+    {
+        if (IsAdjusting)
+        {
+            IsAdjusting = false;
+            AdjustOverlay.Visibility = Visibility.Collapsed;
+            ResizeMode = ResizeMode.NoResize;
+            _settings.Set(BoundsKey(), string.Create(CultureInfo.InvariantCulture, $"{Left},{Top},{ActualWidth},{ActualHeight}"));
+            _pinning.EndEditing();
+            return;
+        }
+        IsAdjusting = true;
+        AdjustOverlay.Visibility = Visibility.Visible;
+        // 테두리 없는 창도 가장자리로 크기를 바꾸려면 크기 조절 스타일(WS_THICKFRAME)이 있어야 한다.
+        ResizeMode = ResizeMode.CanResize;
+        _pinning.BeginEditing(bringToFront: true);
+        Activate();
+    }
+
+    private void OnAdjustDone(object sender, RoutedEventArgs e) => ToggleAdjust();
+
+    // 카드 안쪽 가장자리 10px는 크기 조절, 나머지 안쪽은 끌어서 옮기기. 그림자 여백과 완료 버튼은 평소처럼 둔다.
+    private IntPtr AdjustHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg != WM_NCHITTEST || !IsAdjusting) return IntPtr.Zero;
+        var value = lParam.ToInt64();
+        var point = PointFromScreen(new Point((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF)));
+        var card = new Rect(SHADOW_MARGIN, SHADOW_MARGIN, ActualWidth - 2 * SHADOW_MARGIN, ActualHeight - 2 * SHADOW_MARGIN);
+        if (!card.Contains(point) || InputHitTest(point) is Visual hit && hit.IsDescendantOf(AdjustDoneButton)) return IntPtr.Zero;
+        var left = point.X < card.Left + ADJUST_EDGE;
+        var right = point.X > card.Right - ADJUST_EDGE;
+        var top = point.Y < card.Top + ADJUST_EDGE;
+        var bottom = point.Y > card.Bottom - ADJUST_EDGE;
+        handled = true;
+        return new IntPtr((top, bottom, left, right) switch
+        {
+            (true, _, true, _) => HTTOPLEFT,
+            (true, _, _, true) => HTTOPRIGHT,
+            (_, true, true, _) => HTBOTTOMLEFT,
+            (_, true, _, true) => HTBOTTOMRIGHT,
+            (true, _, _, _) => HTTOP,
+            (_, true, _, _) => HTBOTTOM,
+            (_, _, true, _) => HTLEFT,
+            (_, _, _, true) => HTRIGHT,
+            _ => HTCAPTION
+        });
     }
 
     private void BuildWeekdayHeader()
@@ -321,10 +418,11 @@ public partial class MainWindow : Window
     private void OnMenuClick(object sender, RoutedEventArgs e)
     {
         var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = PlacementMode.Top };
-        menu.Items.Add(MenuItem("종료", () => { ExitRequested = true; Close(); }));
-        // 메뉴가 열린 동안에는 창이 활성화되므로 Z순서 고정을 잠시 멈춘다.
+        menu.Items.Add(MenuItem("크기·위치 조정", ToggleAdjust));
+        menu.Items.Add(MenuItem("종료", Exit));
+        // 메뉴가 열린 동안에는 창이 활성화되므로 Z순서 고정을 잠시 멈춘다. 조정 모드를 켰으면 끝날 때까지 그대로 둔다.
         menu.Opened += (_, _) => _pinning.BeginEditing();
-        menu.Closed += (_, _) => _pinning.EndEditing();
+        menu.Closed += (_, _) => EndEditing();
         menu.IsOpen = true;
 
         static MenuItem MenuItem(string header, Action action)
@@ -377,7 +475,7 @@ public partial class MainWindow : Window
 
     private void OnInputBlur(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (_pinning.State == PinState.Editing) _pinning.EndEditing();
+        if (_pinning.State == PinState.Editing) EndEditing();
     }
 
     private static string LogPath(string name)

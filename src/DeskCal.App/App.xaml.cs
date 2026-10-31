@@ -7,6 +7,8 @@ namespace DeskCal.App;
 public partial class App : Application
 {
     private Mutex? _singleInstance;
+    private TrayIcon? _tray;
+    private MainWindow? _calendar;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -25,6 +27,9 @@ public partial class App : Application
         var database = new Database(path);
         database.Initialize();
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        // 창이 다시 만들어지는 사이(3초)에는 _calendar가 비어 있으므로 메뉴는 아무것도 하지 않거나 바로 끝낸다.
+        _tray = new TrayIcon(() => _calendar?.IsAdjusting == true, () => _calendar?.ToggleAdjust(),
+            () => { if (_calendar is null) Shutdown(); else _calendar.Exit(); });
         ShowCalendar(database);
     }
 
@@ -32,8 +37,10 @@ public partial class App : Application
     private void ShowCalendar(Database database)
     {
         var window = new MainWindow(database);
+        _calendar = window;
         window.Closed += (_, _) =>
         {
+            _calendar = null;
             if (window.ExitRequested) Shutdown();
             else Dispatcher.InvokeAsync(async () => { await Task.Delay(TimeSpan.FromSeconds(3)); ShowCalendar(database); });
         };
@@ -43,6 +50,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _tray?.Dispose();
         _singleInstance?.Dispose();
         base.OnExit(e);
     }
