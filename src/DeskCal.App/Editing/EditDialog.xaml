@@ -1,0 +1,195 @@
+<Window x:Class="DeskCal.App.EditDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DeskCal" Width="428" SizeToContent="Height"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" ResizeMode="NoResize" Topmost="True" UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
+    <Window.Resources>
+        <!-- 입력란: 옅은 바탕 + 둥근 모서리 (Figma Title field / Date / Time) -->
+        <Style x:Key="Field" TargetType="TextBox">
+            <Setter Property="FontFamily" Value="{StaticResource AppFont}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Box" CornerRadius="8" BorderThickness="1" Background="{DynamicResource InputBrush}"
+                                BorderBrush="{DynamicResource ControlBorderBrush}">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 알약 모양 선택지: 일정/할 일, 반복 -->
+        <Style x:Key="Pill" TargetType="RadioButton">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Box" CornerRadius="99" Padding="10,4" Background="{DynamicResource ToggleTrackBrush}">
+                            <TextBlock x:Name="Text" Text="{TemplateBinding Content}" Style="{StaticResource BaseText}" FontSize="11"
+                                       FontWeight="Medium" Foreground="{DynamicResource SubtleBrush}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Box" Property="Background" Value="{DynamicResource AccentBrush}" />
+                                <Setter TargetName="Text" Property="Foreground" Value="White" />
+                                <Setter TargetName="Text" Property="FontWeight" Value="Bold" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 카테고리 색 점: 고르면 바깥 고리 -->
+        <Style x:Key="ColorDot" TargetType="RadioButton">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Grid Width="20" Height="20">
+                            <Ellipse x:Name="Ring" StrokeThickness="2" Stroke="{DynamicResource TextBrush}" Visibility="Hidden" />
+                            <Ellipse Width="14" Height="14" Fill="{TemplateBinding Background}" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Ring" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="FooterButton" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border CornerRadius="99" Padding="14,5" BorderThickness="1" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}">
+                            <TextBlock Text="{TemplateBinding Content}" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Bold"
+                                       Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="RowLabel" TargetType="TextBlock" BasedOn="{StaticResource BaseText}">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Width" Value="56" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{DynamicResource SubtleBrush}" />
+        </Style>
+    </Window.Resources>
+
+    <!-- 24px 바깥 여백은 그림자 자리 -->
+    <Border Margin="24" CornerRadius="16" Background="{DynamicResource PopupBrush}" BorderThickness="1"
+            BorderBrush="{DynamicResource ControlBorderBrush}" Effect="{StaticResource CardShadow}">
+        <StackPanel>
+            <!-- 머리줄: 끌어서 옮긴다 -->
+            <DockPanel x:Name="Header" Margin="20,16,16,10" Background="Transparent" MouseLeftButtonDown="OnHeaderMouseDown">
+                <Button DockPanel.Dock="Right" Style="{StaticResource BareButton}" Click="OnCancel" ToolTip="닫기 (Esc)">
+                    <Path Data="M4 4L12 12M12 4L4 12" Width="16" Height="16" Stroke="{DynamicResource SubtleBrush}" StrokeThickness="1.5"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                </Button>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="DialogTitle" Style="{StaticResource BaseText}" FontSize="14" FontWeight="Bold" />
+                    <Border x:Name="ClaudeBadge" CornerRadius="99" Padding="7,2" Margin="8,0,0,0" VerticalAlignment="Center"
+                            Background="{DynamicResource DdayChipBrush}" Visibility="Collapsed">
+                        <TextBlock Text="Claude가 추가함" Style="{StaticResource BaseText}" FontSize="9" FontWeight="Medium"
+                                   Foreground="{DynamicResource AccentBrush}" />
+                    </Border>
+                </StackPanel>
+            </DockPanel>
+
+            <StackPanel Margin="20,0,20,0">
+                <StackPanel x:Name="KindRow" Orientation="Horizontal" Margin="0,0,0,10">
+                    <RadioButton x:Name="KindEvent" Content="일정" GroupName="Kind" Style="{StaticResource Pill}" Checked="OnKindChanged" />
+                    <RadioButton x:Name="KindTodo" Content="할 일" GroupName="Kind" Style="{StaticResource Pill}" Checked="OnKindChanged" />
+                </StackPanel>
+
+                <TextBox x:Name="TitleBox" Style="{StaticResource Field}" FontSize="14" FontWeight="Bold" Margin="0,0,0,12" />
+
+                <DockPanel Margin="0,0,0,8">
+                    <TextBlock x:Name="DateLabel" Text="날짜" Style="{StaticResource RowLabel}" />
+                    <TextBox x:Name="DateBox" Style="{StaticResource Field}" Width="120" ToolTip="예: 2026-11-03" />
+                    <CheckBox x:Name="AllDayCheck" Style="{StaticResource RoundCheck}" Margin="12,0,6,0" VerticalAlignment="Center"
+                              Checked="OnAllDayChanged" Unchecked="OnAllDayChanged" />
+                    <TextBlock x:Name="AllDayLabel" Text="종일" Style="{StaticResource BaseText}" FontSize="11" VerticalAlignment="Center" />
+                </DockPanel>
+
+                <DockPanel x:Name="TimeRow" Margin="0,0,0,8">
+                    <TextBlock Text="시간" Style="{StaticResource RowLabel}" />
+                    <TextBox x:Name="StartBox" Style="{StaticResource Field}" Width="80" ToolTip="예: 09:30" />
+                    <TextBlock Text="–" Style="{StaticResource BaseText}" FontSize="12" Margin="8,0" VerticalAlignment="Center" />
+                    <TextBox x:Name="EndBox" Style="{StaticResource Field}" Width="80" HorizontalAlignment="Left" />
+                </DockPanel>
+
+                <DockPanel x:Name="RepeatRow" Margin="0,0,0,8">
+                    <TextBlock Text="반복" Style="{StaticResource RowLabel}" />
+                    <WrapPanel x:Name="RepeatChoices" VerticalAlignment="Center" />
+                </DockPanel>
+
+                <DockPanel x:Name="CategoryRow" Margin="0,0,0,8">
+                    <TextBlock Text="카테고리" Style="{StaticResource RowLabel}" VerticalAlignment="Top" Margin="0,3,0,0" />
+                    <StackPanel>
+                        <WrapPanel x:Name="ColorChoices" />
+                        <TextBlock x:Name="CategoryName" Style="{StaticResource BaseText}" FontSize="11" Margin="0,4,0,0"
+                                   Foreground="{DynamicResource SubtleBrush}" />
+                    </StackPanel>
+                </DockPanel>
+
+                <DockPanel x:Name="DdayRow" Margin="0,0,0,10">
+                    <TextBlock Text="D-day" Style="{StaticResource RowLabel}" />
+                    <CheckBox x:Name="DdayCheck" Style="{StaticResource RoundCheck}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <TextBlock Text="사이드바 위쪽에 D-day로 표시" Style="{StaticResource BaseText}" FontSize="11" VerticalAlignment="Center"
+                               Foreground="{DynamicResource SubtleBrush}" />
+                </DockPanel>
+
+                <TextBox x:Name="MemoBox" Style="{StaticResource Field}" Height="64" AcceptsReturn="True" TextWrapping="Wrap"
+                         VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" ToolTip="메모" />
+
+                <TextBlock x:Name="ErrorText" Style="{StaticResource BaseText}" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap"
+                           Foreground="{DynamicResource SundayBrush}" Visibility="Collapsed" />
+            </StackPanel>
+
+            <DockPanel Margin="20,14,20,18">
+                <Button x:Name="DeleteButton" Content="삭제" Style="{StaticResource FooterButton}" Click="OnDelete"
+                        Foreground="{DynamicResource SundayBrush}" BorderBrush="Transparent" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="취소" Style="{StaticResource FooterButton}" Click="OnCancel" Margin="0,0,6,0" />
+                    <Button Content="저장" Style="{StaticResource FooterButton}" Click="OnSave" Foreground="White"
+                            Background="{DynamicResource AccentBrush}" BorderBrush="Transparent" />
+                </StackPanel>
+            </DockPanel>
+        </StackPanel>
+    </Border>
+</Window>

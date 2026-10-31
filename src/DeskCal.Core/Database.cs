@@ -50,6 +50,20 @@ public sealed class Database
             command.CommandText = $"PRAGMA user_version={++version};";
             command.ExecuteNonQuery();
         }
+        command.CommandText = "SELECT COUNT(*) FROM category;";
+        if ((long)command.ExecuteScalar()! == 0)
+        {
+            command.CommandText = """
+                INSERT INTO category(color_id, name, color_hex) VALUES
+                ('1', '라벤더', '#7986CB'), ('2', '세이지', '#33B679'),
+                ('3', '포도', '#8E24AA'), ('4', '플라밍고', '#E67C73'),
+                ('5', '바나나', '#F6BF26'), ('6', '귤', '#F4511E'),
+                ('7', '공작', '#039BE5'), ('8', '흑연', '#616161'),
+                ('9', '블루베리', '#3F51B5'), ('10', '바질', '#0B8043'),
+                ('11', '토마토', '#D50000');
+                """;
+            command.ExecuteNonQuery();
+        }
         transaction.Commit();
     }
 

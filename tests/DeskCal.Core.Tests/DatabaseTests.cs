@@ -6,6 +6,28 @@ namespace DeskCal.Core.Tests;
 public sealed class DatabaseTests
 {
     [Fact]
+    public void InitializeSeedsDefaultCategoriesOnlyOnce()
+    {
+        using var db = new TestDatabase();
+        Assert.Equal(11, db.Scalar("SELECT COUNT(*) FROM category"));
+        Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM category WHERE color_id='1' AND name='라벤더' AND color_hex='#7986CB'"));
+        Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM category WHERE color_id='11' AND name='토마토' AND color_hex='#D50000'"));
+        db.Database.Initialize();
+        Assert.Equal(11, db.Scalar("SELECT COUNT(*) FROM category"));
+        Assert.Equal(1, db.Scalar("PRAGMA user_version"));
+    }
+
+    [Fact]
+    public void InitializePreservesExistingCategoryRowsWithoutFillingDefaults()
+    {
+        using var db = new TestDatabase();
+        db.Execute("DELETE FROM category; INSERT INTO category VALUES ('1','개인','#123456');");
+        db.Database.Initialize();
+        Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM category"));
+        Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM category WHERE color_id='1' AND name='개인' AND color_hex='#123456'"));
+    }
+
+    [Fact]
     public void ConnectionAndSchemaMatchContract()
     {
         using var db = new TestDatabase();
