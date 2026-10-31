@@ -162,10 +162,12 @@ calander-task/
 3. Win+D 감지: `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT)`를 UI 스레드에서 등록, 콜백 델리게이트는 필드로 보관(GC 방지).
    - **M-1 실측 (Windows 11, 2026-10-30)**: Win+D 시 전경은 `WorkerW`가 아니라 **`Progman`**이 되고, Progman이 일반 창들 위로 올라온다. `HWND_TOP`으로 올리는 것은 시차를 두고 반복해도 Progman을 넘지 못했다 → 바탕화면 보기 동안에만 `HWND_TOPMOST`로 올리고 벗어나면 `HWND_NOTOPMOST` + `HWND_BOTTOM`으로 되돌리는 방식을 검증 중.
 4. **조정 모드** (2026-10-30 확정): 평소에는 크기·위치가 잠겨 있고, `⋯` 메뉴/트레이의 "크기·위치 조정"을 켠 동안에만 카드 안쪽 가장자리 10px를 끌어 크기를, 안쪽을 끌어 위치를 바꾼다(`WM_NCHITTEST`). 카드 바깥 그림자 여백은 투명해 입력을 받지 못하므로 손잡이는 카드 안쪽에 둔다. 최소 크기 760 × 480.
+   - 구현(2026-10-31): 켜면 달력을 다른 앱 위로 꺼내고 점선 테두리와 안내(완료 버튼)를 덮는다. 완료 버튼·Enter·Esc·메뉴 다시 선택으로 끝내면 자리를 저장하고 바탕화면으로 돌려보낸다. 가장자리 크기 조절을 위해 켜진 동안만 `ResizeMode=CanResize`(`WS_THICKFRAME`).
 5. **크기와 위치** (2026-10-30 확정):
    - 기본 카드 영역 **1278 × 754** (달력 + 간격 12 + 사이드바 300, DIP; 2026-10-31 사용자 지정으로 892 × 559에서 키움). 작업 영역보다 크면 작업 영역에 맞게 줄인다.
    - 첫 실행 시 주 모니터 작업 영역 가운데에 둔다. 아이콘 배치는 사람마다 달라 자동 회피는 하지 않는다.
    - 트레이 "위치 조정"에서만 이동·크기 변경 가능(기본 잠금). 크기·위치는 PC·모니터별로 로컬 `setting`에 저장(동기화 안 함 — 노트북과 데스크톱 화면이 다르므로).
+   - 구현: 키 `window_bounds:<가상 화면 좌상단·크기>`로 화면 구성마다 따로 저장. 저장한 자리가 화면에 200 × 200 이상 보이지 않으면 가운데에 둔다.
    - DPI PerMonitorV2.
 
 M-1 spike 체크리스트 (Windows 10 22H2 / Windows 11 23H2·24H2, **노트북·데스크톱 둘 다**):
@@ -542,7 +544,8 @@ Claude Desktop은 `claude_desktop_config.json`의 `mcpServers`에 같은 경로.
 ## 8. 앱 생명주기
 - 단일 인스턴스: named mutex `Local\DeskCal.App.SingleInstance`.
 - 트레이: 위치 조정 잠금/해제, 지금 동기화, Google 계정, 설정, 시작 시 실행, 종료. 충돌(`sync_conflict`)·확인 필요 항목 알림.
-- 시작 시 실행: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+  - 구현(M3, 2026-10-31): 크기·위치 조정, 시작 시 실행, 종료. 동기화·계정·설정 항목은 해당 기능과 함께 추가한다. WinForms `NotifyIcon`을 쓰며, Explorer 재시작 시 스스로 다시 등록한다. 아이콘은 실행 중 그린다.
+- 시작 시 실행: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`(값 이름 `DeskCal`, 기본 꺼짐).
 - `TaskbarCreated` 수신 시 트레이 재등록 + Z순서 재적용.
 
 ---

@@ -458,5 +458,26 @@
                 </Border>
             </Grid>
         </Border>
+
+        <!-- 조정 모드(§3.3): 켜진 동안만 보인다. 안쪽을 끌면 옮기고 가장자리 10px를 끌면 크기를 바꾼다(WM_NCHITTEST). -->
+        <Grid x:Name="AdjustOverlay" Grid.ColumnSpan="3" Visibility="Collapsed">
+            <Rectangle RadiusX="20" RadiusY="20" Fill="#1A246BDE" Stroke="{DynamicResource AccentBrush}" StrokeThickness="2"
+                       StrokeDashArray="4 3" />
+            <Border HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="14" Padding="22,16"
+                    Background="{DynamicResource PopupBrush}" BorderThickness="1" BorderBrush="{DynamicResource ControlBorderBrush}"
+                    Effect="{StaticResource CardShadow}">
+                <StackPanel>
+                    <TextBlock Text="크기·위치 조정" Style="{StaticResource BaseText}" FontSize="14" FontWeight="Bold"
+                               HorizontalAlignment="Center" />
+                    <TextBlock Text="안쪽을 끌어 옮기고, 가장자리를 끌어 크기를 바꿉니다." Style="{StaticResource BaseText}" FontSize="11"
+                               Foreground="{DynamicResource SubtleBrush}" Margin="0,6,0,12" HorizontalAlignment="Center" />
+                    <Button x:Name="AdjustDoneButton" Style="{StaticResource BareButton}" Click="OnAdjustDone" HorizontalAlignment="Center">
+                        <Border CornerRadius="99" Padding="16,6" Background="{DynamicResource AccentBrush}">
+                            <TextBlock Text="완료 (Enter)" Style="{StaticResource BaseText}" FontSize="12" FontWeight="Bold" Foreground="White" />
+                        </Border>
+                    </Button>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

@@ -6,10 +6,19 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <!-- 알림 영역 아이콘(NotifyIcon)에만 쓴다. WPF 형식과 이름이 겹치므로 전역 using은 넣지 않는다. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- WFO0003: WinForms 앱용 권고(DPI는 코드로 지정). 이 앱은 WPF라 DPI를 app.manifest로 지정하는 게 맞다. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>DeskCal</AssemblyName>
     <RootNamespace>DeskCal.App</RootNamespace>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\DeskCal.Core\DeskCal.Core.csproj" />
