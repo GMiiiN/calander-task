@@ -12,12 +12,13 @@ public sealed class TrayIcon : IDisposable
 {
     private readonly NotifyIcon _icon;
 
-    public TrayIcon(Func<bool> isAdjusting, Action toggleAdjust, Action exit)
+    public TrayIcon(Func<bool> isAdjusting, Action toggleAdjust, Action showSettings, Action exit)
     {
         var adjust = new ToolStripMenuItem("크기·위치 조정", null, (_, _) => toggleAdjust());
         var startup = new ToolStripMenuItem("시작 시 실행", null, (_, _) => AutoStart.Set(!AutoStart.IsEnabled));
         var menu = new ContextMenuStrip();
-        menu.Items.AddRange([adjust, startup, new ToolStripSeparator(), new ToolStripMenuItem("종료", null, (_, _) => exit())]);
+        menu.Items.AddRange([new ToolStripMenuItem("설정", null, (_, _) => showSettings()), adjust, startup,
+            new ToolStripSeparator(), new ToolStripMenuItem("종료", null, (_, _) => exit())]);
         // 체크 표시는 열 때마다 실제 상태로 맞춘다(레지스트리는 다른 곳에서 바뀔 수 있다).
         menu.Opening += (_, _) =>
         {

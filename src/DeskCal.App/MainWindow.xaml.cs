@@ -179,6 +179,30 @@ public partial class MainWindow : Window
         if (!IsAdjusting) _pinning.EndEditing();
     }
 
+    // 카테고리 이름이 바뀌면 칩·사이드바의 이름을 다시 그린다.
+    // 트레이 메뉴는 다른 창이 모달로 떠 있어도 열리므로, 열린 창이 있으면 그 창을 앞으로 가져오기만 한다.
+    public void ShowSettings()
+    {
+        if (IsAdjusting) return;
+        var openDialog = Application.Current.Windows.OfType<Window>().FirstOrDefault(window => window != this && window.IsVisible);
+        if (openDialog is not null)
+        {
+            openDialog.Activate();
+            return;
+        }
+        _pinning.BeginEditing();
+        try
+        {
+            var dialog = new SettingsDialog(new CategoryRepository(_database));
+            dialog.PlaceOver(this);
+            if (dialog.ShowDialog() == true) _viewModel.Refresh();
+        }
+        finally
+        {
+            EndEditing();
+        }
+    }
+
     private void OnSearchClick(object sender, RoutedEventArgs e) => ShowSearch();
 
     // Ctrl+F는 달력 창이 키보드를 받고 있을 때(할 일 입력란 등)만 온다. 평소에는 창이 활성화되지 않기 때문이다.
@@ -418,6 +442,8 @@ public partial class MainWindow : Window
     private void OnMenuClick(object sender, RoutedEventArgs e)
     {
         var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = PlacementMode.Top };
+        // 설정 창은 메뉴가 닫힌(편집 상태가 풀린) 뒤에 연다.
+        menu.Items.Add(MenuItem("설정", () => Dispatcher.BeginInvoke(ShowSettings)));
         menu.Items.Add(MenuItem("크기·위치 조정", ToggleAdjust));
         menu.Items.Add(MenuItem("종료", Exit));
         // 메뉴가 열린 동안에는 창이 활성화되므로 Z순서 고정을 잠시 멈춘다. 조정 모드를 켰으면 끝날 때까지 그대로 둔다.

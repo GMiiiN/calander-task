@@ -1,0 +1,50 @@
+<Window x:Class="DeskCal.App.SettingsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DeskCal" Width="428" SizeToContent="Height"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" ResizeMode="NoResize" Topmost="True" UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
+    <!-- 24px 바깥 여백은 그림자 자리 -->
+    <Border Margin="24" CornerRadius="16" Background="{DynamicResource PopupBrush}" BorderThickness="1"
+            BorderBrush="{DynamicResource ControlBorderBrush}" Effect="{StaticResource CardShadow}">
+        <StackPanel>
+            <!-- 머리줄: 끌어서 옮긴다 -->
+            <DockPanel Margin="20,16,16,6" Background="Transparent" MouseLeftButtonDown="OnHeaderMouseDown">
+                <Button DockPanel.Dock="Right" Style="{StaticResource BareButton}" Click="OnCancel" ToolTip="닫기 (Esc)">
+                    <Path Data="M4 4L12 12M12 4L4 12" Width="16" Height="16" Stroke="{DynamicResource SubtleBrush}" StrokeThickness="1.5"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                </Button>
+                <TextBlock Text="설정" Style="{StaticResource BaseText}" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" />
+            </DockPanel>
+
+            <StackPanel Margin="20,6,20,0">
+                <TextBlock Text="카테고리" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Bold"
+                           Foreground="{DynamicResource SubtleBrush}" />
+                <TextBlock Text="일정 색마다 이름을 붙입니다. 색 목록은 Google 캘린더의 일정 색을 따릅니다." Style="{StaticResource BaseText}"
+                           FontSize="10" Foreground="{DynamicResource MutedBrush}" Margin="0,3,0,8" TextWrapping="Wrap" />
+                <!-- 색 점 + 이름 입력란, 두 칸 (코드에서 채운다) -->
+                <UniformGrid x:Name="CategoryRows" Columns="2" Margin="0,0,-8,0" />
+
+                <TextBlock Text="일반" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Bold"
+                           Foreground="{DynamicResource SubtleBrush}" Margin="0,14,0,8" />
+                <StackPanel Orientation="Horizontal">
+                    <CheckBox x:Name="AutoStartCheck" Style="{StaticResource RoundCheck}" VerticalAlignment="Center" />
+                    <TextBlock Text="Windows에 로그인하면 DeskCal 실행" Style="{StaticResource BaseText}" FontSize="12" Margin="8,0,0,0"
+                               VerticalAlignment="Center" MouseLeftButtonDown="OnAutoStartLabelClick" />
+                </StackPanel>
+
+                <TextBlock x:Name="ErrorText" Style="{StaticResource BaseText}" FontSize="11" Foreground="{DynamicResource SundayBrush}"
+                           TextWrapping="Wrap" Margin="0,10,0,0" Visibility="Collapsed" />
+            </StackPanel>
+
+            <DockPanel Margin="20,16,20,18" LastChildFill="False">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button Content="취소" Style="{StaticResource FooterButton}" Click="OnCancel" Margin="0,0,6,0" />
+                    <Button Content="저장" Style="{StaticResource FooterButton}" Click="OnSave" Foreground="White"
+                            Background="{DynamicResource AccentBrush}" BorderBrush="Transparent" />
+                </StackPanel>
+            </DockPanel>
+        </StackPanel>
+    </Border>
+</Window>
