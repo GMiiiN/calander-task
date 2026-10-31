@@ -169,8 +169,14 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _pinning.EndEditing();
+            EndEditing();
         }
+    }
+
+    // 창이 열린 사이 트레이로 조정 모드를 켰으면 고정 해제를 유지한다. 조정 모드가 끝날 때 되돌린다.
+    private void EndEditing()
+    {
+        if (!IsAdjusting) _pinning.EndEditing();
     }
 
     private void OnSearchClick(object sender, RoutedEventArgs e) => ShowSearch();
@@ -204,7 +210,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _pinning.EndEditing();
+            EndEditing();
         }
         if (hit is null) return;
         if (hit.Date is { } date) _viewModel.GoTo(date);
@@ -246,9 +252,11 @@ public partial class MainWindow : Window
         Top = workArea.Top + (workArea.Height - Height) / 2;
     }
 
-    // 크기·위치는 화면 구성(모니터 배치)마다 따로 저장한다. 노트북 단독일 때와 모니터를 연결했을 때 자리가 다르기 때문이다.
-    private static string BoundsKey() => string.Create(CultureInfo.InvariantCulture,
-        $"window_bounds:{SystemParameters.VirtualScreenLeft},{SystemParameters.VirtualScreenTop},{SystemParameters.VirtualScreenWidth},{SystemParameters.VirtualScreenHeight}");
+    // 크기·위치는 화면 구성(모니터마다의 영역, 픽셀)마다 따로 저장한다. 노트북 단독일 때와 모니터를 연결했을 때 자리가 다르기 때문이다.
+    // 전체 외곽만 보면 배치가 바뀌어도 같은 키가 되어 모니터 사이 빈 곳을 복원할 수 있다.
+    private static string BoundsKey() => "window_bounds:" + string.Join(";", System.Windows.Forms.Screen.AllScreens
+        .Select(screen => screen.Bounds).OrderBy(b => b.X).ThenBy(b => b.Y)
+        .Select(b => string.Create(CultureInfo.InvariantCulture, $"{b.X},{b.Y},{b.Width},{b.Height}")));
 
     // 조정 모드(§3.3): 켜진 동안만 다른 앱 위로 꺼내 옮기고 크기를 바꿀 수 있다. 끝나면 자리를 저장하고 바탕화면으로 돌려보낸다.
     public void ToggleAdjust()
@@ -414,7 +422,7 @@ public partial class MainWindow : Window
         menu.Items.Add(MenuItem("종료", Exit));
         // 메뉴가 열린 동안에는 창이 활성화되므로 Z순서 고정을 잠시 멈춘다. 조정 모드를 켰으면 끝날 때까지 그대로 둔다.
         menu.Opened += (_, _) => _pinning.BeginEditing();
-        menu.Closed += (_, _) => { if (!IsAdjusting) _pinning.EndEditing(); };
+        menu.Closed += (_, _) => EndEditing();
         menu.IsOpen = true;
 
         static MenuItem MenuItem(string header, Action action)
@@ -467,7 +475,7 @@ public partial class MainWindow : Window
 
     private void OnInputBlur(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (_pinning.State == PinState.Editing) _pinning.EndEditing();
+        if (_pinning.State == PinState.Editing) EndEditing();
     }
 
     private static string LogPath(string name)
