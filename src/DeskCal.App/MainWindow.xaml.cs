@@ -180,9 +180,16 @@ public partial class MainWindow : Window
     }
 
     // 카테고리 이름이 바뀌면 칩·사이드바의 이름을 다시 그린다.
+    // 트레이 메뉴는 다른 창이 모달로 떠 있어도 열리므로, 열린 창이 있으면 그 창을 앞으로 가져오기만 한다.
     public void ShowSettings()
     {
         if (IsAdjusting) return;
+        var openDialog = Application.Current.Windows.OfType<Window>().FirstOrDefault(window => window != this && window.IsVisible);
+        if (openDialog is not null)
+        {
+            openDialog.Activate();
+            return;
+        }
         _pinning.BeginEditing();
         try
         {

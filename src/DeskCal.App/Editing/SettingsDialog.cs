@@ -67,6 +67,13 @@ public partial class SettingsDialog : Window
             ErrorText.Visibility = Visibility.Visible;
             return;
         }
+        catch (Exception)
+        {
+            // MCP 서버가 DB를 쓰고 있어 잠금 대기 시간을 넘긴 경우 등. 입력값은 그대로 두고 다시 저장하게 한다.
+            ErrorText.Text = "저장하지 못했습니다. 잠시 뒤 다시 저장해 주세요.";
+            ErrorText.Visibility = Visibility.Visible;
+            return;
+        }
         if (AutoStartCheck.IsChecked != AutoStart.IsEnabled) AutoStart.Set(AutoStartCheck.IsChecked == true);
         DialogResult = true;
     }
