@@ -1,0 +1,30 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- 어두운 배경화면용 (어두운 유리 + 밝은 글자). 키는 Colors.Light.xaml과 같아야 한다. -->
+    <SolidColorBrush x:Key="TextBrush" Color="#F2F5FA" />
+    <SolidColorBrush x:Key="SubtleBrush" Color="#BCC7D6" />
+    <SolidColorBrush x:Key="MutedBrush" Color="#8391A6" />
+    <SolidColorBrush x:Key="AccentBrush" Color="#4C8DFF" />
+    <SolidColorBrush x:Key="TodayCellBrush" Color="#2E4C8DFF" />
+    <SolidColorBrush x:Key="TodayColumnBrush" Color="#1F4C8DFF" />
+    <SolidColorBrush x:Key="SundayBrush" Color="#FF8078" />
+    <SolidColorBrush x:Key="SaturdayBrush" Color="#86AEFF" />
+    <SolidColorBrush x:Key="HeaderLineBrush" Color="#1FFFFFFF" />
+    <SolidColorBrush x:Key="GridLineBrush" Color="#12FFFFFF" />
+    <SolidColorBrush x:Key="FooterLineBrush" Color="#1AFFFFFF" />
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#33FFFFFF" />
+    <SolidColorBrush x:Key="ToggleTrackBrush" Color="#1AFFFFFF" />
+    <SolidColorBrush x:Key="ToggleThumbBrush" Color="#38FFFFFF" />
+    <SolidColorBrush x:Key="DividerBrush" Color="#26FFFFFF" />
+    <SolidColorBrush x:Key="InputBrush" Color="#14FFFFFF" />
+    <SolidColorBrush x:Key="DdayChipBrush" Color="#334C8DFF" />
+    <SolidColorBrush x:Key="TodoChipBrush" Color="#24FFFFFF" />
+    <SolidColorBrush x:Key="DoneChipBrush" Color="#12FFFFFF" />
+    <SolidColorBrush x:Key="CheckboxBorderBrush" Color="#80FFFFFF" />
+    <SolidColorBrush x:Key="CheckboxFillBrush" Color="#14FFFFFF" />
+    <SolidColorBrush x:Key="PopupBrush" Color="#F21B2433" />
+    <SolidColorBrush x:Key="SyncOkBrush" Color="#33B679" />
+
+    <Color x:Key="GlassTintColor">#101826</Color>
+</ResourceDictionary>

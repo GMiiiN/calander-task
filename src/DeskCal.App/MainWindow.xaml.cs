@@ -18,28 +18,33 @@ public partial class MainWindow : Window
     private static readonly string[] WeekdayNames = ["일", "월", "화", "수", "목", "금", "토"];
 
     private readonly MainViewModel _viewModel;
-    private readonly SettingStore _settings;
     private readonly DesktopPinning _pinning;
+    private readonly WallpaperTone _wallpaperTone;
     private readonly DataVersionWatcher _watcher;
     private readonly ChangeSignal _signal = new();
     private readonly RegisteredWaitHandle _signalRegistration;
     private readonly DispatcherTimer _fallbackTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMinutes(1) };
 
+    /// <summary>사용자가 ⋯ 메뉴로 종료했는지. 아니면 창이 닫혀도 앱이 다시 띄운다.</summary>
+    public bool ExitRequested { get; private set; }
+
     public MainWindow(Database database)
     {
         InitializeComponent();
-        _settings = new SettingStore(database);
         _viewModel = new MainViewModel(database);
         DataContext = _viewModel;
         PlaceWindow();
         BuildWeekdayHeader();
         BuildHourGrid();
         UpdateViewToggle();
-        ApplyOpacity(_settings.Get("background_opacity") == "50");
         _viewModel.PropertyChanged += OnViewModelChanged;
 
         _pinning = new DesktopPinning(this, LogPath("pinning.log"));
+        // 카드는 투명하다. 뒤 배경화면이 어두우면 밝은 글자, 밝으면 어두운 글자를 쓴다.
+        _wallpaperTone = new WallpaperTone(this);
+        _wallpaperTone.DarkChanged += _ => ApplyTheme();
+        ApplyTheme();
 
         // 변경 알림(§2.3): MCP가 쓰면 신호로 즉시, 신호를 놓쳐도 data_version으로 30초 안에 다시 읽는다.
         _watcher = new DataVersionWatcher(database);
@@ -75,7 +80,10 @@ public partial class MainWindow : Window
     private void PlaceWindow()
     {
         var workArea = SystemParameters.WorkArea;
-        Left = workArea.Left + (workArea.Width - Width) / 2;
+        // 작은 화면(노트북)에서는 작업 영역 안에 들어가도록 줄인다.
+        Width = Math.Max(MinWidth, Math.Min(Width, workArea.Width));
+        Height = Math.Max(MinHeight, Math.Min(Height, workArea.Height));
+        Left =workArea.Left + (workArea.Width - Width) / 2;
         Top = workArea.Top + (workArea.Height - Height) / 2;
     }
 
@@ -86,14 +94,12 @@ public partial class MainWindow : Window
             var label = new TextBlock
             {
                 Text = WeekdayNames[day], Style = (Style)FindResource("BaseText"), FontWeight = FontWeights.Bold,
-                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
-                Foreground = (Brush)FindResource(day == 0 ? "SundayBrush" : day == 6 ? "SaturdayBrush" : "SubtleBrush")
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
             };
-            WeekdayHeader.Children.Add(new Border
-            {
-                Child = label, BorderBrush = (Brush)FindResource("GridLineBrush"),
-                BorderThickness = new Thickness(0, 0, day == 6 ? 0 : 1, 1)
-            });
+            label.SetResourceReference(TextBlock.ForegroundProperty, day == 0 ? "SundayBrush" : day == 6 ? "SaturdayBrush" : "SubtleBrush");
+            var cell = new Border { Child = label, BorderThickness = new Thickness(0, 0, day == 6 ? 0 : 1, 1) };
+            cell.SetResourceReference(Border.BorderBrushProperty, "GridLineBrush");
+            WeekdayHeader.Children.Add(cell);
         }
     }
 
@@ -106,11 +112,13 @@ public partial class MainWindow : Window
             var label = new TextBlock
             {
                 Text = $"{hour:00}:00", Style = (Style)FindResource("BaseText"), FontSize = 9,
-                Foreground = (Brush)FindResource("MutedBrush"), Width = 44, TextAlignment = TextAlignment.Center
+                Width = 44, TextAlignment = TextAlignment.Center
             };
+            label.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
             Canvas.SetTop(label, hour * hourHeight + 3);
             HourLabels.Children.Add(label);
-            var line = new Border { Height = 1, Background = (Brush)FindResource("GridLineBrush") };
+            var line = new Border { Height = 1 };
+            line.SetResourceReference(Border.BackgroundProperty, "GridLineBrush");
             line.SetBinding(WidthProperty, new System.Windows.Data.Binding(nameof(ActualWidth)) { Source = HourLines });
             Canvas.SetTop(line, hour * hourHeight);
             HourLines.Children.Add(line);
@@ -147,11 +155,12 @@ public partial class MainWindow : Window
 
         void Style(Border box, TextBlock text, bool selected)
         {
-            box.Background = selected ? Brushes.White : Brushes.Transparent;
+            if (selected) box.SetResourceReference(Border.BackgroundProperty, "ToggleThumbBrush");
+            else box.Background = Brushes.Transparent;
             box.Effect = selected ? new System.Windows.Media.Effects.DropShadowEffect
                 { Color = Color.FromRgb(0x26, 0x33, 0x59), Opacity = 0.12, BlurRadius = 3, ShadowDepth = 1, Direction = 270 } : null;
             text.FontWeight = selected ? FontWeights.Bold : FontWeights.Medium;
-            text.Foreground = (Brush)FindResource(selected ? "TextBrush" : "SubtleBrush");
+            text.SetResourceReference(TextBlock.ForegroundProperty, selected ? "TextBrush" : "SubtleBrush");
         }
     }
 
@@ -162,8 +171,8 @@ public partial class MainWindow : Window
         var list = new ItemsControl { ItemsSource = cell.AllItems, ItemTemplate = (DataTemplate)FindResource("ChipTemplate") };
         var card = new Border
         {
-            Width = 180, Padding = new Thickness(10, 6, 10, 10), CornerRadius = new CornerRadius(10), Background = Brushes.White,
-            BorderBrush = (Brush)FindResource("ControlBorderBrush"), BorderThickness = new Thickness(1),
+            Width = 180, Padding = new Thickness(10, 6, 10, 10), CornerRadius = new CornerRadius(10),
+            Background = (Brush)FindResource("PopupBrush"), BorderBrush = (Brush)FindResource("ControlBorderBrush"), BorderThickness = new Thickness(1),
             Child = new StackPanel
             {
                 Children =
@@ -179,15 +188,8 @@ public partial class MainWindow : Window
 
     private void OnMenuClick(object sender, RoutedEventArgs e)
     {
-        var isGlass = _settings.Get("background_opacity") == "50";
         var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = PlacementMode.Top };
-        menu.Items.Add(MenuItem(isGlass ? "배경 불투명하게 (100%)" : "배경 반투명하게 (50%)", () =>
-        {
-            _settings.Set("background_opacity", isGlass ? "100" : "50");
-            ApplyOpacity(!isGlass);
-        }));
-        menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("종료", Close));
+        menu.Items.Add(MenuItem("종료", () => { ExitRequested = true; Close(); }));
         // 메뉴가 열린 동안에는 창이 활성화되므로 Z순서 고정을 잠시 멈춘다.
         menu.Opened += (_, _) => _pinning.BeginEditing();
         menu.Closed += (_, _) => _pinning.EndEditing();
@@ -201,11 +203,35 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ApplyOpacity(bool isGlass)
+    // 색 사전(App.xaml의 첫 번째 병합 사전)을 배경화면 밝기에 맞춰 갈아 끼우고 유리 막을 다시 칠한다.
+    private void ApplyTheme()
     {
-        var brush = new SolidColorBrush(Color.FromArgb(isGlass ? (byte)0x80 : (byte)0xED, 0xFF, 0xFF, 0xFF));
+        var colors = new ResourceDictionary { Source = new Uri(_wallpaperTone.IsDark ? "Colors.Dark.xaml" : "Colors.Light.xaml", UriKind.Relative) };
+        Application.Current.Resources.MergedDictionaries[0] = colors;
+        ApplyGlass();
+    }
+
+    private void ApplyGlass()
+    {
+        // 바탕화면이 흐릿하게 비치는 반투명 유리 막(아이콘이 뒤에 있으면 어둡게 비친다). 위쪽 광택과 아래쪽 반사광으로 유리를 씌운 느낌을 낸다.
+        var tint = (Color)FindResource("GlassTintColor");
+        const byte alpha = 0xA6;
+        var plain = Color.FromArgb(alpha, tint.R, tint.G, tint.B);
+        var brush = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0, 1) };
+        brush.GradientStops.Add(new GradientStop(Blend(tint, alpha, 0x2E), 0));
+        brush.GradientStops.Add(new GradientStop(plain, 0.3));
+        brush.GradientStops.Add(new GradientStop(plain, 0.9));
+        brush.GradientStops.Add(new GradientStop(Blend(tint, alpha, 0x14), 1));
         CalendarCard.Background = brush;
         SidebarCard.Background = brush;
+
+        // 막 색 위에 흰 광택(gloss 알파)을 얹은 색
+        static Color Blend(Color tint, byte alpha, byte gloss)
+        {
+            var total = alpha + gloss * (255 - alpha) / 255.0;
+            byte Mix(byte channel) => (byte)((channel * alpha + 255 * gloss * (255 - alpha) / 255.0) / total);
+            return Color.FromArgb((byte)total, Mix(tint.R), Mix(tint.G), Mix(tint.B));
+        }
     }
 
     // 창은 평소 활성화되지 않으므로(WS_EX_NOACTIVATE) 입력란을 누를 때만 편집 상태로 바꿔 키보드를 받는다.

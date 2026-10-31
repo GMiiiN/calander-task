@@ -1,0 +1,31 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- 밝은 배경화면용 (설계 §6.1 Figma 토큰). 키는 Colors.Dark.xaml과 같아야 한다. -->
+    <SolidColorBrush x:Key="TextBrush" Color="#25364A" />
+    <SolidColorBrush x:Key="SubtleBrush" Color="#56677D" />
+    <SolidColorBrush x:Key="MutedBrush" Color="#B0BACB" />
+    <SolidColorBrush x:Key="AccentBrush" Color="#246BDE" />
+    <SolidColorBrush x:Key="TodayCellBrush" Color="#EDF3FF" />
+    <SolidColorBrush x:Key="TodayColumnBrush" Color="#80EDF3FF" />
+    <SolidColorBrush x:Key="SundayBrush" Color="#C0413A" />
+    <SolidColorBrush x:Key="SaturdayBrush" Color="#3A6AC0" />
+    <SolidColorBrush x:Key="HeaderLineBrush" Color="#14344E6E" />
+    <SolidColorBrush x:Key="GridLineBrush" Color="#0A344E6E" />
+    <SolidColorBrush x:Key="FooterLineBrush" Color="#12344E6E" />
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#29536A85" />
+    <SolidColorBrush x:Key="ToggleTrackBrush" Color="#0F344E6E" />
+    <SolidColorBrush x:Key="ToggleThumbBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="DividerBrush" Color="#1F344E6E" />
+    <SolidColorBrush x:Key="InputBrush" Color="#0A344E6E" />
+    <SolidColorBrush x:Key="DdayChipBrush" Color="#14246BDE" />
+    <SolidColorBrush x:Key="TodoChipBrush" Color="#29B0BACB" />
+    <SolidColorBrush x:Key="DoneChipBrush" Color="#1FB0BACB" />
+    <SolidColorBrush x:Key="CheckboxBorderBrush" Color="#73536A85" />
+    <SolidColorBrush x:Key="CheckboxFillBrush" Color="#99FFFFFF" />
+    <SolidColorBrush x:Key="PopupBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="SyncOkBrush" Color="#33B679" />
+
+    <!-- 흐린 배경화면 위에 얹는 유리 막 색 -->
+    <Color x:Key="GlassTintColor">#FFFFFF</Color>
+</ResourceDictionary>
