@@ -161,6 +161,28 @@ public sealed class EditorModelTests : IDisposable
         Assert.Empty(_events.GetRecords());
     }
 
+    [Fact]
+    public void NewLateNightEventDropsExtraDayWhenTimesNoLongerCrossMidnight()
+    {
+        var model = EditorModel.NewEvent(Date, new(23, 30));
+        model.Title = "낮으로 옮김";
+        model.StartTime = new(9, 0);
+        model.EndTime = new(10, 0);
+        Assert.Null(model.Save(_events, _todos));
+        Assert.Equal("2026-11-02", Assert.Single(_events.GetRecords()).EndDate);
+    }
+
+    [Fact]
+    public void RefusedSeriesChangeExplainsWhy()
+    {
+        var series = _events.Create([new("반복", "2026-11-02") { Repeat = new("daily") }])[0];
+        var occurrence = _events.List(Date.AddDays(1), Date.AddDays(1)).Single();
+        _events.SetOccurrenceDone(occurrence.OccurrenceId!, true);
+        var model = EditorModel.FromEvent(_events.Get(series.EventUid), occurrence.OccurrenceId);
+        model.Repeat = RepeatKind.Weekly;
+        Assert.StartsWith("따로 바뀐 회차", model.Save(_events, _todos));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

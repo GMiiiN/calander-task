@@ -151,7 +151,9 @@ public partial class EditDialog : Window
             _editor.EndTime = end;
         }
         _editor.Repeat = RepeatChoices.Children.OfType<RadioButton>().FirstOrDefault(c => c.IsChecked == true)?.Tag as RepeatKind? ?? RepeatKind.None;
-        _editor.ColorId = (ColorChoices.Children.OfType<RadioButton>().FirstOrDefault(c => c.IsChecked == true)?.Tag as CategoryOption)?.ColorId;
+        // 목록에 없는 색(아직 받지 못한 Google 색 등)이면 아무 점도 선택되지 않는다. 그때는 원래 값을 그대로 둔다.
+        if (ColorChoices.Children.OfType<RadioButton>().FirstOrDefault(c => c.IsChecked == true)?.Tag is CategoryOption selected)
+            _editor.ColorId = selected.ColorId;
         _editor.IsDday = DdayCheck.IsChecked == true;
         return null;
 

@@ -97,9 +97,11 @@ public partial class MainWindow : Window
     private void OpenEditorAt(MouseButtonEventArgs e)
     {
         if (e.ClickCount != 2) return;
+        // 체크박스·버튼·입력란 안쪽(체크 표시, 테두리 등)을 누른 경우는 그대로 둔다.
+        for (var node = e.OriginalSource as DependencyObject; node is not null; node = Parent(node))
+            if (node is ButtonBase or TextBoxBase) return;
         for (var node = e.OriginalSource as DependencyObject; node is not null; node = Parent(node))
         {
-            if (node is ButtonBase or TextBoxBase) return; // 체크박스·버튼·입력란은 그대로 둔다
             if (node is not FrameworkElement { DataContext: var data } element) continue;
             var editor = data switch
             {
@@ -129,9 +131,11 @@ public partial class MainWindow : Window
         }
     }
 
+    // 반복 회차는 시리즈 기록으로 연다. 완료 등으로 따로 저장된 회차의 기록을 열면 그 날짜가 시리즈 시작일로 저장되기 때문이다.
     private EditorModel? Open(string? eventId, string? occurrenceId, string? todoId) =>
         todoId is not null ? EditorModel.FromTodo(_todos.Get(todoId))
-        : eventId is not null ? EditorModel.FromEvent(_events.Get(eventId), occurrenceId)
+        : occurrenceId is not null ? EditorModel.FromEvent(_events.Get(OccurrenceId.Parse(occurrenceId).EventUid), occurrenceId)
+        : eventId is not null ? EditorModel.FromEvent(_events.Get(eventId), null)
         : null;
 
     // 편집 창이 떠 있는 동안은 Z순서 고정을 멈춘다(§3.3 Editing). 저장·삭제했으면 바로 다시 그린다.
