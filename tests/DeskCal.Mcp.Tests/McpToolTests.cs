@@ -28,7 +28,7 @@ public sealed class McpToolTests : IAsyncLifetime
         _database = new Database(path);
         using var connection = _database.OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "INSERT INTO category(color_id,name,color_hex) VALUES ('1','개인','#123456'),('2','업무','#654321');";
+        command.CommandText = "INSERT OR REPLACE INTO category(color_id,name,color_hex) VALUES ('1','개인','#123456'),('2','업무','#654321');";
         command.ExecuteNonQuery();
     }
 
@@ -146,7 +146,7 @@ public sealed class McpToolTests : IAsyncLifetime
         var today = DateOnly.Parse(briefing.GetProperty("today").GetString()!, CultureInfo.InvariantCulture);
         var tomorrow = today.AddDays(1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var categories = await Call("list_categories");
-        Assert.Equal(2, categories.GetProperty("categories").GetArrayLength());
+        Assert.Equal(11, categories.GetProperty("categories").GetArrayLength());
         var created = await Call("create_events", new { events = new[] { new { title = "치과", start_date = tomorrow, start_time = "15:00", category = "개인" } } });
         var dental = created.GetProperty("events")[0];
         Pending(dental);
