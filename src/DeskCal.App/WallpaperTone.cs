@@ -16,6 +16,7 @@ public sealed class WallpaperTone
     private const uint SPI_GETDESKWALLPAPER = 0x0073;
     private const double DARK_THRESHOLD = 0.5;
     private const int COLOR_DESKTOP = 1;
+    private const double SAMPLE_STEP = 8; // DIP
 
     private readonly Window _window;
     private BitmapSource? _wallpaper;
@@ -51,27 +52,30 @@ public sealed class WallpaperTone
         Measure();
     }
 
-    // 창 뒤에 해당하는 배경화면 픽셀의 평균 밝기로 판단한다. 배경화면은 주 모니터(DIP 0,0 기준)에 그려져 있다고 본다.
+    // 창 뒤를 일정 간격으로 찍어 평균 밝기로 판단한다. 배경화면은 주 모니터(DIP 0,0 기준)에 그려져 있다고 보고,
+    // 이미지가 덮지 않는 곳('맞춤'의 여백)은 바탕화면 색으로 센다.
     private void Measure()
     {
         if (_wallpaper is null || _pixels is null) return;
         var screen = new Rect(0, 0, SystemParameters.PrimaryScreenWidth, SystemParameters.PrimaryScreenHeight);
         var drawn = WallpaperRect(_wallpaper.PixelWidth, _wallpaper.PixelHeight, screen);
-        var scaleX = _wallpaper.PixelWidth / drawn.Width;
-        var scaleY = _wallpaper.PixelHeight / drawn.Height;
-        var left = Math.Clamp((int)((_window.Left - drawn.X) * scaleX), 0, _wallpaper.PixelWidth - 1);
-        var top = Math.Clamp((int)((_window.Top - drawn.Y) * scaleY), 0, _wallpaper.PixelHeight - 1);
-        var right = Math.Clamp((int)((_window.Left + _window.Width - drawn.X) * scaleX), left + 1, _wallpaper.PixelWidth);
-        var bottom = Math.Clamp((int)((_window.Top + _window.Height - drawn.Y) * scaleY), top + 1, _wallpaper.PixelHeight);
+        var desktopLuminance = Luminance(DesktopColorBgra(), 0);
         double sum = 0;
         var count = 0;
-        for (var y = top; y < bottom; y += 4)
-        for (var x = left; x < right; x += 4)
+        for (var y = _window.Top; y < _window.Top + _window.Height; y += SAMPLE_STEP)
+        for (var x = _window.Left; x < _window.Left + _window.Width; x += SAMPLE_STEP)
         {
-            var index = (y * _wallpaper.PixelWidth + x) * 4;
-            sum += 0.0722 * _pixels[index] + 0.7152 * _pixels[index + 1] + 0.2126 * _pixels[index + 2];
             count++;
+            if (!drawn.Contains(x, y))
+            {
+                sum += desktopLuminance;
+                continue;
+            }
+            var pixelX = Math.Min((int)((x - drawn.X) / drawn.Width * _wallpaper.PixelWidth), _wallpaper.PixelWidth - 1);
+            var pixelY = Math.Min((int)((y - drawn.Y) / drawn.Height * _wallpaper.PixelHeight), _wallpaper.PixelHeight - 1);
+            sum += Luminance(_pixels, (pixelY * _wallpaper.PixelWidth + pixelX) * 4);
         }
+        if (count == 0) return;
         var isDark = sum / count / 255 < DARK_THRESHOLD;
         if (_hasMeasured && isDark == IsDark) return;
         _hasMeasured = true;
@@ -92,12 +96,18 @@ public sealed class WallpaperTone
         return new Rect(screen.X + (screen.Width - size.Width) / 2, screen.Y + (screen.Height - size.Height) / 2, size.Width, size.Height);
     }
 
+    private static double Luminance(byte[] bgra, int index) => 0.0722 * bgra[index] + 0.7152 * bgra[index + 1] + 0.2126 * bgra[index + 2];
+
+    private static byte[] DesktopColorBgra()
+    {
+        var bgr = GetSysColor(COLOR_DESKTOP); // 0x00BBGGRR
+        return [(byte)(bgr >> 16), (byte)(bgr >> 8), (byte)bgr, 255];
+    }
+
     // 배경화면 이미지가 없으면(단색 배경) 바탕화면 색 한 장으로 대신한다.
     private static BitmapSource SolidDesktopColor()
     {
-        var bgr = GetSysColor(COLOR_DESKTOP);
-        var pixels = new byte[] { (byte)(bgr >> 16), (byte)(bgr >> 8), (byte)bgr, 255 };
-        var bitmap = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, pixels, 4);
+        var bitmap = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, DesktopColorBgra(), 4);
         bitmap.Freeze();
         return bitmap;
     }

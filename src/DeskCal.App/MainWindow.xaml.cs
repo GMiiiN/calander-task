@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private readonly RegisteredWaitHandle _signalRegistration;
     private readonly DispatcherTimer _fallbackTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMinutes(1) };
+    private bool _isClosed;
 
     /// <summary>사용자가 ⋯ 메뉴로 종료했는지. 아니면 창이 닫혀도 앱이 다시 띄운다.</summary>
     public bool ExitRequested { get; private set; }
@@ -61,8 +62,12 @@ public partial class MainWindow : Window
 
         Loaded += (_, _) => { TimeScroll.ScrollToVerticalOffset(FIRST_VISIBLE_HOUR * WeekDayPanel.HOUR_HEIGHT); UpdateNowLine(); };
         NowLayer.SizeChanged += (_, _) => UpdateNowLine();
+        // 창이 닫혀도 앱은 새 창을 띄우며 계속 살아 있으므로(App.ShowCalendar) 타이머까지 모두 멈춘다.
         Closed += (_, _) =>
         {
+            _isClosed = true;
+            _fallbackTimer.Stop();
+            _clockTimer.Stop();
             _signalRegistration.Unregister(null);
             _signal.Dispose();
             _watcher.Dispose();
@@ -72,6 +77,7 @@ public partial class MainWindow : Window
 
     private void RefreshFromOutside()
     {
+        if (_isClosed) return; // 닫히기 직전에 들어온 신호
         _watcher.HasChanged(); // 신호로 이미 반영한 변경을 30초 확인에서 다시 세지 않도록 기준값을 옮긴다.
         _viewModel.Refresh();
     }
@@ -171,8 +177,7 @@ public partial class MainWindow : Window
         var list = new ItemsControl { ItemsSource = cell.AllItems, ItemTemplate = (DataTemplate)FindResource("ChipTemplate") };
         var card = new Border
         {
-            Width = 180, Padding = new Thickness(10, 6, 10, 10), CornerRadius = new CornerRadius(10),
-            Background = (Brush)FindResource("PopupBrush"), BorderBrush = (Brush)FindResource("ControlBorderBrush"), BorderThickness = new Thickness(1),
+            Width = 180, Padding = new Thickness(10, 6, 10, 10), CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1),
             Child = new StackPanel
             {
                 Children =
@@ -183,6 +188,8 @@ public partial class MainWindow : Window
                 }
             }
         };
+        card.SetResourceReference(Border.BackgroundProperty, "PopupBrush");
+        card.SetResourceReference(Border.BorderBrushProperty, "ControlBorderBrush");
         new Popup { Child = card, PlacementTarget = (UIElement)sender, Placement = PlacementMode.Bottom, StaysOpen = false, IsOpen = true };
     }
 
