@@ -89,6 +89,8 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                 }
                 else if (snapshot.GoogleTaskId is null)
                 {
+                    // 보내기 전에 결과 불명으로 둔다. 응답을 저장하기 전에 앱이 끝나도 다시 보내 중복을 만들지 않는다.
+                    SetPushState(snapshot, "unknown");
                     GoogleTask created;
                     try
                     {
@@ -153,7 +155,7 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
         var same = CurrentRevision(connection, transaction, snapshot.TodoId) == snapshot.LocalRevision;
         using var command = Sql.Command(connection, transaction,
             "UPDATE todo SET google_task_id=$id, google_etag=$etag, attempt_count=0, last_error=NULL" +
-            (same ? ", is_dirty=0, push_state='synced'" : "") + " WHERE todo_id=$todo;",
+            (same ? ", is_dirty=0, push_state='synced'" : ", push_state='pending'") + " WHERE todo_id=$todo;",
             ("$id", googleId), ("$etag", etag), ("$todo", snapshot.TodoId));
         command.ExecuteNonQuery();
         transaction.Commit();
@@ -163,9 +165,12 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
+        // 보내는 사이에 또 고쳤으면 그 최신 내용을 남긴다(버리는 것은 지금 행이다).
+        var discarded = CurrentRevision(connection, transaction, snapshot.TodoId) == snapshot.LocalRevision
+            ? snapshot : ReadSnapshots(connection, transaction, "todo_id=$id", ("$id", snapshot.TodoId)).Single();
         using (var conflict = Sql.Command(connection, transaction,
             "INSERT INTO sync_conflict(item_kind, item_uid, discarded_json, occurred_at) VALUES ('todo', $uid, $json, $at);",
-            ("$uid", snapshot.TodoUid), ("$json", JsonSerializer.Serialize(snapshot, ConflictJson)), ("$at", Validation.Timestamp(_clock))))
+            ("$uid", snapshot.TodoUid), ("$json", JsonSerializer.Serialize(discarded, ConflictJson)), ("$at", Validation.Timestamp(_clock))))
             conflict.ExecuteNonQuery();
         // etag를 비워 다음 pull이 원격 값을 그대로 덮게 한다. 원격에서 지워졌으면 pull의 전체 대조가 로컬도 지운다.
         using var command = Sql.Command(connection, transaction,
@@ -173,6 +178,14 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
             ("$todo", snapshot.TodoId));
         command.ExecuteNonQuery();
         transaction.Commit();
+    }
+
+    private void SetPushState(Snapshot snapshot, string state)
+    {
+        using var connection = database.OpenConnection();
+        using var command = Sql.Command(connection, null, "UPDATE todo SET push_state=$state WHERE todo_id=$todo;",
+            ("$state", state), ("$todo", snapshot.TodoId));
+        command.ExecuteNonQuery();
     }
 
     private void MarkFailed(Snapshot snapshot, string state, string error)
@@ -254,8 +267,13 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
     private List<Snapshot> ReadDirty()
     {
         using var connection = database.OpenConnection();
-        using var command = Sql.Command(connection, null,
-            "SELECT * FROM todo WHERE is_dirty=1 AND push_state<>'unknown' ORDER BY todo_id;");
+        return ReadSnapshots(connection, null, "is_dirty=1 AND push_state<>'unknown'");
+    }
+
+    private static List<Snapshot> ReadSnapshots(SqliteConnection connection, SqliteTransaction? transaction, string where,
+        params (string Name, object? Value)[] parameters)
+    {
+        using var command = Sql.Command(connection, transaction, $"SELECT * FROM todo WHERE {where} ORDER BY todo_id;", parameters);
         using var reader = command.ExecuteReader();
         var result = new List<Snapshot>();
         while (reader.Read())

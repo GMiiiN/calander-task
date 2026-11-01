@@ -115,12 +115,26 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                     var parent = records.Single(r => r.Record.EventId == parentId);
                     if (parent.Etag is null || parent.Record.GoogleEventId is null) continue;
                     var instanceId = value.GoogleEventId ?? parent.Record.GoogleEventId + "_" + InstanceSuffix(value.OriginalStartKey!);
-                    var patched = await remote.PatchAsync(instanceId, ToRemote(value, isInstance: true), snapshot.Etag, cancellationToken);
+                    var etag = snapshot.Etag;
+                    if (etag is null)
+                    {
+                        // 처음 고치는 회차라 비교할 etag가 없다. 마지막으로 받은 뒤 다른 곳에서 바뀐 회차면
+                        // 받아 둔 옛 시각으로 덮지 않고 원격 우선으로 처리한다.
+                        var current = await remote.GetAsync(instanceId, cancellationToken);
+                        if (current.UpdatedDateTimeOffset is { } updated && (LastSyncedAt(database) is not { } seen || updated > seen))
+                        {
+                            Discard(snapshot);
+                            continue;
+                        }
+                        etag = current.ETag;
+                    }
+                    var patched = await remote.PatchAsync(instanceId, ToRemote(value, isInstance: true), etag, cancellationToken);
                     Apply(snapshot, patched.Id, patched.ETag);
                 }
                 else if (value.DeletedAt is not null)
                 {
-                    if (snapshot.Etag is not null) await DeleteRemoteAsync(value.GoogleEventId!, snapshot.Etag, cancellationToken);
+                    // etag가 없어도 지운다. 생성 응답만 못 받았고 실제로는 올라가 있을 수 있다(없으면 404로 끝난다).
+                    await DeleteRemoteAsync(value.GoogleEventId!, snapshot.Etag, cancellationToken);
                     Apply(snapshot, value.GoogleEventId, null);
                 }
                 else if (snapshot.Etag is null)
@@ -174,7 +188,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         }
     }
 
-    private async Task DeleteRemoteAsync(string eventId, string etag, CancellationToken cancellationToken)
+    private async Task DeleteRemoteAsync(string eventId, string? etag, CancellationToken cancellationToken)
     {
         try
         {
@@ -237,9 +251,12 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
+        // 보내는 사이에 또 고쳤으면 그 최신 내용을 남긴다(버리는 것은 지금 행이다).
+        var discarded = CurrentRevision(connection, transaction, snapshot.Record.EventId) == snapshot.Record.LocalRevision
+            ? snapshot.Record : ReadAll(connection, transaction).Single(s => s.Record.EventId == snapshot.Record.EventId).Record;
         using (var conflict = Sql.Command(connection, transaction,
             "INSERT INTO sync_conflict(item_kind, item_uid, discarded_json, occurred_at) VALUES ('event', $uid, $json, $at);",
-            ("$uid", snapshot.Record.EventUid), ("$json", JsonSerializer.Serialize(snapshot.Record, TaskSync.ConflictJson)), ("$at", Validation.Timestamp(_clock))))
+            ("$uid", snapshot.Record.EventUid), ("$json", JsonSerializer.Serialize(discarded, TaskSync.ConflictJson)), ("$at", Validation.Timestamp(_clock))))
             conflict.ExecuteNonQuery();
         // etag를 비워 다음 pull이 원격 값을 덮게 한다. 증분 조회에 안 올 수 있으므로 토큰도 지워 전체 대조를 한 번 한다.
         using var command = Sql.Command(connection, transaction,
@@ -311,12 +328,13 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
 
         if (fullList)
         {
-            // 전체 대조: 한 번 올라갔던(etag가 있던) 동기화된 행 중 원격에 없는 것은 다른 곳에서 지운 것이다.
+            // 전체 대조: 보낼 것이 없는 동기화된 행 중 원격에 없는 것은 다른 곳에서 지운 것이다.
+            // 아직 안 올라간 행은 dirty라서 빠진다. 충돌 처리로 etag를 비운 행(404·410)도 여기서 지운다.
             var remoteIds = items.Where(i => i.Id is not null).Select(i => i.Id!).ToHashSet();
             foreach (var stored in byGoogleId.Values)
             {
                 var record = stored.Record;
-                if (remoteIds.Contains(record.GoogleEventId!) || record.IsDirty || record.PushState != "synced" || stored.Etag is null || record.DeletedAt is not null) continue;
+                if (remoteIds.Contains(record.GoogleEventId!) || record.IsDirty || record.PushState != "synced" || record.DeletedAt is not null) continue;
                 using var command = Sql.Command(connection, transaction, "UPDATE event SET deleted_at=$now, updated_at=$now WHERE event_id=$id;",
                     ("$now", now), ("$id", record.EventId));
                 command.ExecuteNonQuery();

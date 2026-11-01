@@ -122,6 +122,64 @@ public sealed class EventSyncTests
         Assert.Equal(["남을 것"], events.List(new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 30)).Select(o => o.Event.Title));
     }
 
+    [Fact]
+    public async Task OccurrenceDoneDoesNotOverwriteTimeMovedElsewhere()
+    {
+        using var db = new TestDatabase();
+        var events = new EventRepository(db.Database, Seoul);
+        var series = events.Create([new EventInput("운동", "2026-11-02") { StartTime = "09:00", EndTime = "10:00",
+            Repeat = new RecurrenceInput("weekly", Weekdays: [DayOfWeek.Monday]) }])[0];
+        var remote = new FakeCalendar();
+        await Sync(db, remote);
+
+        // 휴대폰에서 11월 9일 회차를 11시로 옮겼고, 이 PC는 아직 받지 않은 채 완료 표시를 했다.
+        var instanceId = series.EventUid + "_20261109T000000Z";
+        remote.Put(new Event { Id = instanceId, RecurringEventId = series.EventUid, Summary = "운동",
+            OriginalStartTime = new EventDateTime { DateTimeRaw = "2026-11-09T00:00:00Z" },
+            Start = new EventDateTime { DateTimeRaw = "2026-11-09T11:00:00+09:00" }, End = new EventDateTime { DateTimeRaw = "2026-11-09T12:00:00+09:00" } });
+        var occurrence = events.List(new DateOnly(2026, 11, 9), new DateOnly(2026, 11, 9)).Single();
+        events.SetOccurrenceDone(occurrence.OccurrenceId!, true);
+        await Sync(db, remote);
+
+        Assert.Equal("2026-11-09T11:00:00+09:00", remote.Items[instanceId].Start.DateTimeRaw);
+        Assert.Equal(new DateTime(2026, 11, 9, 11, 0, 0), events.List(new DateOnly(2026, 11, 9), new DateOnly(2026, 11, 9)).Single().Start);
+    }
+
+    [Fact]
+    public async Task DeletingEventWhoseCreateResponseWasLostDeletesItOnGoogle()
+    {
+        using var db = new TestDatabase();
+        var events = new EventRepository(db.Database, Seoul);
+        var created = events.Create([new EventInput("응답이 사라진 일정", "2026-11-04")])[0];
+        var remote = new FakeCalendar { LoseInsertResponse = true };
+        await Assert.ThrowsAsync<HttpRequestException>(() => Sync(db, remote));
+        remote.LoseInsertResponse = false;
+
+        events.Delete(created.EventUid);
+        await Sync(db, remote);
+        await Sync(db, remote);
+
+        Assert.Equal("cancelled", remote.Items[created.EventUid].Status);
+        Assert.Empty(events.List(new DateOnly(2026, 11, 4), new DateOnly(2026, 11, 4)));
+    }
+
+    [Fact]
+    public async Task EventRemovedFromGoogleDisappearsAfterNotFound()
+    {
+        using var db = new TestDatabase();
+        var events = new EventRepository(db.Database, Seoul);
+        var remote = new FakeCalendar();
+        remote.Put(new Event { Id = "gone1", Summary = "없어질 일정", Start = new EventDateTime { Date = "2026-11-06" }, End = new EventDateTime { Date = "2026-11-07" } });
+        await Sync(db, remote);
+
+        var local = events.List(new DateOnly(2026, 11, 6), new DateOnly(2026, 11, 6)).Single().Event;
+        events.Update(local.EventUid, new EventPatch { Title = "이 PC에서 고침" });
+        remote.Items.Remove("gone1");
+        await Sync(db, remote);
+
+        Assert.Empty(events.List(new DateOnly(2026, 11, 6), new DateOnly(2026, 11, 6)));
+    }
+
     private static Task Sync(TestDatabase db, FakeCalendar remote) => new EventSync(db.Database, remote, Seoul).SyncAsync(CancellationToken.None);
 
     private sealed class FakeCalendar : ICalendarRemote
@@ -130,10 +188,12 @@ public sealed class EventSyncTests
         private readonly List<(int Version, string Id)> _changes = [];
         public Dictionary<string, Event> Items { get; } = [];
         public bool ExpireTokens { get; set; }
+        public bool LoseInsertResponse { get; set; }
 
         public void Put(Event value)
         {
             value.ETag = "e" + ++_version;
+            value.UpdatedDateTimeOffset = DateTimeOffset.Now;
             Items[value.Id] = value;
             _changes.Add((_version, value.Id));
         }
@@ -159,8 +219,23 @@ public sealed class EventSyncTests
             return Task.FromResult((result, (string?)_version.ToString(CultureInfo.InvariantCulture)));
         }
 
+        // 고치지 않은 회차는 저장하지 않고, 물으면 시리즈 ID와 꼬리로 만들어 준다(Google도 회차 ID로 조회된다).
         public Task<Event> GetAsync(string eventId, CancellationToken cancellationToken) =>
-            Items.TryGetValue(eventId, out var value) ? Task.FromResult(Copy(value)) : throw NotFound();
+            Task.FromResult(Items.TryGetValue(eventId, out var value) ? Copy(value) : Instance(eventId));
+
+        private Event Instance(string eventId)
+        {
+            var split = eventId.LastIndexOf('_');
+            if (split < 0 || !Items.ContainsKey(eventId[..split])) throw NotFound();
+            var suffix = eventId[(split + 1)..];
+            return new Event
+            {
+                Id = eventId, RecurringEventId = eventId[..split],
+                OriginalStartTime = suffix.Length == 8
+                    ? new EventDateTime { Date = DateOnly.ParseExact(suffix, "yyyyMMdd", CultureInfo.InvariantCulture).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) }
+                    : new EventDateTime { DateTimeRaw = DateTime.ParseExact(suffix, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture) },
+            };
+        }
 
         public Task<Event> InsertAsync(Event value, CancellationToken cancellationToken)
         {
@@ -168,6 +243,7 @@ public sealed class EventSyncTests
             var stored = Copy(value);
             stored.Status ??= "confirmed";
             Put(stored);
+            if (LoseInsertResponse) throw new HttpRequestException("connection reset");
             return Task.FromResult(Copy(stored));
         }
 
@@ -175,16 +251,7 @@ public sealed class EventSyncTests
         {
             if (!Items.TryGetValue(eventId, out var stored))
             {
-                var split = eventId.LastIndexOf('_');
-                if (split < 0 || !Items.ContainsKey(eventId[..split])) throw NotFound();
-                var suffix = eventId[(split + 1)..];
-                stored = new Event
-                {
-                    Id = eventId, RecurringEventId = eventId[..split],
-                    OriginalStartTime = suffix.Length == 8
-                        ? new EventDateTime { Date = DateOnly.ParseExact(suffix, "yyyyMMdd", CultureInfo.InvariantCulture).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) }
-                        : new EventDateTime { DateTimeRaw = DateTime.ParseExact(suffix, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture) },
-                };
+                stored = Instance(eventId);
             }
             else if (etag is not null && etag != stored.ETag)
             {
@@ -215,7 +282,7 @@ public sealed class EventSyncTests
         {
             Id = e.Id, ETag = e.ETag, Summary = e.Summary, Description = e.Description, Status = e.Status, Start = e.Start, End = e.End,
             Recurrence = e.Recurrence, RecurringEventId = e.RecurringEventId, OriginalStartTime = e.OriginalStartTime, ColorId = e.ColorId,
-            Transparency = e.Transparency, ExtendedProperties = e.ExtendedProperties,
+            Transparency = e.Transparency, ExtendedProperties = e.ExtendedProperties, UpdatedRaw = e.UpdatedRaw,
         };
     }
 }

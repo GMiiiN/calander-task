@@ -84,6 +84,61 @@ public sealed class TaskSyncTests
     }
 
     [Fact]
+    public async Task EditingUnknownTodoDoesNotCreateItAgain()
+    {
+        using var db = new TestDatabase();
+        var todos = new TodoRepository(db.Database);
+        var created = todos.Create([new TodoInput("응답이 사라진 할 일")])[0];
+        var remote = new FakeTasks { FailInsertWith = new HttpRequestException("connection reset") };
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+
+        todos.Update(created.TodoUid, new TodoPatch { Title = "나중에 고침" });
+        remote.FailInsertWith = null;
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+
+        Assert.Equal(1, remote.InsertCalls);
+        Assert.Equal("unknown", todos.Get(created.TodoUid).PushState);
+    }
+
+    [Fact]
+    public async Task InsertIsMarkedUnknownBeforeItIsSent()
+    {
+        using var db = new TestDatabase();
+        var todos = new TodoRepository(db.Database);
+        var created = todos.Create([new TodoInput("보내는 중")])[0];
+        string? stateWhileSending = null;
+        var remote = new FakeTasks { BeforeInsertReturns = () => stateWhileSending = todos.Get(created.TodoUid).PushState };
+
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+
+        // 응답을 저장하기 전에 앱이 끝나면 이 상태로 남아 다시 보내지 않는다.
+        Assert.Equal("unknown", stateWhileSending);
+        Assert.Equal("synced", todos.Get(created.TodoUid).PushState);
+    }
+
+    [Fact]
+    public async Task ConflictRecordsEditMadeDuringPush()
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeTasks();
+        remote.Add(new GoogleTask { Id = "r1", Title = "원래 제목", Status = "needsAction" });
+        var todos = new TodoRepository(db.Database);
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+        var local = Assert.Single(todos.List("all"));
+
+        todos.Update(local.TodoUid, new TodoPatch { Title = "첫 수정" });
+        remote.Edit("r1", t => t.Title = "다른 곳에서 바꾼 제목");
+        remote.BeforeUpdateReturns = () => todos.Update(local.TodoUid, new TodoPatch { Title = "보내는 중에 또 고침" });
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+
+        Assert.Equal("다른 곳에서 바꾼 제목", todos.Get(local.TodoUid).Title);
+        using var connection = db.Database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT discarded_json FROM sync_conflict WHERE item_kind='todo';";
+        Assert.Contains("보내는 중에 또 고침", (string)command.ExecuteScalar()!);
+    }
+
+    [Fact]
     public async Task EditDuringPushStaysDirtyForNextRound()
     {
         using var db = new TestDatabase();
@@ -138,6 +193,7 @@ public sealed class TaskSyncTests
         public List<GoogleTask> Items { get; } = [];
         public Exception? FailInsertWith { get; set; }
         public Action? BeforeInsertReturns { get; set; }
+        public Action? BeforeUpdateReturns { get; set; }
         public int InsertCalls { get; private set; }
 
         public void Add(GoogleTask task)
@@ -169,6 +225,7 @@ public sealed class TaskSyncTests
 
         public Task<GoogleTask> UpdateAsync(GoogleTask task, CancellationToken cancellationToken)
         {
+            BeforeUpdateReturns?.Invoke();
             var index = Items.FindIndex(t => t.Id == task.Id);
             if (index < 0) throw new GoogleApiException("tasks", "not found") { HttpStatusCode = HttpStatusCode.NotFound };
             if (task.ETag != Items[index].ETag) throw new GoogleApiException("tasks", "precondition") { HttpStatusCode = HttpStatusCode.PreconditionFailed };
