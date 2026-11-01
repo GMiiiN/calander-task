@@ -24,6 +24,18 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
 
     public bool HasClientSecret => File.Exists(clientSecretPath);
 
+    // 다른 PC에서 가져온 클라이언트 파일을 제자리에 복사한다. 클라이언트 ID가 없는 파일은 거부한다.
+    public void ImportClientSecret(string sourcePath)
+    {
+        using (var stream = File.OpenRead(sourcePath))
+        {
+            if (GoogleClientSecrets.FromStream(stream).Secrets?.ClientId is not { Length: > 0 })
+                throw new InvalidDataException("Not an OAuth client file.");
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(clientSecretPath))!);
+        File.Copy(sourcePath, clientSecretPath, overwrite: true);
+    }
+
     public bool IsSignedIn => ReadSetting(ProtectedTokenStore.SettingKey) is not null;
 
     public string? Email => ReadSetting("google_account_email");
