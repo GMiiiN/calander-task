@@ -17,6 +17,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         var dayCount = ((int)first.DayOfWeek + DateTime.DaysInMonth(year, month) + 6) / 7 * 7;
         var occurrences = events.List(start, start.AddDays(dayCount - 1));
         var dueTodos = todos.List("all");
+        var holidays = new HolidayRepository(database).List(start, start.AddDays(dayCount - 1));
         var weeks = new List<IReadOnlyList<DayCellModel>>();
         for (var offset = 0; offset < dayCount; offset += 7)
         {
@@ -26,7 +27,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
                 var date = start.AddDays(offset + day);
                 var items = ItemsForDay(date, occurrences, dueTodos);
                 week.Add(new(date, date.Month == month && date.Year == year, date == today,
-                    date.DayOfWeek, items.Take(2).ToArray(), Math.Max(0, items.Count - 2), items));
+                    date.DayOfWeek, items.Take(2).ToArray(), Math.Max(0, items.Count - 2), items, holidays.GetValueOrDefault(date)));
             }
             weeks.Add(week);
         }
@@ -38,6 +39,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         var start = anyDay.AddDays(-(int)anyDay.DayOfWeek);
         var occurrences = events.List(start, start.AddDays(6));
         var dueTodos = todos.List("all");
+        var holidays = new HolidayRepository(database).List(start, start.AddDays(6));
         var days = new List<WeekDayModel>();
         for (var offset = 0; offset < 7; offset++)
         {
@@ -52,7 +54,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
                 .OrderBy(b => b.StartMinute).ThenBy(b => b.EndMinute).ToArray();
             days.Add(new(date, date == today,
                 ItemsForDay(date, occurrences, dueTodos).Where(c => c.TimeText is null).ToArray(),
-                AssignColumns(blocks)));
+                AssignColumns(blocks), holidays.GetValueOrDefault(date)));
         }
         return new(start, days);
     }

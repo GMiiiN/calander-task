@@ -53,12 +53,17 @@
                             <TextBlock Style="{StaticResource BaseText}" FontSize="9" FontWeight="Bold" Padding="2,0"
                                        Foreground="{DynamicResource SubtleBrush}" Text="{Binding OverflowCount, StringFormat=+{0}}" />
                         </Button>
-                        <Grid HorizontalAlignment="Left">
+                        <Grid DockPanel.Dock="Left">
                             <Ellipse x:Name="TodayBadge" Width="18" Height="18" Fill="{DynamicResource AccentBrush}"
                                      Visibility="Collapsed" />
                             <TextBlock x:Name="DayNumber" Text="{Binding Date.Day}" Style="{StaticResource BaseText}"
                                        FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Grid>
+                        <!-- 공휴일 이름(§6.3). 칸이 좁으면 말줄임. -->
+                        <TextBlock x:Name="HolidayText" Text="{Binding HolidayName}" Style="{StaticResource BaseText}" FontSize="9"
+                                   Foreground="{DynamicResource SundayBrush}" Margin="4,0,0,0" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" ToolTip="{Binding HolidayName}"
+                                   Visibility="{Binding HolidayName, Converter={StaticResource Visible}}" />
                     </DockPanel>
                     <ItemsControl ItemsSource="{Binding Chips}" ItemTemplate="{StaticResource ChipTemplate}" />
                 </StackPanel>
@@ -71,9 +76,13 @@
                     <Setter TargetName="DayNumber" Property="Foreground" Value="{DynamicResource SaturdayBrush}" />
                     <Setter TargetName="Cell" Property="BorderThickness" Value="0,0,0,1" />
                 </DataTrigger>
+                <DataTrigger Binding="{Binding IsHoliday}" Value="True">
+                    <Setter TargetName="DayNumber" Property="Foreground" Value="{DynamicResource SundayBrush}" />
+                </DataTrigger>
                 <DataTrigger Binding="{Binding IsCurrentMonth}" Value="False">
                     <Setter TargetName="DayNumber" Property="Foreground" Value="{DynamicResource MutedBrush}" />
                     <Setter TargetName="DayNumber" Property="FontWeight" Value="Normal" />
+                    <Setter TargetName="HolidayText" Property="Opacity" Value="0.5" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding IsToday}" Value="True">
                     <Setter TargetName="Cell" Property="Background" Value="{DynamicResource TodayCellBrush}" />
@@ -246,7 +255,8 @@
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate DataType="{x:Type cal:WeekDayModel}">
-                                <Border x:Name="Head" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,1">
+                                <Border x:Name="Head" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,1"
+                                        ToolTip="{Binding HolidayName}">
                                     <StackPanel VerticalAlignment="Center">
                                         <TextBlock x:Name="DayName" HorizontalAlignment="Center" Style="{StaticResource BaseText}" FontWeight="Bold"
                                                    Foreground="{DynamicResource SubtleBrush}"
@@ -266,6 +276,10 @@
                                     <DataTrigger Binding="{Binding Date.DayOfWeek}" Value="Saturday">
                                         <Setter TargetName="DayName" Property="Foreground" Value="{DynamicResource SaturdayBrush}" />
                                         <Setter TargetName="Number" Property="Foreground" Value="{DynamicResource SaturdayBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsHoliday}" Value="True">
+                                        <Setter TargetName="DayName" Property="Foreground" Value="{DynamicResource SundayBrush}" />
+                                        <Setter TargetName="Number" Property="Foreground" Value="{DynamicResource SundayBrush}" />
                                     </DataTrigger>
                                     <DataTrigger Binding="{Binding IsToday}" Value="True">
                                         <Setter TargetName="Head" Property="Background" Value="{DynamicResource TodayColumnBrush}" />

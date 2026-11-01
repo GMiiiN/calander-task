@@ -7,12 +7,19 @@ public sealed record ChipModel(
 
 public sealed record DayCellModel(
     DateOnly Date, bool IsCurrentMonth, bool IsToday, DayOfWeek DayOfWeek,
-    IReadOnlyList<ChipModel> Chips, int OverflowCount, IReadOnlyList<ChipModel> AllItems);
+    IReadOnlyList<ChipModel> Chips, int OverflowCount, IReadOnlyList<ChipModel> AllItems, string? HolidayName = null)
+{
+    public bool IsHoliday => HolidayName is not null;
+}
 
 public sealed record MonthModel(int Year, int Month, IReadOnlyList<IReadOnlyList<DayCellModel>> Weeks);
 
 public sealed record WeekBlockModel(ChipModel Chip, int StartMinute, int EndMinute, int Column, int ColumnCount);
 
-public sealed record WeekDayModel(DateOnly Date, bool IsToday, IReadOnlyList<ChipModel> AllDay, IReadOnlyList<WeekBlockModel> Blocks);
+public sealed record WeekDayModel(DateOnly Date, bool IsToday, IReadOnlyList<ChipModel> AllDay, IReadOnlyList<WeekBlockModel> Blocks,
+    string? HolidayName = null)
+{
+    public bool IsHoliday => HolidayName is not null;
+}
 
 public sealed record WeekModel(DateOnly WeekStart, IReadOnlyList<WeekDayModel> Days);
