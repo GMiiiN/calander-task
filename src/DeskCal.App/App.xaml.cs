@@ -27,8 +27,12 @@ public partial class App : Application
         var database = new Database(path);
         database.Initialize();
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        // OAuth 클라이언트 파일은 설치마다 하나, 토큰은 DB 옆(계정 결합이 DB 단위이므로, §5.1).
+        var google = new GoogleAccount(database,
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskCal", "client_secret.json"),
+            Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, "token.dat"));
         // 창이 다시 만들어지는 사이(3초)에는 _calendar가 비어 있으므로 메뉴는 아무것도 하지 않거나 바로 끝낸다.
-        _tray = new TrayIcon(() => _calendar?.IsAdjusting == true, () => _calendar?.ToggleAdjust(), () => _calendar?.ShowSettings(),
+        _tray = new TrayIcon(google, () => _calendar?.IsAdjusting == true, () => _calendar?.ToggleAdjust(), () => _calendar?.ShowSettings(),
             () => { if (_calendar is null) Shutdown(); else _calendar.Exit(); });
         ShowCalendar(database);
     }

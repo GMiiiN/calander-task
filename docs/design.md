@@ -358,6 +358,7 @@ Core 검증 계약 (로컬 생성·수정 시):
 - 토큰 저장: 기본 `FileDataStore` 대신 **DPAPI(`ProtectedData`, CurrentUser)로 암호화하는 `IDataStore` 구현**, `%LOCALAPPDATA%\DeskCal\token.dat`.
 - 로그인은 앱에서만 한다. PC마다 한 번.
 - **계정 결합**: 첫 로그인한 Google 계정 ID를 `setting`에 저장. 다른 계정으로 로그인하면 거부한다(로컬 데이터 초기화 후에만 허용). 원래 계정의 dirty 행이 다른 계정에 올라가는 것을 막기 위함.
+- 구현(M4, 2026-11-01): Core `GoogleAccount`·`ProtectedTokenStore`, 트레이 "Google 연결". 클라이언트 파일은 `%LOCALAPPDATA%\DeskCal\client_secret.json`(저장소에 넣지 않음), 토큰은 DB 옆 `token.dat`. 계정 결합에 쓰려고 `openid`·`email` 범위를 더하고, 로그인 직후 ID 토큰의 `sub`를 확인한 뒤에만 토큰을 저장한다. 5분 안에 끝내지 않으면 그만둔다.
 - **주의**: OAuth 동의 화면이 "테스트" 상태면 refresh token이 7일 후 만료된다. 개인용이라도 "프로덕션"으로 게시해야 한다(미검증 앱 경고는 뜨지만 본인 사용엔 문제없음). 설치 안내에 명시.
 
 ### 5.2 공통: push 규칙 (outbox)
