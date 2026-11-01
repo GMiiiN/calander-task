@@ -43,13 +43,20 @@ public sealed class DesktopPinning : IDisposable
     private readonly System.Windows.Threading.DispatcherTimer _reattachTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly System.Windows.Threading.DispatcherTimer _showDesktopTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
 
+    private readonly Func<IntPtr>? _underlay;
+
     public PinState State { get; private set; } = PinState.Normal;
     public event Action<PinState>? StateChanged;
 
-    public DesktopPinning(Window window, string logPath)
+    // 방식 D로 바탕화면에 붙었는지. 방식 C(Z순서 상태 머신)에서는 false.
+    public bool IsAttached => _isOwned;
+
+    // underlay: 우리 창 바로 아래에 둘 창(흐림 창). 있으면 그 창을 바탕화면에 붙이고 우리 창은 그 창 위(owned)에 둔다.
+    public DesktopPinning(Window window, string logPath, Func<IntPtr>? underlay = null)
     {
         _window = window;
         _logPath = logPath;
+        _underlay = underlay;
         _foregroundCallback = OnForegroundChanged;
         _taskbarCreatedMessage = RegisterWindowMessage("TaskbarCreated");
         _window.SourceInitialized += OnSourceInitialized;
@@ -189,9 +196,16 @@ public sealed class DesktopPinning : IDisposable
     private bool AttachToDesktop()
     {
         var folderView = FindDesktopFolderView();
-        if (folderView != IntPtr.Zero) SetWindowLongPtr(_hwnd, GwlpHwndParent, folderView);
-        var attached = folderView != IntPtr.Zero && GetWindow(_hwnd, GwOwner) != IntPtr.Zero;
-        Log($"attach owner=0x{folderView.ToInt64():X} ok={attached}");
+        // 아이콘 목록 창 → 흐림 창 → 우리 창 순서로 owner를 잇는다. owned 창은 늘 owner 위에 있으므로 흐림이 우리 창 바로 아래에 온다.
+        var underlay = _underlay?.Invoke() ?? IntPtr.Zero;
+        var attachTarget = underlay != IntPtr.Zero ? underlay : _hwnd;
+        if (folderView != IntPtr.Zero)
+        {
+            SetWindowLongPtr(attachTarget, GwlpHwndParent, folderView);
+            if (underlay != IntPtr.Zero) SetWindowLongPtr(_hwnd, GwlpHwndParent, underlay);
+        }
+        var attached = folderView != IntPtr.Zero && GetWindow(attachTarget, GwOwner) != IntPtr.Zero;
+        Log($"attach owner=0x{folderView.ToInt64():X} underlay=0x{underlay.ToInt64():X} ok={attached}");
         return attached;
     }
 
