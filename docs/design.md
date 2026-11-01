@@ -399,6 +399,8 @@ Core 검증 계약 (로컬 생성·수정 시):
 - 하루 1회 `events.list(공휴일 캘린더, timeMin=올해 1/1T00:00+09:00, timeMax=내후년 1/1T00:00+09:00)` — `timeMax`는 배타적. **모든 페이지 성공 후에만** `holiday` 캐시를 교체. 오프라인이면 캐시 사용.
 - 캘린더 ID 후보 `ko.south_korea#holiday@group.v.calendar.google.com`와 휴일/기념일 구분(어버이날 등은 쉬는 날 아님) 규칙은 공식 보장이 없어 M0.5에서 실데이터로 확인한다.
 - M0.5 확인(2026년 데이터): `ko.south_korea#holiday`는 28건으로 기념일(식목일·어버이날 등, description "기념일 …")이 섞여 있고, **`ko.south_korea.official#holiday@group.v.calendar.google.com`은 쉬는 날 22건만** 준다. 대체공휴일("쉬는 날 삼일절")·연휴·선거일 포함, 모두 종일(`date`, 끝 배타적). → official 캘린더를 쓰고 `is_day_off=1`. 기념일 표시는 MVP 밖.
+- 구현(2026-11-01): Core `HolidaySync`·`HolidayRepository`. 앱이 시작 시와 2분마다 확인해 하루 1회(해가 바뀌면 즉시) 받는다. 실패는 `logs\sync.log`에 남기고 다음 차례에 다시 한다. 받으면 변경 알림으로 화면을 다시 그린다. 월간 칸은 빨간 날짜 + 이름(좁으면 말줄임), 주간 머리줄은 빨간 날짜 + 툴팁. 같은 날 둘이면 " · "로 잇는다.
+- Google 데이터를 그대로 쓴다. 예: 2027년 설 연휴 첫날(2/6, 토)은 2026-11-01 현재 Google 목록에 없다.
 
 ---
 
