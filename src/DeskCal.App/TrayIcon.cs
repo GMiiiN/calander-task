@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.Windows.Forms;
 using DeskCal.Core;
 
@@ -42,11 +43,8 @@ public sealed class TrayIcon : IDisposable
     // 브라우저로 로그인한다(§5.1). 5분 안에 끝내지 않으면 그만둔다. 결과는 알림 풍선으로 알린다.
     private async Task ConnectGoogleAsync()
     {
-        if (!_google.HasClientSecret)
-        {
-            _icon.ShowBalloonTip(10000, "Google 연결", @"OAuth 클라이언트 파일이 없습니다. %LOCALAPPDATA%\DeskCal\client_secret.json에 받아 두세요.", ToolTipIcon.Warning);
-            return;
-        }
+        // 새 PC에는 클라이언트 파일이 없다. 다른 PC에서 가져온 파일(또는 Cloud 콘솔에서 받은 파일)을 골라 제자리에 복사한다.
+        if (!_google.HasClientSecret && !ImportClientSecret()) return;
         _isSigningIn = true;
         try
         {
@@ -66,6 +64,27 @@ public sealed class TrayIcon : IDisposable
         finally
         {
             _isSigningIn = false;
+        }
+    }
+
+    private bool ImportClientSecret()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Google OAuth 클라이언트 파일(client_secret….json)을 고르세요",
+            Filter = "JSON 파일 (*.json)|*.json",
+        };
+        if (dialog.ShowDialog() != DialogResult.OK) return false;
+        try
+        {
+            _google.ImportClientSecret(dialog.FileName);
+            return true;
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException
+            or Newtonsoft.Json.JsonException)
+        {
+            _icon.ShowBalloonTip(10000, "Google 연결", "OAuth 클라이언트 파일이 아닙니다. Google Cloud 콘솔에서 받은 데스크톱 앱용 JSON 파일을 골라 주세요.", ToolTipIcon.Warning);
+            return false;
         }
     }
 
