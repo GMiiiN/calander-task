@@ -10,9 +10,9 @@
     <SolidColorBrush x:Key="TodayColumnBrush" Color="#1F4C8DFF" />
     <SolidColorBrush x:Key="SundayBrush" Color="#FF8078" />
     <SolidColorBrush x:Key="SaturdayBrush" Color="#86AEFF" />
-    <SolidColorBrush x:Key="HeaderLineBrush" Color="#1FFFFFFF" />
-    <SolidColorBrush x:Key="GridLineBrush" Color="#12FFFFFF" />
-    <SolidColorBrush x:Key="FooterLineBrush" Color="#1AFFFFFF" />
+    <SolidColorBrush x:Key="HeaderLineBrush" Color="#12FFFFFF" />
+    <SolidColorBrush x:Key="GridLineBrush" Color="#08FFFFFF" />
+    <SolidColorBrush x:Key="FooterLineBrush" Color="#10FFFFFF" />
     <SolidColorBrush x:Key="ControlBorderBrush" Color="#33FFFFFF" />
     <SolidColorBrush x:Key="ToggleTrackBrush" Color="#1AFFFFFF" />
     <SolidColorBrush x:Key="ToggleThumbBrush" Color="#38FFFFFF" />
