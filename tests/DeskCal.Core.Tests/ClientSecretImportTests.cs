@@ -31,7 +31,8 @@ public sealed class ClientSecretImportTests : IDisposable
         File.WriteAllText(source, """{"name":"not a client file"}""");
         var account = new GoogleAccount(db.Database, Path.Combine(_folder, "client_secret.json"));
 
-        Assert.ThrowsAny<Exception>(() => account.ImportClientSecret(source));
+        // 트레이는 이 예외만 잡아 안내한다. 다른 예외가 나오면 메뉴 처리기 밖으로 나가 앱이 끝난다.
+        Assert.Throws<InvalidDataException>(() => account.ImportClientSecret(source));
         Assert.False(account.HasClientSecret);
     }
 }

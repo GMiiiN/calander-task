@@ -75,7 +75,9 @@ public sealed class TodoRepository(Database database, TimeProvider? clock = null
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
         var previous = Get(connection, transaction, uid);
-        var value = change(previous) with { LocalRevision = previous.LocalRevision + 1, IsDirty = true, PushState = "pending", UpdatedAt = Validation.Timestamp(_clock) };
+        // 생성 결과 불명(unknown)은 고쳐도 그대로 둔다. pending으로 바꾸면 다음 동기화가 다시 생성해 중복이 생길 수 있다(§5.4).
+        var pushState = previous.PushState == "unknown" ? "unknown" : "pending";
+        var value = change(previous) with { LocalRevision = previous.LocalRevision + 1, IsDirty = true, PushState = pushState, UpdatedAt = Validation.Timestamp(_clock) };
         Sql.Update(connection, transaction, "todo", value.TodoId, Values(value));
         transaction.Commit();
         return value;
