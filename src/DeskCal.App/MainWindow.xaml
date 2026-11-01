@@ -160,7 +160,8 @@
                 <Border BorderBrush="{DynamicResource HeaderLineBrush}" BorderThickness="0,0,0,1" Padding="20,16,16,12">
                     <DockPanel>
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                            <Border Background="{DynamicResource ToggleTrackBrush}" CornerRadius="99" Padding="2">
+                            <Border Background="{StaticResource GlassButtonBrush}" BorderThickness="1" BorderBrush="{StaticResource GlassRimBrush}"
+                                    CornerRadius="99" Padding="2">
                                 <StackPanel Orientation="Horizontal">
                                     <Button Style="{StaticResource BareButton}" Command="{Binding ShowMonthCommand}">
                                         <Border x:Name="MonthTabBox" CornerRadius="99" Padding="10,4">
@@ -175,8 +176,8 @@
                                 </StackPanel>
                             </Border>
                             <Button Style="{StaticResource BareButton}" Click="OnSearchClick" Margin="6,0,0,0" ToolTip="검색 (Ctrl+F)">
-                                <Border Width="26" Height="26" CornerRadius="13" BorderThickness="1" Background="Transparent"
-                                        BorderBrush="{DynamicResource ControlBorderBrush}">
+                                <Border Width="26" Height="26" CornerRadius="13" BorderThickness="1" Background="{StaticResource GlassButtonBrush}"
+                                        BorderBrush="{StaticResource GlassRimBrush}">
                                     <Canvas Width="14" Height="14">
                                         <Path Data="{StaticResource SearchCircleIcon}" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667" />
                                         <Path Data="{StaticResource SearchHandleIcon}" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667"
@@ -192,8 +193,8 @@
                                 </Grid>
                             </Button>
                             <Button Style="{StaticResource BareButton}" Command="{Binding TodayCommand}" Margin="6,0">
-                                <Border Height="26" CornerRadius="13" BorderThickness="1" Padding="10,0" Background="Transparent"
-                                        BorderBrush="{DynamicResource ControlBorderBrush}">
+                                <Border Height="26" CornerRadius="13" BorderThickness="1" Padding="10,0" Background="{StaticResource GlassButtonBrush}"
+                                        BorderBrush="{StaticResource GlassRimBrush}">
                                     <TextBlock Text="오늘" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Medium" VerticalAlignment="Center" />
                                 </Border>
                             </Button>
@@ -449,8 +450,8 @@
                 </DockPanel>
 
                 <Border Grid.Row="2" BorderBrush="{DynamicResource FooterLineBrush}" BorderThickness="0,1,0,0" Padding="16,10">
-                    <Border CornerRadius="99" BorderThickness="1" BorderBrush="{DynamicResource ControlBorderBrush}"
-                            Background="{DynamicResource InputBrush}" Padding="10,6">
+                    <Border CornerRadius="99" BorderThickness="1" BorderBrush="{StaticResource GlassRimBrush}"
+                            Background="{StaticResource GlassButtonBrush}" Padding="10,6">
                         <DockPanel>
                             <Path Data="{StaticResource PlusIcon}" Width="12" Height="12" Stroke="{DynamicResource AccentBrush}"
                                   StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Margin="0,0,6,0" />
@@ -475,7 +476,7 @@
 
         <!-- 조정 모드(§3.3): 켜진 동안만 보인다. 안쪽을 끌면 옮기고 가장자리 10px를 끌면 크기를 바꾼다(WM_NCHITTEST). -->
         <Grid x:Name="AdjustOverlay" Grid.ColumnSpan="3" Visibility="Collapsed">
-            <Rectangle RadiusX="20" RadiusY="20" Fill="#1A246BDE" Stroke="{DynamicResource AccentBrush}" StrokeThickness="2"
+            <Rectangle RadiusX="24" RadiusY="24" Fill="#1A246BDE" Stroke="{DynamicResource AccentBrush}" StrokeThickness="2"
                        StrokeDashArray="4 3" />
             <Border HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="14" Padding="22,16"
                     Background="{DynamicResource PopupBrush}" BorderThickness="1" BorderBrush="{DynamicResource ControlBorderBrush}"

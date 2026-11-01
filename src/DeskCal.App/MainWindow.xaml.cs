@@ -518,11 +518,13 @@ public partial class MainWindow : Window
         var tint = (Color)FindResource("GlassTintColor");
         const byte alpha = 0xA6;
         var plain = Color.FromArgb(alpha, tint.R, tint.G, tint.B);
-        var brush = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0, 1) };
-        brush.GradientStops.Add(new GradientStop(Blend(tint, alpha, 0x2E), 0));
-        brush.GradientStops.Add(new GradientStop(plain, 0.3));
-        brush.GradientStops.Add(new GradientStop(plain, 0.9));
-        brush.GradientStops.Add(new GradientStop(Blend(tint, alpha, 0x14), 1));
+        // 광택은 왼쪽 위에서 비스듬히 흘러내린다(가장자리 반사선 GlassRimBrush와 같은 방향).
+        var brush = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0.3, 1) };
+        brush.GradientStops.Add(new GradientStop(Blend(tint, alpha, 0x40), 0));
+        brush.GradientStops.Add(new GradientStop(Blend(tint, alpha, 0x14), 0.18));
+        brush.GradientStops.Add(new GradientStop(plain, 0.45));
+        brush.GradientStops.Add(new GradientStop(plain, 0.85));
+        brush.GradientStops.Add(new GradientStop(Blend(tint, alpha, 0x22), 1));
         CalendarCard.Background = brush;
         SidebarCard.Background = brush;
 

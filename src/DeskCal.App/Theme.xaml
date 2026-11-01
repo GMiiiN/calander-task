@@ -15,8 +15,23 @@
     <Geometry x:Key="SearchHandleIcon">M11.6667 11.6667L9.625 9.625</Geometry>
     <Geometry x:Key="EllipsisIcon">M9.20826 8.5C9.20826 8.89151 8.89116 9.2089 8.5 9.2089C8.10884 9.2089 7.79174 8.89151 7.79174 8.5C7.79174 8.10849 8.10884 7.7911 8.5 7.7911C8.89116 7.7911 9.20826 8.10849 9.20826 8.5ZM14.1661 8.5C14.1661 8.89151 13.849 9.2089 13.4578 9.2089C13.0667 9.2089 12.7496 8.89151 12.7496 8.5C12.7496 8.10849 13.0667 7.7911 13.4578 7.7911C13.849 7.7911 14.1661 8.10849 14.1661 8.5ZM4.25042 8.5C4.25042 8.89151 3.93333 9.2089 3.54216 9.2089C3.151 9.2089 2.8339 8.89151 2.8339 8.5C2.8339 8.10849 3.151 7.7911 3.54216 7.7911C3.93333 7.7911 4.25042 8.10849 4.25042 8.5Z</Geometry>
 
+    <!-- 유리 가장자리 반사선: 왼쪽 위가 가장 밝고 가운데는 거의 사라졌다가 오른쪽 아래에서 다시 옅게 빛난다 -->
+    <LinearGradientBrush x:Key="GlassRimBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#99FFFFFF" Offset="0" />
+        <GradientStop Color="#26FFFFFF" Offset="0.25" />
+        <GradientStop Color="#0AFFFFFF" Offset="0.6" />
+        <GradientStop Color="#40FFFFFF" Offset="1" />
+    </LinearGradientBrush>
+    <!-- 유리 버튼 면: 위가 밝은 얇은 유리 조각 -->
+    <LinearGradientBrush x:Key="GlassButtonBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#33FFFFFF" Offset="0" />
+        <GradientStop Color="#0FFFFFFF" Offset="1" />
+    </LinearGradientBrush>
+
     <Style x:Key="Card" TargetType="Border">
-        <Setter Property="CornerRadius" Value="20" />
+        <Setter Property="CornerRadius" Value="24" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderBrush" Value="{StaticResource GlassRimBrush}" />
         <Setter Property="Effect" Value="{StaticResource CardShadow}" />
     </Style>
 
