@@ -4,6 +4,7 @@ using System.Windows.Threading;
 using DeskCal.Core;
 using Google.Apis.Calendar.v3;
 using Google.Apis.Services;
+using Google.Apis.Tasks.v1;
 
 namespace DeskCal.App;
 
@@ -44,27 +45,44 @@ public partial class App : Application
         _ = SyncAsync(database, google);
     }
 
-    // 동기화(§2.4): 시작 시와 2분마다. 지금은 공휴일만(하루 1회, §5.6). 로그인 전이거나 실패하면 다음 차례에 다시 한다.
+    // 동기화(§2.4): 시작 시와 2분마다. 일정·할 일은 매번(push → pull), 공휴일은 하루 1회(§5.6).
+    // 로그인 전이거나 실패하면 다음 차례에 다시 한다. 한쪽이 실패해도 나머지는 한다.
     private async Task SyncAsync(Database database, GoogleAccount google)
     {
         if (_isSyncing) return;
         _isSyncing = true;
         try
         {
-            var holidays = new HolidayRepository(database);
-            if (!HolidaySync.IsDue(holidays.LastSyncedAt(), DateTimeOffset.Now)) return;
             if (await google.LoadAsync() is not { } credential) return;
-            using var service = new CalendarService(new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "DeskCal" });
-            await HolidaySync.SyncAsync(service, holidays, DateTimeOffset.Now, CancellationToken.None);
+            var initializer = new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "DeskCal" };
+            using var calendar = new CalendarService(initializer);
+            using var tasks = new TasksService(initializer);
+            await RunAsync("events", () => new EventSync(database, new GoogleCalendarRemote(calendar)).SyncAsync(CancellationToken.None));
+            await RunAsync("todos", () => new TaskSync(database, new GoogleTasksRemote(tasks)).SyncAsync(CancellationToken.None));
+            var holidays = new HolidayRepository(database);
+            if (HolidaySync.IsDue(holidays.LastSyncedAt(), DateTimeOffset.Now))
+                await RunAsync("holidays", () => HolidaySync.SyncAsync(calendar, holidays, DateTimeOffset.Now, CancellationToken.None));
             ChangeSignal.Notify();
         }
         catch (Exception exception)
         {
-            LogSync($"holidays failed: {exception.GetType().Name}: {exception.Message}");
+            LogSync($"sign-in failed: {exception.GetType().Name}: {exception.Message}");
         }
         finally
         {
             _isSyncing = false;
+        }
+
+        static async Task RunAsync(string name, Func<Task> work)
+        {
+            try
+            {
+                await work();
+            }
+            catch (Exception exception)
+            {
+                LogSync($"{name} failed: {exception.GetType().Name}: {exception.Message}");
+            }
         }
     }
 

@@ -390,6 +390,28 @@ Core 검증 계약 (로컬 생성·수정 시):
 - **결과 불명 insert** (응답 유실·타임아웃): Tasks에는 생성 멱등성 수단이 없다. `push_state='unknown'`으로 두고 **자동 재전송·자동 연결을 하지 않는다**. 사이드바·트레이에 "전송 결과 확인 필요"를 표시하고, 같은 제목·마감일의 원격 작업은 후보로만 보여준다. 연결 또는 재전송은 사용자가 고른다.
 - `due`는 `YYYY-MM-DDT00:00:00.000Z`로 보내고 날짜만 읽는다. 정렬은 `position` 순.
 
+### 5.4.1 구현 (2026-11-01)
+- **구성**: Core `EventSync`(`ICalendarRemote`)와 `TaskSync`(`ITasksRemote`). 실제 호출은 `GoogleCalendarRemote`·`GoogleTasksRemote`가 하고, 테스트는 가짜 원격으로 한다.
+- **실행 주기**: 앱이 시작할 때와 2분마다 일정 → 할 일 → 공휴일(하루 1회) 순으로 동기화한다. 한쪽이 실패해도 나머지는 계속하고, 실패는 `logs\sync.log`에 남긴다.
+- **DeskCal 전용 값**: `extendedProperties.private`에 `deskcalUid`·`deskcalDone`·`deskcalDday`로 싣는다.
+  - 다른 PC의 DeskCal이 만든 일정은 같은 `deskcalUid`를 로컬 UID로 쓴다. 그래서 Claude가 보는 ID가 PC마다 같다.
+- **일정 조회**: `singleEvents=false`, `showDeleted=true`.
+  - 토큰이 없거나 410이면 전체를 받아, 한 번 올라갔던 동기화된 행 중 원격에 없는 것을 지운다.
+  - 예외 회차는 시리즈를 먼저 적용한 뒤 잇는다. 로컬에서 만든 예외 회차는 Google ID가 없으므로 시리즈와 회차 키로 찾는다.
+- **예외 회차 올리기**: 시리즈가 올라간 뒤 `<시리즈ID>_<yyyyMMdd | yyyyMMddTHHmmssZ>` 인스턴스를 patch한다(회차 삭제는 `status=cancelled`).
+- **시리즈 본체 patch**: 반복을 없앤 경우도 반영되도록 `recurrence`를 항상 보낸다(빈 목록 포함).
+- **지운 일정 되살리기**: 다시 insert하면 409가 난다. 우리 것(`deskcalUid` 일치)이고 `cancelled`이면 상태를 되돌리는 patch로 복구한다.
+- **할 일 수정**: 마감일 지우기가 반영되도록 patch 대신 PUT(`tasks.update`) + `If-Match`를 쓴다.
+- **충돌(412·404)**: 로컬 변경을 `sync_conflict`에 남기고 etag를 비운다. 그러면 다음 pull에서 원격 값으로 덮인다. 일정은 syncToken도 지워 전체 대조를 한 번 한다.
+- **아직 없음**
+  - 트레이 충돌 알림
+  - "전송 결과 확인 필요"(unknown) 화면
+  - 색 지우기(patch에서 null을 보낼 수 없음)
+  - 설정 파일 동기화(§5.5)
+- **실계정 확인**
+  - 빈 DB에서 첫 동기화로 기본 캘린더 일정 22건을 받았다.
+  - MCP로 만든 `[DeskCal 시험]` 일정과 할 일이 Google에 생성되고, 로컬에서 지우자 Google에서도 삭제됐다. 시험 항목은 정리했다.
+
 ### 5.5 설정 (Drive `appDataFolder`)
 - `settings.json` 하나: `{ "categories": { "1": "업무", "2": "개인", ... }, "weekStart": "SUN" }`.
 - 파일은 **저장된 fileId로** 읽고 쓴다. 최초에 같은 이름 파일이 여럿이면 `createdTime` 오름차순, 동률이면 `fileId` 오름차순으로 첫 번째를 canonical로 택하고 나머지는 삭제한다(두 PC가 같은 결정을 내림).
