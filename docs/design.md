@@ -197,7 +197,8 @@ M-1 spike 체크리스트 (Windows 10 22H2 / Windows 11 23H2·24H2, **노트북�
 | 할 일 | Tasks 기본 목록(`@default`) | `due`는 **날짜만** 의미 있음 |
 | 공휴일 | 공개 휴일 캘린더 (ID는 M0.5에서 확인) | 대체·임시공휴일까지 Google이 관리 |
 
-- 카테고리 = Google 색: Google 데이터만으로 두 PC가 일치하고 휴대폰 앱에서도 같은 색으로 보인다. 색 목록은 하드코딩하지 않고 `colors.get`으로 받는다(현재 11개지만 개수는 API 계약이 아님). 디자인은 이 팔레트를 쓴다 (§6).
+- 카테고리 = Google 색: Google 데이터만으로 두 PC가 일치하고 휴대폰 앱에서도 같은 색으로 보인다. 디자인은 이 팔레트를 쓴다 (§6).
+- 색 목록(M0.5 확인): `colors.get`은 `calendar.events` 범위로는 403이다. 다른 캘린더까지 읽는 범위를 더 받지 않고, Google 기본 11색(`colorId` 1–11)을 앱에 둔다. 모르는 `colorId`가 오면 "기본"으로 표시한다.
 - 할 일에는 카테고리가 없다 (Google Tasks에 색 필드 없음).
 - Google 연결 전(2026-10-31 결정): 카테고리 표가 비어 있으면 DB 초기화 때 Google 기본 11색(라벤더~토마토)을 임시로 넣는다. Google에 연결하면 `colors.get` 결과로 덮어쓴다.
 
@@ -355,9 +356,11 @@ Core 검증 계약 (로컬 생성·수정 시):
 - Google Cloud 프로젝트(사용자 소유)에서 Calendar·Tasks·Drive API 활성화, OAuth 클라이언트 유형 **데스크톱 앱**.
 - 범위: `calendar.events`(기본 캘린더 읽기/쓰기 + 공휴일 캘린더 읽기 — `events.list` 공식 범위에 포함), `tasks`, `drive.appdata`.
 - 흐름: 루프백(`http://127.0.0.1:<임의 포트>`) + PKCE — `GoogleWebAuthorizationBroker`의 **`usePkce: true` 오버로드**를 명시적으로 쓴다.
-- 토큰 저장: 기본 `FileDataStore` 대신 **DPAPI(`ProtectedData`, CurrentUser)로 암호화하는 `IDataStore` 구현**, `%LOCALAPPDATA%\DeskCal\token.dat`.
+- 토큰 저장: 기본 `FileDataStore` 대신 **DPAPI(`ProtectedData`, CurrentUser)로 암호화하는 `IDataStore` 구현**. 파일이 아니라 DB `setting`의 `google_token` 행에 둔다 — 계정 결합 정보와 같은 DB·같은 트랜잭션에 묶이고(다른 DB가 이 토큰을 쓰지 못함), 앱·MCP의 동시 갱신은 SQLite가 직렬화한다(PR #12 리뷰).
 - 로그인은 앱에서만 한다. PC마다 한 번.
 - **계정 결합**: 첫 로그인한 Google 계정 ID를 `setting`에 저장. 다른 계정으로 로그인하면 거부한다(로컬 데이터 초기화 후에만 허용). 원래 계정의 dirty 행이 다른 계정에 올라가는 것을 막기 위함.
+- 구현(M4, 2026-11-01): Core `GoogleAccount`·`ProtectedTokenStore`, 트레이 "Google 연결". 클라이언트 파일은 `%LOCALAPPDATA%\DeskCal\client_secret.json`(저장소에 넣지 않음). 계정 결합에 쓰려고 `openid`·`email` 범위를 더하고, 로그인 직후 ID 토큰의 `sub`를 확인한 뒤 계정 ID·이메일·토큰을 한 트랜잭션으로 저장한다. 5분 안에 끝내지 않으면 그만둔다.
+- 게시: 외부 프로덕션으로 게시하려면 홈페이지·개인정보처리방침 URL이 필요하다. 그 전까지는 "테스트" 상태 + 테스트 사용자(7일마다 재로그인).
 - **주의**: OAuth 동의 화면이 "테스트" 상태면 refresh token이 7일 후 만료된다. 개인용이라도 "프로덕션"으로 게시해야 한다(미검증 앱 경고는 뜨지만 본인 사용엔 문제없음). 설치 안내에 명시.
 
 ### 5.2 공통: push 규칙 (outbox)
@@ -395,6 +398,7 @@ Core 검증 계약 (로컬 생성·수정 시):
 ### 5.6 공휴일
 - 하루 1회 `events.list(공휴일 캘린더, timeMin=올해 1/1T00:00+09:00, timeMax=내후년 1/1T00:00+09:00)` — `timeMax`는 배타적. **모든 페이지 성공 후에만** `holiday` 캐시를 교체. 오프라인이면 캐시 사용.
 - 캘린더 ID 후보 `ko.south_korea#holiday@group.v.calendar.google.com`와 휴일/기념일 구분(어버이날 등은 쉬는 날 아님) 규칙은 공식 보장이 없어 M0.5에서 실데이터로 확인한다.
+- M0.5 확인(2026년 데이터): `ko.south_korea#holiday`는 28건으로 기념일(식목일·어버이날 등, description "기념일 …")이 섞여 있고, **`ko.south_korea.official#holiday@group.v.calendar.google.com`은 쉬는 날 22건만** 준다. 대체공휴일("쉬는 날 삼일절")·연휴·선거일 포함, 모두 종일(`date`, 끝 배타적). → official 캘린더를 쓰고 `is_day_off=1`. 기념일 표시는 MVP 밖.
 
 ---
 
@@ -588,7 +592,16 @@ Claude Desktop은 `claude_desktop_config.json`의 `mcpServers`에 같은 경로.
 ---
 
 ## 11. 열린 질문 / 확인 필요
-1. M0.5에서 확인: 삭제 이벤트 patch 복구, 시리즈 변경 시 예외 처리, Tasks `If-Match`/412, 공휴일 캘린더 ID·휴일 구분, `colors.get` 팔레트.
+1. ~~M0.5에서 확인~~ → 2026-11-01 실제 계정으로 확인(시험 항목은 정리함):
+   - 미리 정한 ID(소문자 hex 32자)로 insert 가능. 같은 ID 재시도는 `409`. **삭제된 일정의 ID도 `409`** → 재생성은 세대(`google_gen`)를 올린 새 ID가 맞다.
+   - 삭제 후 `get`은 `status: cancelled`로 내용을 그대로 돌려주고, `status: confirmed` patch로 **복구된다**.
+   - `If-Match`: 일정 patch·delete, Tasks patch 모두 낡은 etag면 `412`.
+   - 회차 ID = `<시리즈 ID>_<원래 시작 UTC, yyyyMMddTHHmmssZ>`(종일은 날짜). 회차 patch(완료 표시·이동)는 `recurringEventId`·`originalStartTime`을 유지한다. 증분 조회에서 취소 회차는 `id`·`status`·`recurringEventId`·`originalStartTime`만 온다.
+   - **예외가 있는 시리즈의 시각을 바꾸면 Google이 모든 예외(완료 표시·이동·취소)를 버린다.** 증분에는 옛 회차 ID가 `id`·`status: cancelled`만으로 온다(`recurringEventId` 없음 → ID의 `_` 앞부분으로 시리즈를 찾는다). §4.4의 "예외 있는 시리즈 변경 거부"가 필요함을 확인.
+   - 다른 시간대 반복(LA 09시)은 원본 시간대로 전개되고, 응답의 `dateTime`은 캘린더 시간대 오프셋(+09:00)으로 표현된다(DST 전후 02:00 → 01:00 KST). 원문 보존·원본 시간대 전개 방침 유지.
+   - Tasks: `due`의 시각은 버려진다(`T00:00:00.000Z`). 삭제한 작업은 `showDeleted`로 `deleted: true`와 함께 남고 `get`도 된다. 완료하면 `completed` 시각이 붙는다.
+   - Drive `appDataFolder` 생성·조회·삭제 정상.
+   - `colors.get`은 403(§4.1), 공휴일은 official 캘린더(§5.6).
 2. 배포: self-contained 단일 exe 권장 (두 PC에 .NET 런타임 설치 불필요).
 
 ---

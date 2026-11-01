@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using DeskCal.Core;
 
 namespace DeskCal.App;
 
@@ -10,22 +11,62 @@ namespace DeskCal.App;
 /// </summary>
 public sealed class TrayIcon : IDisposable
 {
-    private readonly NotifyIcon _icon;
+    private const string ClosePage = "<html><head><meta charset=\"utf-8\"><title>DeskCal</title></head>" +
+        "<body style=\"font-family:sans-serif;padding:40px\"><h3>DeskCal에 Google 계정을 연결했습니다.</h3><p>이 창은 닫아도 됩니다.</p></body></html>";
 
-    public TrayIcon(Func<bool> isAdjusting, Action toggleAdjust, Action showSettings, Action exit)
+    private readonly NotifyIcon _icon;
+    private readonly GoogleAccount _google;
+    private bool _isSigningIn;
+
+    public TrayIcon(GoogleAccount google, Func<bool> isAdjusting, Action toggleAdjust, Action showSettings, Action exit)
     {
+        _google = google;
+        var connect = new ToolStripMenuItem("Google 연결", null, async (_, _) => await ConnectGoogleAsync());
         var adjust = new ToolStripMenuItem("크기·위치 조정", null, (_, _) => toggleAdjust());
         var startup = new ToolStripMenuItem("시작 시 실행", null, (_, _) => AutoStart.Set(!AutoStart.IsEnabled));
         var menu = new ContextMenuStrip();
-        menu.Items.AddRange([new ToolStripMenuItem("설정", null, (_, _) => showSettings()), adjust, startup,
+        menu.Items.AddRange([connect, new ToolStripSeparator(), new ToolStripMenuItem("설정", null, (_, _) => showSettings()), adjust, startup,
             new ToolStripSeparator(), new ToolStripMenuItem("종료", null, (_, _) => exit())]);
         // 체크 표시는 열 때마다 실제 상태로 맞춘다(레지스트리는 다른 곳에서 바뀔 수 있다).
         menu.Opening += (_, _) =>
         {
             adjust.Checked = isAdjusting();
             startup.Checked = AutoStart.IsEnabled;
+            connect.Text = _isSigningIn ? "Google 연결 중… (브라우저에서 로그인)"
+                : _google.IsSignedIn ? $"Google 연결됨: {_google.Email}" : "Google 연결";
+            connect.Enabled = !_isSigningIn && !_google.IsSignedIn;
         };
         _icon = new NotifyIcon { Icon = DrawIcon(), Text = "DeskCal", ContextMenuStrip = menu, Visible = true };
+    }
+
+    // 브라우저로 로그인한다(§5.1). 5분 안에 끝내지 않으면 그만둔다. 결과는 알림 풍선으로 알린다.
+    private async Task ConnectGoogleAsync()
+    {
+        if (!_google.HasClientSecret)
+        {
+            _icon.ShowBalloonTip(10000, "Google 연결", @"OAuth 클라이언트 파일이 없습니다. %LOCALAPPDATA%\DeskCal\client_secret.json에 받아 두세요.", ToolTipIcon.Warning);
+            return;
+        }
+        _isSigningIn = true;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+            var email = await _google.SignInAsync(ClosePage, timeout.Token);
+            _icon.ShowBalloonTip(5000, "Google에 연결했습니다", email, ToolTipIcon.Info);
+        }
+        catch (InvalidOperationException exception) when (exception.Message == "Signed in with a different Google account.")
+        {
+            _icon.ShowBalloonTip(10000, "Google 연결", "처음 연결한 계정과 다른 계정입니다. 같은 계정으로 로그인해 주세요.", ToolTipIcon.Warning);
+        }
+        catch (Exception exception)
+        {
+            // 브라우저에서 거부하거나 5분이 지난 경우 등. 다시 누르면 처음부터 한다.
+            _icon.ShowBalloonTip(10000, "Google에 연결하지 못했습니다", exception.Message, ToolTipIcon.Error);
+        }
+        finally
+        {
+            _isSigningIn = false;
+        }
     }
 
     // 파란 머리띠가 있는 작은 달력 모양. 아이콘 파일을 따로 두지 않고 시스템 작은 아이콘 크기에 맞춰 그린다.
