@@ -29,7 +29,17 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
     {
         using (var stream = File.OpenRead(sourcePath))
         {
-            if (GoogleClientSecrets.FromStream(stream).Secrets?.ClientId is not { Length: > 0 })
+            ClientSecrets? secrets;
+            try
+            {
+                secrets = GoogleClientSecrets.FromStream(stream).Secrets;
+            }
+            catch (InvalidOperationException)
+            {
+                // JSON이지만 "installed"·"web" 항목이 없는 파일.
+                secrets = null;
+            }
+            if (secrets?.ClientId is not { Length: > 0 })
                 throw new InvalidDataException("Not an OAuth client file.");
         }
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(clientSecretPath))!);

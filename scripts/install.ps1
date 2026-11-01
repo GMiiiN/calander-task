@@ -7,8 +7,8 @@ $target = Join-Path $env:LOCALAPPDATA 'Programs\DeskCal'
 $app = Join-Path $target 'DeskCal.exe'
 $mcp = Join-Path $target 'DeskCal.Mcp.exe'
 
-# 실행 중이면 끈다(파일이 잠겨 복사가 안 된다). Claude가 MCP 서버를 쓰는 중이면 Claude를 먼저 닫아야 한다.
-Get-Process -Name 'DeskCal' -ErrorAction SilentlyContinue | Stop-Process -Force
+# 실행 중이면 끈다(파일이 잠겨 복사가 안 된다). Claude가 띄운 MCP 서버도 끄므로 설치 뒤 Claude를 다시 시작해야 한다.
+Get-Process -Name 'DeskCal', 'DeskCal.Mcp' -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 500
 
 New-Item -ItemType Directory -Force $target | Out-Null
@@ -24,10 +24,15 @@ $link.Save()
 Write-Output '시작 메뉴에 DeskCal을 만들었습니다.'
 
 # Claude Code: claude 명령이 있으면 사용자 범위로 등록한다(이미 있으면 바꾼다).
+# Windows PowerShell 5.1은 네이티브 명령의 stderr를 오류로 바꾸므로 이 구간만 'Continue'로 둔다(등록이 없으면 remove가 실패한다).
 if (Get-Command claude -ErrorAction SilentlyContinue) {
+    $ErrorActionPreference = 'Continue'
     & claude mcp remove deskcal --scope user 2>$null | Out-Null
     & claude mcp add deskcal --scope user -- $mcp
-    Write-Output 'Claude Code에 MCP 서버(deskcal)를 등록했습니다.'
+    $added = $LASTEXITCODE -eq 0
+    $ErrorActionPreference = 'Stop'
+    if ($added) { Write-Output 'Claude Code에 MCP 서버(deskcal)를 등록했습니다.' }
+    else { Write-Output "Claude Code 등록에 실패했습니다. 직접 실행하세요: claude mcp add deskcal --scope user -- `"$mcp`"" }
 }
 
 # Claude Desktop: 설정 파일이 있으면 mcpServers.deskcal만 넣거나 바꾼다. 원래 파일은 .bak으로 남긴다.
