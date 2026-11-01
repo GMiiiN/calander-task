@@ -116,6 +116,22 @@ public sealed class TaskSyncTests
         Assert.Empty(todos.List("all"));
     }
 
+    [Fact]
+    public async Task SendsCompletionTimeInGoogleFormat()
+    {
+        using var db = new TestDatabase();
+        var todos = new TodoRepository(db.Database);
+        var created = todos.Create([new TodoInput("끝낸 일")])[0];
+        todos.Update(created.TodoUid, new TodoPatch { IsDone = true });
+        var remote = new FakeTasks();
+
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+
+        var item = Assert.Single(remote.Items);
+        Assert.Equal("completed", item.Status);
+        Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", item.Completed);
+    }
+
     private sealed class FakeTasks : ITasksRemote
     {
         private int _next;
