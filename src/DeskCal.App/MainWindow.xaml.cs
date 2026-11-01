@@ -122,10 +122,12 @@ public partial class MainWindow : Window
         _displayTimer.Start();
     });
 
-    // 트레이에서 로그인하면 30초 안에 바뀐다. 동기화는 아직 없으므로 연결돼도 이 PC에만 저장된다고 알린다.
+    // 트레이에서 로그인하면 30초 안에 바뀐다. 동기화는 2분마다 하므로 마지막으로 받은 시각을 보여 준다.
     private void UpdateSyncStatus() => SyncStatusText.Text = _settings.Get(ProtectedTokenStore.SettingKey) is null
         ? "Google 연결 전 · 이 PC에만 저장"
-        : "Google 연결됨 · 동기화 준비 중";
+        : EventSync.LastSyncedAt(_database) is { } last
+            ? $"Google 동기화됨 · {last.ToLocalTime():HH:mm}"
+            : "Google 연결됨 · 동기화 준비 중";
 
     private void RefreshFromOutside()
     {

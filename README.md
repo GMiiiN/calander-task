@@ -1,6 +1,6 @@
 # calander-task (DeskCal)
 
-Windows 바탕화면에 붙어 있는 달력·할 일 앱입니다. Claude가 MCP로 일정과 할 일을 읽고 쓸 수 있고, Google 캘린더·Tasks와 동기화합니다. 지금은 공휴일만 받아 오고, 일정·할 일 동기화는 개발 중입니다. 설계는 [docs/design.md](docs/design.md)에 있습니다.
+Windows 바탕화면에 붙어 있는 달력·할 일 앱입니다. Claude가 MCP로 일정과 할 일을 읽고 쓸 수 있고, Google 캘린더·Tasks와 2분마다 동기화하므로, 같은 Google 계정에 연결한 다른 PC와 휴대폰에서도 같은 일정과 할 일이 보입니다. 설계는 [docs/design.md](docs/design.md)에 있습니다.
 
 ## 설치 (PC마다)
 
