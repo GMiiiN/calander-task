@@ -81,9 +81,10 @@ public partial class MainWindow : Window
         _watcher.HasChanged();
         _signalRegistration = ThreadPool.RegisterWaitForSingleObject(_signal.Handle,
             (_, _) => Dispatcher.BeginInvoke(RefreshFromOutside), null, Timeout.Infinite, false);
-        _fallbackTimer.Tick += (_, _) => { if (_watcher.HasChanged()) _viewModel.Refresh(); };
+        _fallbackTimer.Tick += (_, _) => { if (_watcher.HasChanged()) _viewModel.Refresh(); UpdateSyncStatus(); };
         _fallbackTimer.Start();
         Activated += (_, _) => { if (_watcher.HasChanged()) _viewModel.Refresh(); };
+        UpdateSyncStatus();
 
         // 날짜가 바뀌면 오늘 표시를, 주간 보기에서는 현재 시각 선을 옮긴다.
         _clockTimer.Tick += (_, _) => { _viewModel.Refresh(); UpdateNowLine(); };
@@ -120,6 +121,11 @@ public partial class MainWindow : Window
         _displayTimer.Stop();
         _displayTimer.Start();
     });
+
+    // 트레이에서 로그인하면 30초 안에 바뀐다. 동기화는 아직 없으므로 연결돼도 이 PC에만 저장된다고 알린다.
+    private void UpdateSyncStatus() => SyncStatusText.Text = _settings.Get(ProtectedTokenStore.SettingKey) is null
+        ? "Google 연결 전 · 이 PC에만 저장"
+        : "Google 연결됨 · 동기화 준비 중";
 
     private void RefreshFromOutside()
     {
