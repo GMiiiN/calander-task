@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     private readonly RegisteredWaitHandle _signalRegistration;
     private readonly DispatcherTimer _fallbackTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMinutes(1) };
+    private readonly DispatcherTimer _displayTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool _isClosed;
 
     /// <summary>사용자가 ⋯ 메뉴·트레이로 종료했는지. 아니면 창이 닫혀도 앱이 다시 띄운다.</summary>
@@ -83,6 +84,14 @@ public partial class MainWindow : Window
         _clockTimer.Tick += (_, _) => { _viewModel.Refresh(); UpdateNowLine(); };
         _clockTimer.Start();
 
+        // 켜 둔 채로 모니터를 연결·해제하면 그 화면 구성의 자리로 옮긴다. 알림이 연달아 오므로 1초 동안 조용해지면 한 번만 한다.
+        _displayTimer.Tick += (_, _) =>
+        {
+            _displayTimer.Stop();
+            if (!IsAdjusting) PlaceWindow();
+        };
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+
         Loaded += (_, _) => { TimeScroll.ScrollToVerticalOffset(FIRST_VISIBLE_HOUR * WeekDayPanel.HOUR_HEIGHT); UpdateNowLine(); };        NowLayer.SizeChanged += (_, _) => UpdateNowLine();
         // 창이 닫혀도 앱은 새 창을 띄우며 계속 살아 있으므로(App.ShowCalendar) 타이머까지 모두 멈춘다.
         Closed += (_, _) =>
@@ -90,12 +99,22 @@ public partial class MainWindow : Window
             _isClosed = true;
             _fallbackTimer.Stop();
             _clockTimer.Stop();
+            _displayTimer.Stop();
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             _signalRegistration.Unregister(null);
             _signal.Dispose();
             _watcher.Dispose();
             _pinning.Dispose();
         };
     }
+
+    // SystemEvents는 자기 스레드에서 알릴 수 있으므로 UI 스레드로 넘긴다.
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() =>
+    {
+        if (_isClosed) return;
+        _displayTimer.Stop();
+        _displayTimer.Start();
+    });
 
     private void RefreshFromOutside()
     {
@@ -253,6 +272,7 @@ public partial class MainWindow : Window
     }
 
     // 조정 모드에서 저장한 자리가 있으면 그대로, 없거나 화면 밖으로 벗어났으면 주 모니터 작업 영역 가운데(§3.3).
+    // 시작할 때와 화면 구성이 바뀌었을 때 부른다.
     private void PlaceWindow()
     {
         var saved = _settings.Get(BoundsKey())?.Split(',')
