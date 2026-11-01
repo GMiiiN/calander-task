@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private const int FIRST_VISIBLE_HOUR = 8;
     private const double ADJUST_EDGE = 10;
     private const int WM_NCHITTEST = 0x0084;
+    private const int WM_WINDOWPOSCHANGED = 0x0047;
     private const int HTCAPTION = 2, HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14,
         HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
     private const uint SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
@@ -38,6 +39,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMinutes(1) };
     private readonly DispatcherTimer _displayTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool _isClosed;
+    private BlurBackdrop? _blur;
 
     /// <summary>사용자가 ⋯ 메뉴·트레이로 종료했는지. 아니면 창이 닫혀도 앱이 다시 띄운다.</summary>
     public bool ExitRequested { get; private set; }
@@ -63,14 +65,17 @@ public partial class MainWindow : Window
         SourceInitialized += (_, _) =>
         {
             HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)!.AddHook(AdjustHook);
+            HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)!.AddHook(BlurHook);
             PlaceWindow();
+            // 흐림 창은 바탕화면 고정(DesktopPinning, 이 다음 SourceInitialized 처리)보다 먼저 있어야 그 창을 바탕화면에 붙인다.
+            _blur = BlurBackdrop.TryCreate(message => File.AppendAllText(LogPath("blur.log"), $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}"));
         };
         BuildWeekdayHeader();
         BuildHourGrid();
         UpdateViewToggle();
         _viewModel.PropertyChanged += OnViewModelChanged;
 
-        _pinning = new DesktopPinning(this, LogPath("pinning.log"));
+        _pinning = new DesktopPinning(this, LogPath("pinning.log"), () => _blur?.Handle ?? IntPtr.Zero);
         // 카드는 투명하다. 뒤 배경화면이 어두우면 밝은 글자, 밝으면 어두운 글자를 쓴다.
         _wallpaperTone = new WallpaperTone(this);
         _wallpaperTone.DarkChanged += _ => ApplyTheme();
@@ -98,7 +103,21 @@ public partial class MainWindow : Window
         };
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
-        Loaded += (_, _) => { TimeScroll.ScrollToVerticalOffset(FIRST_VISIBLE_HOUR * WeekDayPanel.HOUR_HEIGHT); UpdateNowLine(); };        NowLayer.SizeChanged += (_, _) => UpdateNowLine();
+        Loaded += (_, _) => { TimeScroll.ScrollToVerticalOffset(FIRST_VISIBLE_HOUR * WeekDayPanel.HOUR_HEIGHT); UpdateNowLine(); };
+        // 방식 C(바탕화면에 못 붙음)에서는 흐림 창이 다른 앱 위에 뜰 수 있으므로 쓰지 않는다.
+        Loaded += (_, _) =>
+        {
+            if (_blur is not null && !_pinning.IsAttached)
+            {
+                _blur.Dispose();
+                _blur = null;
+            }
+            ApplyGlass();
+            UpdateBlur();
+        };
+        CalendarCard.SizeChanged += (_, _) => UpdateBlur();
+        SidebarCard.SizeChanged += (_, _) => UpdateBlur();
+        DpiChanged += (_, _) => UpdateBlur();        NowLayer.SizeChanged += (_, _) => UpdateNowLine();
         // 창이 닫혀도 앱은 새 창을 띄우며 계속 살아 있으므로(App.ShowCalendar) 타이머까지 모두 멈춘다.
         Closed += (_, _) =>
         {
@@ -111,7 +130,29 @@ public partial class MainWindow : Window
             _signal.Dispose();
             _watcher.Dispose();
             _pinning.Dispose();
+            _blur?.Dispose();
         };
+    }
+
+    // 창이 움직이거나 크기가 바뀌면 흐림 창도 같은 자리·카드 모양으로 맞춘다.
+    private IntPtr BlurHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WM_WINDOWPOSCHANGED) UpdateBlur();
+        return IntPtr.Zero;
+    }
+
+    private void UpdateBlur()
+    {
+        if (_blur is null || !IsLoaded) return;
+        GetWindowRect(new WindowInteropHelper(this).Handle, out var rect);
+        var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        var cards = new[] { CalendarCard, SidebarCard }.Select(card =>
+        {
+            var bounds = card.TransformToAncestor(this).TransformBounds(new Rect(card.RenderSize));
+            return new Rect(bounds.X * scale, bounds.Y * scale, bounds.Width * scale, bounds.Height * scale);
+        }).ToList();
+        _blur.Place(new Int32Rect(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top), cards,
+            (float)(CalendarCard.CornerRadius.TopLeft * scale));
     }
 
     // SystemEvents는 자기 스레드에서 알릴 수 있으므로 UI 스레드로 넘긴다.
@@ -518,7 +559,8 @@ public partial class MainWindow : Window
     {
         // 바탕화면이 흐릿하게 비치는 반투명 유리 막(아이콘이 뒤에 있으면 어둡게 비친다). 위쪽 광택과 아래쪽 반사광으로 유리를 씌운 느낌을 낸다.
         var tint = (Color)FindResource("GlassTintColor");
-        const byte alpha = 0xA6;
+        // 뒤가 흐리게 비치면(BlurBackdrop) 막을 절반쯤만 덮는다. 흐림이 없으면 뒤 그림이 또렷해 글자가 묻히므로 더 짙게 덮는다.
+        var alpha = _blur is null ? (byte)0xA6 : (byte)0x80;
         var plain = Color.FromArgb(alpha, tint.R, tint.G, tint.B);
         // 광택은 왼쪽 위에서 비스듬히 흘러내린다(가장자리 반사선 GlassRimBrush와 같은 방향).
         var brush = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0.3, 1) };
