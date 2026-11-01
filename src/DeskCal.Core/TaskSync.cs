@@ -137,8 +137,13 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
         Id = snapshot.GoogleTaskId, ETag = snapshot.GoogleEtag, Title = snapshot.Title, Notes = snapshot.Memo,
         Due = snapshot.DueDate is null ? null : snapshot.DueDate + "T00:00:00.000Z",
         Status = snapshot.IsDone ? "completed" : "needsAction",
-        Completed = snapshot.IsDone ? snapshot.CompletedAt ?? snapshot.UpdatedAt : null,
+        Completed = snapshot.IsDone ? Rfc3339(snapshot.CompletedAt ?? snapshot.UpdatedAt) : null,
     };
+
+    // 로컬 시각은 "O" 형식(소수 7자리, +00:00)이다. Google에는 밀리초까지의 UTC 'Z' 형식으로 보낸다.
+    internal static string Rfc3339(string timestamp) =>
+        DateTimeOffset.Parse(timestamp, System.Globalization.CultureInfo.InvariantCulture).UtcDateTime
+            .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
 
     // 응답 적용(§5.2): 보낸 뒤 로컬이 또 바뀌었으면(revision 다름) ID·etag만 저장하고 dirty를 남긴다.
     private void Apply(Snapshot snapshot, string? googleId, string? etag)
