@@ -94,7 +94,7 @@ public partial class App : Application
             Directory.CreateDirectory(directory);
             File.AppendAllText(Path.Combine(directory, "sync.log"), $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             // 기록 실패로 동기화를 멈추지 않는다.
         }
