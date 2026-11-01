@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private const int WM_NCHITTEST = 0x0084;
     private const int HTCAPTION = 2, HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14,
         HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
+    private const uint SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
     private static readonly string[] WeekdayNames = ["일", "월", "화", "수", "목", "금", "토"];
 
     private readonly MainViewModel _viewModel;
@@ -58,8 +59,12 @@ public partial class MainWindow : Window
         _settings = new SettingStore(database);
         _viewModel = new MainViewModel(database);
         DataContext = _viewModel;
-        PlaceWindow();
-        SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)!.AddHook(AdjustHook);
+        // 자리는 물리 픽셀로 옮기므로 창 핸들이 생긴 뒤(보이기 전)에 놓는다.
+        SourceInitialized += (_, _) =>
+        {
+            HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)!.AddHook(AdjustHook);
+            PlaceWindow();
+        };
         BuildWeekdayHeader();
         BuildHourGrid();
         UpdateViewToggle();
@@ -273,32 +278,44 @@ public partial class MainWindow : Window
 
     // 조정 모드에서 저장한 자리가 있으면 그대로, 없거나 화면 밖으로 벗어났으면 주 모니터 작업 영역 가운데(§3.3).
     // 시작할 때와 화면 구성이 바뀌었을 때 부른다.
+    // 자리는 물리 픽셀로 다룬다. WPF 좌표(DIP)는 창이 지금 있는 모니터의 배율로 바뀌므로, 배율이 다른 모니터(노트북 175%, 외부 100%)의 자리를 그대로 옮기면 어긋난다.
     private void PlaceWindow()
     {
+        var hwnd = new WindowInteropHelper(this).Handle;
         var saved = _settings.Get(BoundsKey())?.Split(',')
-            .Select(part => double.TryParse(part, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : double.NaN).ToArray();
-        if (saved is [var left, var top, var width, var height] && !saved.Any(double.IsNaN))
+            .Select(part => int.TryParse(part, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : (int?)null).ToArray();
+        if (saved is [{ } x, { } y, { } width, { } height])
         {
-            var screen = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
-                SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
-            var visible = Rect.Intersect(new Rect(left, top, Math.Max(width, MinWidth), Math.Max(height, MinHeight)), screen);
-            if (visible.Width >= 200 && visible.Height >= 200)
+            // 모니터 사이 빈 곳이 아니라 어느 한 모니터에 200 × 200 이상 보여야 한다.
+            var rect = new System.Drawing.Rectangle(x, y, width, height);
+            if (System.Windows.Forms.Screen.AllScreens.Any(screen =>
+                System.Drawing.Rectangle.Intersect(rect, screen.Bounds) is { Width: >= 200, Height: >= 200 }))
             {
-                (Left, Top, Width, Height) = (left, top, Math.Max(width, MinWidth), Math.Max(height, MinHeight));
+                MoveWindow(hwnd, x, y, width, height);
                 return;
             }
         }
-        var workArea = SystemParameters.WorkArea;
-        // 작은 화면(노트북)에서는 작업 영역 안에 들어가도록 줄인다.
-        Width = Math.Max(MinWidth, Math.Min(Width, workArea.Width));
-        Height = Math.Max(MinHeight, Math.Min(Height, workArea.Height));
-        Left =workArea.Left + (workArea.Width - Width) / 2;
-        Top = workArea.Top + (workArea.Height - Height) / 2;
+        // 주 모니터로 먼저 옮겨 그 배율의 크기를 얻은 뒤, 작업 영역 안에 들어가도록 줄여 가운데에 둔다.
+        var area = System.Windows.Forms.Screen.PrimaryScreen!.WorkingArea;
+        SetWindowPos(hwnd, IntPtr.Zero, area.X, area.Y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        GetWindowRect(hwnd, out var current);
+        var fitWidth = Math.Min(current.Right - current.Left, area.Width);
+        var fitHeight = Math.Min(current.Bottom - current.Top, area.Height);
+        SetWindowPos(hwnd, IntPtr.Zero, area.X + (area.Width - fitWidth) / 2, area.Y + (area.Height - fitHeight) / 2,
+            fitWidth, fitHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    // 배율이 다른 모니터로 옮기면 WPF가 크기를 그 배율로 다시 잡으므로, 먼저 자리만 옮긴 뒤 크기까지 한 번 더 맞춘다.
+    private static void MoveWindow(IntPtr hwnd, int x, int y, int width, int height)
+    {
+        SetWindowPos(hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     // 크기·위치는 화면 구성(모니터마다의 영역, 픽셀)마다 따로 저장한다. 노트북 단독일 때와 모니터를 연결했을 때 자리가 다르기 때문이다.
     // 전체 외곽만 보면 배치가 바뀌어도 같은 키가 되어 모니터 사이 빈 곳을 복원할 수 있다.
-    private static string BoundsKey() => "window_bounds:" + string.Join(";", System.Windows.Forms.Screen.AllScreens
+    // 값은 물리 픽셀이다. DIP로 저장하던 예전 키(window_bounds:)는 단위가 달라 읽지 않는다.
+    private static string BoundsKey() => "window_rect:" + string.Join(";", System.Windows.Forms.Screen.AllScreens
         .Select(screen => screen.Bounds).OrderBy(b => b.X).ThenBy(b => b.Y)
         .Select(b => string.Create(CultureInfo.InvariantCulture, $"{b.X},{b.Y},{b.Width},{b.Height}")));
 
@@ -310,7 +327,9 @@ public partial class MainWindow : Window
             IsAdjusting = false;
             AdjustOverlay.Visibility = Visibility.Collapsed;
             ResizeMode = ResizeMode.NoResize;
-            _settings.Set(BoundsKey(), string.Create(CultureInfo.InvariantCulture, $"{Left},{Top},{ActualWidth},{ActualHeight}"));
+            GetWindowRect(new WindowInteropHelper(this).Handle, out var rect);
+            _settings.Set(BoundsKey(), string.Create(CultureInfo.InvariantCulture,
+                $"{rect.Left},{rect.Top},{rect.Right - rect.Left},{rect.Bottom - rect.Top}"));
             _pinning.EndEditing();
             return;
         }
@@ -530,4 +549,16 @@ public partial class MainWindow : Window
         Directory.CreateDirectory(directory);
         return Path.Combine(directory, name);
     }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
 }
