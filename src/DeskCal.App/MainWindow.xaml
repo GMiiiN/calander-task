@@ -312,26 +312,27 @@
                     <!-- 종일 줄 -->
                     <TextBlock Grid.Row="1" Text="종일" Style="{StaticResource BaseText}" FontSize="11" Foreground="{DynamicResource MutedBrush}"
                                HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    <ItemsControl Grid.Row="1" Grid.Column="1" ItemsSource="{Binding Week.Days}">
+                    <!-- 종일 항목이 많아도 시간표를 덮지 않도록 높이를 제한하고 휠로 스크롤한다.
+                         칩 3개 반 높이라 넘치는 항목이 있으면 네 번째 칩이 반쯤 보인다.
+                         스크롤은 줄 전체에 하나만 둔다. 날짜마다 따로 스크롤하면 이어진 막대의 높이가 칸마다 어긋난다. -->
+                    <Border Grid.Row="1" Grid.Column="1" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="0,0,0,1">
+                        <ScrollViewer MaxHeight="88" VerticalScrollBarVisibility="Hidden">
+                    <ItemsControl ItemsSource="{Binding Week.Days}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate><UniformGrid Rows="1" /></ItemsPanelTemplate>
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate DataType="{x:Type cal:WeekDayModel}">
-                                <Border x:Name="AllDay" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,1"
-                                        Padding="0,0,0,4" MinHeight="30">
-                                    <!-- 종일 항목이 많아도 시간표를 덮지 않도록 높이를 제한하고 휠로 스크롤한다.
-                                         칩 3개 반 높이라 넘치는 항목이 있으면 네 번째 칩이 반쯤 보인다.
-                                         좌우 여백을 ScrollViewer 안쪽에 두어야 막대를 여백만큼 늘려도 잘리지 않는다. -->
-                                    <ScrollViewer MaxHeight="84" VerticalScrollBarVisibility="Hidden">
-                                        <ItemsControl ItemsSource="{Binding AllDay}" ItemTemplate="{StaticResource ChipTemplate}" Margin="3,0">
-                                            <ItemsControl.ItemContainerStyle>
-                                                <Style TargetType="ContentPresenter">
-                                                    <Setter Property="Margin" Value="{Binding Converter={StaticResource BarShape}, ConverterParameter='3,3'}" />
-                                                </Style>
-                                            </ItemsControl.ItemContainerStyle>
-                                        </ItemsControl>
-                                    </ScrollViewer>
+                                <!-- 막대는 칸 여백만큼(왼쪽 3 + 선 1, 오른쪽 3) 밖으로 늘려 옆 칸과 잇는다. -->
+                                <Border x:Name="AllDay" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,0"
+                                        Padding="3,0,3,4" MinHeight="30">
+                                    <ItemsControl ItemsSource="{Binding AllDay}" ItemTemplate="{StaticResource ChipTemplate}">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="Margin" Value="{Binding Converter={StaticResource BarShape}, ConverterParameter='4,3'}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
+                                    </ItemsControl>
                                 </Border>
                                 <DataTemplate.Triggers>
                                     <DataTrigger Binding="{Binding IsToday}" Value="True">
@@ -341,6 +342,8 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
+                        </ScrollViewer>
+                    </Border>
 
                     <!-- 시간표 -->
                     <ScrollViewer x:Name="TimeScroll" Grid.Row="2" Grid.ColumnSpan="2" VerticalScrollBarVisibility="Hidden">
