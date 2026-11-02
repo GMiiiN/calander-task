@@ -184,6 +184,32 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Single((await Call("list_events")).GetProperty("events").EnumerateArray());
     }
 
+    // sync/reason come from the stored push_state and whether a Google token is stored, not a fixed value.
+    [Theory]
+    [InlineData(false, "synced", "synced", null)]
+    [InlineData(true, "synced", "synced", null)]
+    [InlineData(false, "pending", "pending", "not_signed_in")]
+    [InlineData(true, "pending", "pending", null)]
+    [InlineData(true, "failed", "pending", "push_failed")]
+    [InlineData(true, "unknown", "pending", "needs_review")]
+    public async Task SyncStatusReflectsStoredPushState(bool signedIn, string pushState, string sync, string? reason)
+    {
+        var todoId = Id((await Call("create_todos", new { todos = new[] { new { title = "상태" } } })).GetProperty("todos")[0], "todo_id");
+        using (var connection = _database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE todo SET push_state=$state WHERE todo_uid=$uid;" +
+                (signedIn ? "INSERT INTO setting(setting_key, setting_value) VALUES ('google_token', 'x');" : "");
+            command.Parameters.AddWithValue("$state", pushState);
+            command.Parameters.AddWithValue("$uid", todoId);
+            command.ExecuteNonQuery();
+        }
+        var todo = (await Call("list_todos")).GetProperty("todos")[0];
+        Assert.Equal(sync, todo.GetProperty("sync").GetString());
+        if (reason is null) Assert.False(todo.TryGetProperty("reason", out _));
+        else Assert.Equal(reason, todo.GetProperty("reason").GetString());
+    }
+
     [Fact]
     public async Task OmissionPreservesValuesAndExplicitNullClearsThem()
     {
