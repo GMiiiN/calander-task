@@ -1,5 +1,6 @@
 using System.Net;
 using Google;
+using Google.Apis.Auth.OAuth2.Responses;
 using GoogleTask = Google.Apis.Tasks.v1.Data.Task;
 
 namespace DeskCal.Core.Tests;
@@ -67,13 +68,44 @@ public sealed class TaskSyncTests
         Assert.Contains("이 PC에서 바꾼 제목", (string)command.ExecuteScalar()!);
     }
 
-    [Fact]
-    public async Task UnknownInsertResultIsNotSentAgain()
+    [Theory]
+    [InlineData("invalid_grant")]
+    [InlineData("invalid_client")]
+    public async Task InsertAuthenticationFailureStaysPendingAndCanBeRetried(string error)
+    {
+        using var db = new TestDatabase();
+        var todos = new TodoRepository(db.Database);
+        var created = todos.Create([new TodoInput("다시 연결한 뒤 보낼 할 일")])[0];
+        var failure = new TokenResponseException(new TokenErrorResponse { Error = error });
+        var remote = new FakeTasks { FailInsertWith = failure };
+
+        var thrown = await Assert.ThrowsAsync<TokenResponseException>(() =>
+            new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None));
+
+        Assert.Same(failure, thrown);
+        var pending = todos.Get(created.TodoUid);
+        Assert.True(pending.IsDirty);
+        Assert.Equal("pending", pending.PushState);
+        Assert.Empty(remote.Items);
+
+        remote.FailInsertWith = null;
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+
+        Assert.Equal(2, remote.InsertCalls);
+        Assert.Equal(created.Title, Assert.Single(remote.Items).Title);
+        Assert.False(todos.Get(created.TodoUid).IsDirty);
+        Assert.Equal("synced", todos.Get(created.TodoUid).PushState);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnknownInsertResultIsNotSentAgain(bool timeout)
     {
         using var db = new TestDatabase();
         var todos = new TodoRepository(db.Database);
         var created = todos.Create([new TodoInput("응답이 사라진 할 일")])[0];
-        var remote = new FakeTasks { FailInsertWith = new HttpRequestException("connection reset") };
+        var remote = new FakeTasks { FailInsertWith = timeout ? new TaskCanceledException("timeout") : new HttpRequestException("connection reset") };
 
         await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
         remote.FailInsertWith = null;

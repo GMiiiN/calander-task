@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Google;
+using Google.Apis.Auth.OAuth2.Responses;
 using Google.Apis.Tasks.v1;
 using Microsoft.Data.Sqlite;
 using GoogleTask = Google.Apis.Tasks.v1.Data.Task;
@@ -95,6 +96,12 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                     try
                     {
                         created = await remote.InsertAsync(ToRemote(snapshot), cancellationToken);
+                    }
+                    catch (TokenResponseException)
+                    {
+                        // 인증 실패는 생성 결과 불명이 아니다. 재연결 후 다시 보내도록 되돌리고 바깥에 알린다.
+                        SetPushState(snapshot, "pending");
+                        throw;
                     }
                     catch (Exception exception) when (exception is not GoogleApiException && !cancellationToken.IsCancellationRequested)
                     {

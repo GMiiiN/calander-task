@@ -37,4 +37,35 @@ public sealed class ProtectedTokenStoreTests
         Assert.False(account.IsSignedIn);
         Assert.Null(await store.GetAsync<TokenResponse>("user"));
     }
+
+    // 만료·취소된 토큰(invalid_grant)은 지워서 "연결됨"으로 남지 않게 한다. 계정 결합은 남겨 같은 계정으로만 다시 연결한다.
+    [Fact]
+    public async Task ForgettingARevokedTokenAsksForReconnectAndKeepsTheBoundAccount()
+    {
+        using var db = new TestDatabase();
+        var account = new GoogleAccount(db.Database, "missing-client-secret.json");
+        Assert.False(account.NeedsReconnect);
+        using (var connection = db.Database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "INSERT INTO setting(setting_key, setting_value) VALUES ('google_account_id', 'sub'), ('google_account_email', 'me@example.com');";
+            command.ExecuteNonQuery();
+        }
+        await new ProtectedTokenStore(db.Database).StoreAsync("user", new TokenResponse { AccessToken = "a", RefreshToken = "r" });
+        Assert.False(account.NeedsReconnect);
+
+        await account.ForgetTokenAsync();
+        Assert.False(account.IsSignedIn);
+        Assert.True(account.NeedsReconnect);
+        Assert.Equal("me@example.com", account.Email);
+    }
+
+    [Fact]
+    public void OnlyInvalidGrantCountsAsRevoked()
+    {
+        Assert.True(GoogleAccount.IsRevoked(new TokenResponseException(new TokenErrorResponse { Error = "invalid_grant" })));
+        Assert.True(GoogleAccount.IsRevoked(new AggregateException(new TokenResponseException(new TokenErrorResponse { Error = "invalid_grant" }))));
+        Assert.False(GoogleAccount.IsRevoked(new TokenResponseException(new TokenErrorResponse { Error = "temporarily_unavailable" })));
+        Assert.False(GoogleAccount.IsRevoked(new HttpRequestException("no network")));
+    }
 }
