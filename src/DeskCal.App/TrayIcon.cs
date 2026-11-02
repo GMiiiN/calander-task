@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Reflection;
 using System.Windows.Forms;
 using DeskCal.Core;
 
@@ -26,7 +27,8 @@ public sealed class TrayIcon : IDisposable
         var adjust = new ToolStripMenuItem("크기·위치 조정", null, (_, _) => toggleAdjust());
         var startup = new ToolStripMenuItem("시작 시 실행", null, (_, _) => AutoStart.Set(!AutoStart.IsEnabled));
         var menu = new ContextMenuStrip();
-        menu.Items.AddRange([connect, new ToolStripSeparator(), new ToolStripMenuItem("설정", null, (_, _) => showSettings()), adjust, startup,
+        // 맨 위에 버전을 보여 준다(누를 수 없음). 문제를 알릴 때 어떤 판을 쓰는지 알 수 있게.
+        menu.Items.AddRange([new ToolStripMenuItem(VersionText) { Enabled = false }, new ToolStripSeparator(), connect, new ToolStripSeparator(), new ToolStripMenuItem("설정", null, (_, _) => showSettings()), adjust, startup,
             new ToolStripSeparator(), new ToolStripMenuItem("종료", null, (_, _) => exit())]);
         // 체크 표시는 열 때마다 실제 상태로 맞춘다(레지스트리는 다른 곳에서 바뀔 수 있다).
         menu.Opening += (_, _) =>
@@ -38,8 +40,12 @@ public sealed class TrayIcon : IDisposable
                 : _google.NeedsReconnect ? $"Google 다시 연결: {_google.Email}" : "Google 연결";
             connect.Enabled = !_isSigningIn && !_google.IsSignedIn;
         };
-        _icon = new NotifyIcon { Icon = DrawIcon(), Text = "DeskCal", ContextMenuStrip = menu, Visible = true };
+        _icon = new NotifyIcon { Icon = DrawIcon(), Text = VersionText, ContextMenuStrip = menu, Visible = true };
     }
+
+    // Directory.Build.props의 Version(예: 0.1.0). 빌드 메타데이터(+커밋)는 뺀다.
+    private static string VersionText =>
+        $"DeskCal {typeof(TrayIcon).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]}";
 
     // 동기화 중 토큰이 만료·취소돼 지웠을 때 알린다. 메뉴의 "Google 다시 연결"로 같은 계정에 다시 로그인한다.
     public void ShowDisconnected(string? email) =>
