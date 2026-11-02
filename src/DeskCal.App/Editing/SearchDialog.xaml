@@ -39,9 +39,9 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <StackPanel VerticalAlignment="Center">
-                    <TextBlock Text="{Binding DateText}" Style="{StaticResource BaseText}" FontSize="10" FontWeight="Medium"
+                    <TextBlock Text="{Binding DateText}" Style="{StaticResource BaseText}" FontSize="12" FontWeight="Medium"
                                Foreground="{DynamicResource SubtleBrush}" />
-                    <TextBlock Text="{Binding TimeText}" Style="{StaticResource BaseText}" FontSize="9" Margin="0,1,0,0"
+                    <TextBlock Text="{Binding TimeText}" Style="{StaticResource BaseText}" FontSize="11" Margin="0,1,0,0"
                                Foreground="{DynamicResource MutedBrush}" Visibility="{Binding TimeVisibility}" />
                 </StackPanel>
                 <Border Grid.Column="1" Width="3" Height="24" CornerRadius="1.5" Margin="0,0,10,0"
@@ -49,9 +49,9 @@
                 <Ellipse Grid.Column="1" Width="12" Height="12" Margin="0,0,10,0" StrokeThickness="1.5"
                          Stroke="{DynamicResource CheckboxBorderBrush}" Visibility="{Binding CircleVisibility}" />
                 <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding Title}" Style="{StaticResource BaseText}" FontSize="12" FontWeight="Medium"
+                    <TextBlock Text="{Binding Title}" Style="{StaticResource BaseText}" FontSize="14" FontWeight="Medium"
                                TextTrimming="CharacterEllipsis" TextDecorations="{Binding Decorations}" />
-                    <TextBlock Text="{Binding Meta}" Style="{StaticResource BaseText}" FontSize="9" Margin="0,1,0,0"
+                    <TextBlock Text="{Binding Meta}" Style="{StaticResource BaseText}" FontSize="11" Margin="0,1,0,0"
                                Foreground="{DynamicResource MutedBrush}" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
             </Grid>
@@ -74,12 +74,12 @@
                 </Canvas>
                 <Border DockPanel.Dock="Right" CornerRadius="4" Padding="6,1" VerticalAlignment="Center"
                         Background="{DynamicResource ToggleTrackBrush}">
-                    <TextBlock Text="Esc" Style="{StaticResource BaseText}" FontSize="9" Foreground="{DynamicResource SubtleBrush}" />
+                    <TextBlock Text="Esc" Style="{StaticResource BaseText}" FontSize="11" Foreground="{DynamicResource SubtleBrush}" />
                 </Border>
                 <Grid>
-                    <TextBlock x:Name="Placeholder" Text="일정·할 일 검색 (제목·메모)" Style="{StaticResource BaseText}" FontSize="13"
+                    <TextBlock x:Name="Placeholder" Text="일정·할 일 검색 (제목·메모)" Style="{StaticResource BaseText}" FontSize="15"
                                Foreground="{DynamicResource MutedBrush}" IsHitTestVisible="False" VerticalAlignment="Center" Margin="2,0,0,0" />
-                    <TextBox x:Name="QueryBox" FontFamily="{StaticResource AppFont}" FontSize="13" Background="Transparent" BorderThickness="0"
+                    <TextBox x:Name="QueryBox" FontFamily="{StaticResource AppFont}" FontSize="15" Background="Transparent" BorderThickness="0"
                              Foreground="{DynamicResource TextBrush}" CaretBrush="{DynamicResource AccentBrush}"
                              VerticalContentAlignment="Center" TextChanged="OnQueryChanged" />
                 </Grid>
@@ -89,12 +89,12 @@
             <Border x:Name="ResultsPanel" BorderBrush="{DynamicResource HeaderLineBrush}" BorderThickness="0,1,0,0" Visibility="Collapsed">
                 <StackPanel Margin="8,10,8,6">
                     <StackPanel Orientation="Horizontal" Margin="8,0,0,4">
-                        <TextBlock Text="검색 결과" Style="{StaticResource BaseText}" FontSize="10" FontWeight="Bold"
+                        <TextBlock Text="검색 결과" Style="{StaticResource BaseText}" FontSize="12" FontWeight="Bold"
                                    Foreground="{DynamicResource SubtleBrush}" />
-                        <TextBlock x:Name="CountText" Style="{StaticResource BaseText}" FontSize="10" FontWeight="Bold" Margin="6,0,0,0"
+                        <TextBlock x:Name="CountText" Style="{StaticResource BaseText}" FontSize="12" FontWeight="Bold" Margin="6,0,0,0"
                                    Foreground="{DynamicResource AccentBrush}" />
                     </StackPanel>
-                    <TextBlock x:Name="EmptyText" Text="찾는 항목이 없습니다." Style="{StaticResource BaseText}" FontSize="11" Margin="8,8,0,10"
+                    <TextBlock x:Name="EmptyText" Text="찾는 항목이 없습니다." Style="{StaticResource BaseText}" FontSize="13" Margin="8,8,0,10"
                                Foreground="{DynamicResource MutedBrush}" Visibility="Collapsed" />
                     <ListBox x:Name="ResultList" MaxHeight="210" Background="Transparent" BorderThickness="0" Focusable="False"
                              ItemContainerStyle="{StaticResource ResultItem}" ItemTemplate="{StaticResource ResultTemplate}"
@@ -104,7 +104,7 @@
 
             <!-- 조작 안내 (Figma Hint) -->
             <Border BorderBrush="{DynamicResource HeaderLineBrush}" BorderThickness="0,1,0,0" Padding="16,10">
-                <TextBlock Text="↑↓ 고르기 · Enter 그 날짜로 이동 · Esc 닫기" Style="{StaticResource BaseText}" FontSize="9"
+                <TextBlock Text="↑↓ 고르기 · Enter 그 날짜로 이동 · Esc 닫기" Style="{StaticResource BaseText}" FontSize="11"
                            Foreground="{DynamicResource MutedBrush}" />
             </Border>
         </StackPanel>

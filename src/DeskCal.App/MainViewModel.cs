@@ -132,7 +132,8 @@ public sealed class MainViewModel : ObservableObject
             .Select(d => new DdayChipViewModel(d.Occurrence.Event.Title, d.DaysRemaining == 0 ? "D-day" : $"D-{d.DaysRemaining}", d.DaysRemaining == 0))
             .ToArray();
         var groups = new List<SidebarGroupViewModel>();
-        foreach (var group in agenda.Groups)
+        // 마감일 없는 할 일은 14일 목록 맨 아래로 밀려 보이지 않았다(feedback 4). 기한 지남 바로 다음에 둔다.
+        foreach (var group in agenda.Groups.OrderBy(g => g.Kind switch { "overdue" => 0, "anytime" => 1, _ => 2 }))
         {
             var items = group.Events.Select(o => EventItem(o, categories))
                 .Concat(group.Todos.Select(TodoItem)).ToArray();
@@ -163,7 +164,7 @@ public sealed class MainViewModel : ObservableObject
     {
         "overdue" => "기한 지남",
         "later" => "이후",
-        "anytime" => "언제든",
+        "anytime" => "마감일 없음",
         _ when group.Date == _today => $"오늘 · {group.Date.Value.ToString("M월 d일 ddd", Korean)}",
         _ => group.Date!.Value.ToString("M월 d일 ddd", Korean)
     };

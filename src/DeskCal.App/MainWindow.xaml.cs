@@ -402,7 +402,7 @@ public partial class MainWindow : Window
         {
             var label = new TextBlock
             {
-                Text = $"{hour:00}:00", Style = (Style)FindResource("BaseText"), FontSize = 9,
+                Text = $"{hour:00}:00", Style = (Style)FindResource("BaseText"), FontSize = 11,
                 Width = 44, TextAlignment = TextAlignment.Center
             };
             label.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
@@ -468,7 +468,7 @@ public partial class MainWindow : Window
                 Children =
                 {
                     new TextBlock { Text = $"{cell.Date.Month}월 {cell.Date.Day}일", Style = (Style)FindResource("BaseText"),
-                        FontWeight = FontWeights.Bold, FontSize = 11 },
+                        FontWeight = FontWeights.Bold, FontSize = 13 },
                     list
                 }
             }
