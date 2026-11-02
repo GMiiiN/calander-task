@@ -110,13 +110,18 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         return result;
     }
 
-    // 이름은 시작일, 줄의 첫날(월요일), 마지막 날("이름 - 마감")에만 쓴다. 마지막 날이 겹치면 마감 표시만.
+    // 이름은 시작일에 쓴다. 줄의 첫날(월요일)에는 일정이 그 주를 넘어 계속되거나 14일 이상일 때만 다시 쓰고,
+    // 마지막 날의 "이름 - 마감"은 시작한 주와 다른 주에서 끝날 때만 쓴다. 둘이 겹치면 마감 표시만.
+    private const int LONG_EVENT_DAYS = 14;
+
     private ChipModel BarChip(EventOccurrence occurrence, DateOnly date, bool isRowStart)
     {
         var chip = ToChip(occurrence);
         var first = FirstDate(occurrence);
         var last = LastDate(occurrence);
-        var title = date == last ? $"{chip.Title} - 마감" : date == first || isRowStart ? chip.Title : "";
+        var showEnd = date == last && first < WeekStartOf(last);
+        var showRowStart = isRowStart && (last.DayNumber - first.DayNumber + 1 >= LONG_EVENT_DAYS || last > date.AddDays(6));
+        var title = showEnd ? $"{chip.Title} - 마감" : date == first || showRowStart ? chip.Title : "";
         return chip with
         {
             Title = title, TimeText = date == first ? chip.TimeText : null,
