@@ -44,16 +44,17 @@ $registered = $false
 foreach ($desktopConfig in $desktopConfigs) {
     if (-not (Test-Path $desktopConfig)) { continue }
     $registered = $true
-    Copy-Item $desktopConfig "$desktopConfig.bak" -Force
-    $config = Get-Content $desktopConfig -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (-not $config.PSObject.Properties['mcpServers']) {
-        $config | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{})
+    try {
+        # Windows PowerShell 5.1에서도 stderr 때문에 다른 설정 등록과 앱 실행이 중단되지 않게 한다.
+        $ErrorActionPreference = 'Continue'
+        & $mcp --register-claude-desktop $desktopConfig
+        if ($LASTEXITCODE -eq 0) {
+            Write-Output "Claude Desktop에 MCP 서버(deskcal)를 등록했습니다: $desktopConfig"
+        }
+        else { Write-Warning "Claude Desktop 등록에 실패했습니다: $desktopConfig" }
     }
-    $entry = [pscustomobject]@{ command = $mcp; args = @() }
-    if ($config.mcpServers.PSObject.Properties['deskcal']) { $config.mcpServers.deskcal = $entry }
-    else { $config.mcpServers | Add-Member -NotePropertyName deskcal -NotePropertyValue $entry }
-    [IO.File]::WriteAllText($desktopConfig, ($config | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding $false))
-    Write-Output "Claude Desktop에 MCP 서버(deskcal)를 등록했습니다: $desktopConfig"
+    catch { Write-Warning "Claude Desktop 등록에 실패했습니다: $desktopConfig ($_)" }
+    finally { $ErrorActionPreference = 'Stop' }
 }
 if ($registered) { Write-Output 'Claude Desktop을 완전히 종료(알림 영역 → 종료)한 뒤 다시 시작하세요.' }
 else { Write-Output "Claude Desktop 설정 파일을 찾지 못했습니다. Claude Desktop → 설정 → 개발자 → 설정 편집에서 mcpServers에 `"deskcal`": {`"command`": `"$($mcp -replace '\\','\\')`"}를 넣으세요." }
