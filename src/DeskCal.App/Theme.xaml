@@ -38,7 +38,7 @@
     <Style x:Key="BaseText" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource AppFont}" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
-        <Setter Property="FontSize" Value="10" />
+        <Setter Property="FontSize" Value="12" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
     </Style>
 
@@ -86,7 +86,7 @@
     <!-- 입력란: 옅은 바탕 + 둥근 모서리 (Figma Title field / Date / Time). 편집 창·설정 창 -->
     <Style x:Key="Field" TargetType="TextBox">
         <Setter Property="FontFamily" Value="{StaticResource AppFont}" />
-        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontSize" Value="14" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TextBrush}" />
         <Setter Property="Padding" Value="8,5" />
@@ -123,7 +123,7 @@
                 <ControlTemplate TargetType="Button">
                     <Border CornerRadius="99" Padding="14,5" BorderThickness="1" Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}">
-                        <TextBlock Text="{TemplateBinding Content}" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Bold"
+                        <TextBlock Text="{TemplateBinding Content}" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Bold"
                                    Foreground="{TemplateBinding Foreground}" />
                     </Border>
                 </ControlTemplate>

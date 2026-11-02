@@ -3,7 +3,18 @@ namespace DeskCal.App.Calendar;
 public sealed record ChipModel(
     string Title, string? TimeText, string ColorHex,
     bool IsDone, bool IsTodo, bool IsDday,
-    string? EventId, string? OccurrenceId, string? TodoId, string CreatedBy);
+    string? EventId, string? OccurrenceId, string? TodoId, string CreatedBy)
+{
+    // 여러 날 일정 막대의 한 칸. 앞날·다음 날 칸과 이어 그린다.
+    public bool JoinsLeft { get; init; }
+    public bool JoinsRight { get; init; }
+    public string? PeriodText { get; init; }
+    // 위 줄의 막대 높이를 맞추려고 비워 두는 자리.
+    public bool IsPlaceholder { get; init; }
+
+    public static readonly ChipModel Placeholder =
+        new("", null, "#00000000", false, false, false, null, null, null, "user") { IsPlaceholder = true };
+}
 
 public sealed record DayCellModel(
     DateOnly Date, bool IsCurrentMonth, bool IsToday, DayOfWeek DayOfWeek,

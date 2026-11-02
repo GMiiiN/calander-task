@@ -50,6 +50,21 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
 
     public string? Email => ReadSetting("google_account_email");
 
+    // 연결한 적은 있는데 토큰이 없다 = 만료·취소로 끊겼다. 다시 연결해야 한다.
+    public bool NeedsReconnect => !IsSignedIn && ReadSetting("google_account_id") is not null;
+
+    // Google이 저장된 토큰을 더는 받지 않는다(만료·취소). 테스트 상태 OAuth 앱은 7일마다 이렇게 된다.
+    public static bool IsRevoked(Exception exception) => exception switch
+    {
+        TokenResponseException { Error.Error: "invalid_grant" } => true,
+        AggregateException aggregate => aggregate.InnerExceptions.Any(IsRevoked),
+        _ => exception.InnerException is { } inner && IsRevoked(inner)
+    };
+
+    // 쓸 수 없는 토큰만 지운다. 그래야 "연결됨"으로 남지 않고 트레이에서 다시 연결할 수 있다.
+    // 계정 결합 정보는 남겨 같은 계정으로만 다시 연결하게 한다.
+    public Task ForgetTokenAsync() => new ProtectedTokenStore(database).ClearAsync();
+
     // 브라우저로 로그인한다. 처음 연결한 계정과 다른 계정이면 토큰을 저장하지 않고 거부한다(계정 결합).
     // 계정 ID·이메일·토큰은 한 트랜잭션으로 쓴다. 중간에 실패하면 아무것도 남지 않아 다시 로그인할 수 있다.
     public async Task<string> SignInAsync(string closePageHtml, CancellationToken cancellationToken)

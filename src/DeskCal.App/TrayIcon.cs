@@ -34,11 +34,17 @@ public sealed class TrayIcon : IDisposable
             adjust.Checked = isAdjusting();
             startup.Checked = AutoStart.IsEnabled;
             connect.Text = _isSigningIn ? "Google 연결 중… (브라우저에서 로그인)"
-                : _google.IsSignedIn ? $"Google 연결됨: {_google.Email}" : "Google 연결";
+                : _google.IsSignedIn ? $"Google 연결됨: {_google.Email}"
+                : _google.NeedsReconnect ? $"Google 다시 연결: {_google.Email}" : "Google 연결";
             connect.Enabled = !_isSigningIn && !_google.IsSignedIn;
         };
         _icon = new NotifyIcon { Icon = DrawIcon(), Text = "DeskCal", ContextMenuStrip = menu, Visible = true };
     }
+
+    // 동기화 중 토큰이 만료·취소돼 지웠을 때 알린다. 메뉴의 "Google 다시 연결"로 같은 계정에 다시 로그인한다.
+    public void ShowDisconnected(string? email) =>
+        _icon.ShowBalloonTip(10000, "Google 연결이 끊겼습니다",
+            $"{email} 로그인이 만료되었습니다. 알림 영역 메뉴에서 \"Google 다시 연결\"을 눌러 주세요.", ToolTipIcon.Warning);
 
     // 브라우저로 로그인한다(§5.1). 5분 안에 끝내지 않으면 그만둔다. 결과는 알림 풍선으로 알린다.
     private async Task ConnectGoogleAsync()

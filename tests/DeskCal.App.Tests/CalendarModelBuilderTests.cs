@@ -23,10 +23,10 @@ public sealed class CalendarModelBuilderTests : IDisposable
     private CalendarModelBuilder Builder() => new(events, todos, database);
 
     [Theory]
-    [InlineData(2026, 2, 4)]
-    [InlineData(2026, 11, 5)]
-    [InlineData(2026, 8, 6)]
-    public void MonthUsesRequiredSundayBasedWeeks(int year, int month, int count)
+    [InlineData(2027, 2, 4)]
+    [InlineData(2026, 2, 5)]
+    [InlineData(2026, 11, 6)]
+    public void MonthUsesRequiredMondayBasedWeeks(int year, int month, int count)
     {
         var model = Builder().BuildMonth(year, month, TODAY);
         Assert.Equal(year, model.Year);
@@ -35,8 +35,8 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.All(model.Weeks, week =>
         {
             Assert.Equal(7, week.Count);
-            Assert.Equal(DayOfWeek.Sunday, week[0].DayOfWeek);
-            Assert.Equal(DayOfWeek.Saturday, week[6].DayOfWeek);
+            Assert.Equal(DayOfWeek.Monday, week[0].DayOfWeek);
+            Assert.Equal(DayOfWeek.Sunday, week[6].DayOfWeek);
         });
         Assert.Equal(DateTime.DaysInMonth(year, month), model.Weeks.SelectMany(w => w).Count(d => d.IsCurrentMonth));
     }
@@ -122,6 +122,115 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.Empty(Cell(model, new(2026, 10, 28)).AllItems);
     }
 
+    // feedback 3-1: 여러 날 일정은 이어진 막대. 이름은 시작일에 쓰고,
+    // 다음 줄 월요일에는 그 주를 넘어 계속되거나 14일 이상일 때만, "- 마감"은 다른 주에서 끝날 때만 쓴다.
+    [Fact]
+    public void MonthDrawsMultiDayEventsAsJoinedBarsWithTitlesOnlyWhereNeeded()
+    {
+        events.Create([new("trip", "2026-11-02") { EndDate = "2026-11-11" }]);
+        var model = Builder().BuildMonth(2026, 11, TODAY);
+        ChipModel Bar(int day) => Assert.Single(Cell(model, new(2026, 11, day)).Chips);
+
+        Assert.Equal(("trip", false, true), (Bar(2).Title, Bar(2).JoinsLeft, Bar(2).JoinsRight));
+        Assert.Equal("11월 2일 - 11월 11일", Bar(2).PeriodText);
+        foreach (var day in new[] { 3, 4, 5, 6, 7, 8, 9, 10 }) // 9일(월): 그 주 안에 끝나고 10일짜리라 생략
+            Assert.Equal(("", true, true), (Bar(day).Title, Bar(day).JoinsLeft, Bar(day).JoinsRight));
+        Assert.Equal(("trip - 마감", true, false), (Bar(11).Title, Bar(11).JoinsLeft, Bar(11).JoinsRight));
+        Assert.Equal("trip", Assert.Single(Cell(model, new(2026, 11, 5)).AllItems).Title); // +N 목록은 원래 이름
+        Assert.Empty(Cell(model, new(2026, 11, 12)).Chips);
+    }
+
+    [Fact]
+    public void BarEndingOnRowStartShowsOnlyTheEndTitle()
+    {
+        events.Create([new("short", "2026-11-08") { EndDate = "2026-11-09" }]);
+        var model = Builder().BuildMonth(2026, 11, TODAY);
+        Assert.Equal("short", Assert.Single(Cell(model, new(2026, 11, 8)).Chips).Title);
+        Assert.Equal("short - 마감", Assert.Single(Cell(model, new(2026, 11, 9)).Chips).Title);
+    }
+
+    [Theory]
+    [InlineData("2026-11-02", "2026-11-15", "x", "x - 마감")]  // 14일짜리: 월요일에 다시 적는다
+    [InlineData("2026-11-06", "2026-11-15", "", "x - 마감")]   // 그 주 일요일에 끝남: 월요일 생략
+    [InlineData("2026-11-06", "2026-11-17", "x", "")]          // 다음 주로 넘어감: 월요일에 적는다(마감은 17일)
+    public void RowStartTitleNeedsALongEventOrOneThatContinuesPastTheWeek(string start, string end, string monday, string sunday)
+    {
+        events.Create([new("x", start) { EndDate = end }]);
+        var model = Builder().BuildMonth(2026, 11, TODAY);
+        Assert.Equal(monday, Assert.Single(Cell(model, new(2026, 11, 9)).Chips).Title);
+        Assert.Equal(sunday, Assert.Single(Cell(model, new(2026, 11, 15)).Chips).Title);
+    }
+
+    [Fact]
+    public void EventEndingInItsStartWeekHasNoEndTitle()
+    {
+        events.Create([new("week", "2026-11-02") { EndDate = "2026-11-08" }]);
+        var model = Builder().BuildMonth(2026, 11, TODAY);
+        Assert.Equal("week", Assert.Single(Cell(model, new(2026, 11, 2)).Chips).Title);
+        Assert.Equal("", Assert.Single(Cell(model, new(2026, 11, 8)).Chips).Title);
+    }
+
+    [Fact]
+    public void BarsKeepTheirLaneAcrossDaysAndSingleDayItemsFillFreeLanes()
+    {
+        events.Create([
+            new("A", "2026-11-02") { EndDate = "2026-11-04" },
+            new("B", "2026-11-03") { EndDate = "2026-11-05" },
+            new("solo", "2026-11-03"),
+            new("late", "2026-11-06")
+        ]);
+        events.Create([new("C", "2026-11-05") { EndDate = "2026-11-06" }]);
+        var model = Builder().BuildMonth(2026, 11, TODAY);
+        string[] Titles(int day) => Cell(model, new(2026, 11, day)).Chips.Select(c => c.IsPlaceholder ? "_" : c.Title).ToArray();
+
+        Assert.Equal(new[] { "A" }, Titles(2));
+        Assert.Equal(new[] { "", "B" }, Titles(3));
+        Assert.Equal(1, Cell(model, new(2026, 11, 3)).OverflowCount); // solo는 세 번째 줄 → +1
+        Assert.Equal(new[] { "", "" }, Titles(4)); // 같은 주에 끝나므로 마감 표시 없음
+        Assert.Equal(new[] { "C", "" }, Titles(5)); // A가 끝난 0번 줄을 C가 쓴다
+        Assert.Equal(new[] { "", "late" }, Titles(6));
+    }
+
+    [Fact]
+    public void LaneGapBelowABarIsKeptWithAPlaceholder()
+    {
+        events.Create([
+            new("A", "2026-11-02") { EndDate = "2026-11-03" },
+            new("B", "2026-11-03") { EndDate = "2026-11-04" }
+        ]);
+        var cell = Cell(Builder().BuildMonth(2026, 11, TODAY), new(2026, 11, 4));
+        Assert.True(cell.Chips[0].IsPlaceholder);
+        Assert.Equal("", cell.Chips[1].Title);
+        Assert.True(cell.Chips[1].JoinsLeft);
+        Assert.Equal(0, cell.OverflowCount);
+    }
+
+    [Fact]
+    public void TimedMultiDayBarShowsStartTimeOnlyOnItsFirstDay()
+    {
+        events.Create([new("overnight", "2026-10-29") { StartTime = "23:00", EndDate = "2026-10-30", EndTime = "01:30" }]);
+        var model = Builder().BuildMonth(2026, 10, TODAY);
+        var first = Assert.Single(Cell(model, new(2026, 10, 29)).Chips);
+        Assert.Equal(("overnight", "23:00"), (first.Title, first.TimeText));
+        var last = Assert.Single(Cell(model, TODAY).Chips);
+        Assert.Equal(("", null), (last.Title, last.TimeText));
+        Assert.Equal("10월 29일 오후 11:00 - 10월 30일 오전 1:30", last.PeriodText);
+    }
+
+    [Fact]
+    public void WeekAllDayRowUsesTheSameBarRules()
+    {
+        events.Create([new("trip", "2026-11-02") { EndDate = "2026-11-11" }]);
+        var builder = Builder();
+        var first = builder.BuildWeek(new(2026, 11, 2), TODAY).Days;
+        Assert.Equal(("trip", false, true), (first[0].AllDay[0].Title, first[0].AllDay[0].JoinsLeft, first[0].AllDay[0].JoinsRight));
+        Assert.Equal("", first[6].AllDay[0].Title);
+        var second = builder.BuildWeek(new(2026, 11, 9), TODAY).Days;
+        Assert.Equal("", second[0].AllDay[0].Title);
+        Assert.Equal("trip - 마감", second[2].AllDay[0].Title);
+        Assert.Empty(second[3].AllDay);
+    }
+
     [Fact]
     public void RecurrencesUseOccurrenceIdsAndExcludeCancelledDeletedItems()
     {
@@ -155,19 +264,19 @@ public sealed class CalendarModelBuilderTests : IDisposable
         var task = todos.Create([new("done todo", "2026-10-30")])[0];
         todos.Update(task.TodoUid, new() { IsDone = true });
         var model = Builder().BuildWeek(TODAY, TODAY);
-        Assert.Equal(new DateOnly(2026, 10, 25), model.WeekStart);
+        Assert.Equal(new DateOnly(2026, 10, 26), model.WeekStart);
         Assert.Equal(7, model.Days.Count);
-        var thursday = model.Days[4];
+        var thursday = model.Days[3];
         var first = Assert.Single(thursday.Blocks);
         Assert.Equal((1380, 1440), (first.StartMinute, first.EndMinute));
-        var friday = model.Days[5];
+        var friday = model.Days[4];
         Assert.True(friday.IsToday);
         Assert.Equal((0, 90), (friday.Blocks[0].StartMinute, friday.Blocks[0].EndMinute));
         Assert.Equal("23:00", friday.Blocks[0].Chip.TimeText);
         Assert.Equal((1320, 1440), (friday.Blocks[1].StartMinute, friday.Blocks[1].EndMinute));
         Assert.Equal(new[] { "all day", "done todo" }, friday.AllDay.Select(c => c.Title));
         Assert.True(friday.AllDay[1].IsDone);
-        Assert.Empty(model.Days[6].Blocks);
+        Assert.Empty(model.Days[5].Blocks);
     }
 
     [Fact]
@@ -181,7 +290,7 @@ public sealed class CalendarModelBuilderTests : IDisposable
             new("adjacent", "2026-10-30") { StartTime = "11:00", EndTime = "12:00" },
             new("separate", "2026-10-30") { StartTime = "13:00", EndTime = "14:00" }
         ]);
-        var blocks = Builder().BuildWeek(TODAY, TODAY).Days[5].Blocks;
+        var blocks = Builder().BuildWeek(TODAY, TODAY).Days[4].Blocks;
         Assert.Equal(new[] { 0, 1, 0, 2, 0, 0 }, blocks.Select(b => b.Column));
         Assert.Equal(new[] { 3, 3, 3, 3, 1, 1 }, blocks.Select(b => b.ColumnCount));
         foreach (var left in blocks)
@@ -198,7 +307,7 @@ public sealed class CalendarModelBuilderTests : IDisposable
             new("short2", "2026-10-30") { StartTime = "09:10", EndTime = "09:20" },
             new("after", "2026-10-30") { StartTime = "09:30", EndTime = "10:00" }
         ]);
-        var blocks = Builder().BuildWeek(TODAY, TODAY).Days[5].Blocks;
+        var blocks = Builder().BuildWeek(TODAY, TODAY).Days[4].Blocks;
         Assert.Equal(new[] { 0, 1, 0 }, blocks.Select(b => b.Column));
         Assert.Equal(new[] { 2, 2, 2 }, blocks.Select(b => b.ColumnCount));
     }

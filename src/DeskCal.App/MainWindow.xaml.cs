@@ -22,7 +22,7 @@ public partial class MainWindow : Window
     private const int HTCAPTION = 2, HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14,
         HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
     private const uint SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
-    private static readonly string[] WeekdayNames = ["일", "월", "화", "수", "목", "금", "토"];
+    private static readonly string[] WeekdayNames = ["월", "화", "수", "목", "금", "토", "일"];
 
     private readonly MainViewModel _viewModel;
     private readonly Database _database;
@@ -123,8 +123,9 @@ public partial class MainWindow : Window
     });
 
     // 트레이에서 로그인하면 30초 안에 바뀐다. 동기화는 2분마다 하므로 마지막으로 받은 시각을 보여 준다.
+    // 토큰이 없는데 계정 결합 정보가 있으면 만료·취소로 끊긴 것이다(GoogleAccount.NeedsReconnect와 같은 기준).
     private void UpdateSyncStatus() => SyncStatusText.Text = _settings.Get(ProtectedTokenStore.SettingKey) is null
-        ? "Google 연결 전 · 이 PC에만 저장"
+        ? _settings.Get("google_account_id") is null ? "Google 연결 전 · 이 PC에만 저장" : "Google 연결 끊김 · 알림 영역 메뉴에서 다시 연결"
         : EventSync.LastSyncedAt(_database) is { } last
             ? $"Google 동기화됨 · {last.ToLocalTime():HH:mm}"
             : "Google 연결됨 · 동기화 준비 중";
@@ -387,7 +388,7 @@ public partial class MainWindow : Window
                 Text = WeekdayNames[day], Style = (Style)FindResource("BaseText"), FontWeight = FontWeights.Bold,
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
             };
-            label.SetResourceReference(TextBlock.ForegroundProperty, day == 0 ? "SundayBrush" : day == 6 ? "SaturdayBrush" : "SubtleBrush");
+            label.SetResourceReference(TextBlock.ForegroundProperty, day == 6 ? "SundayBrush" : day == 5 ? "SaturdayBrush" : "SubtleBrush");
             var cell = new Border { Child = label, BorderThickness = new Thickness(0, 0, day == 6 ? 0 : 1, 1) };
             cell.SetResourceReference(Border.BorderBrushProperty, "GridLineBrush");
             WeekdayHeader.Children.Add(cell);
@@ -402,7 +403,7 @@ public partial class MainWindow : Window
         {
             var label = new TextBlock
             {
-                Text = $"{hour:00}:00", Style = (Style)FindResource("BaseText"), FontSize = 9,
+                Text = $"{hour:00}:00", Style = (Style)FindResource("BaseText"), FontSize = 11,
                 Width = 44, TextAlignment = TextAlignment.Center
             };
             label.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
@@ -468,7 +469,7 @@ public partial class MainWindow : Window
                 Children =
                 {
                     new TextBlock { Text = $"{cell.Date.Month}월 {cell.Date.Day}일", Style = (Style)FindResource("BaseText"),
-                        FontWeight = FontWeights.Bold, FontSize = 11 },
+                        FontWeight = FontWeights.Bold, FontSize = 13 },
                     list
                 }
             }
