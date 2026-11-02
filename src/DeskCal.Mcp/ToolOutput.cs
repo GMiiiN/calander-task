@@ -63,9 +63,10 @@ internal sealed class ToolOutput(Database database, EventRepository events)
         var reason = pushState switch
         {
             "synced" => null,
+            // unknown은 다시 로그인해도 자동 전송되지 않아 사람이 골라야 하므로 로그인 여부보다 먼저 알린다.
+            "unknown" => "needs_review",
             _ when !_signedIn => "not_signed_in",
             "failed" => "push_failed",
-            "unknown" => "needs_review",
             _ => null
         };
         if (reason is not null) item["reason"] = reason;

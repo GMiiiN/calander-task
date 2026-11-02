@@ -192,6 +192,8 @@ public sealed class McpToolTests : IAsyncLifetime
     [InlineData(true, "pending", "pending", null)]
     [InlineData(true, "failed", "pending", "push_failed")]
     [InlineData(true, "unknown", "pending", "needs_review")]
+    [InlineData(false, "unknown", "pending", "needs_review")] // 다시 로그인해도 자동 전송되지 않으므로 확인 필요가 우선
+    [InlineData(false, "failed", "pending", "not_signed_in")]
     public async Task SyncStatusReflectsStoredPushState(bool signedIn, string pushState, string sync, string? reason)
     {
         var todoId = Id((await Call("create_todos", new { todos = new[] { new { title = "상태" } } })).GetProperty("todos")[0], "todo_id");
