@@ -323,9 +323,10 @@
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate DataType="{x:Type cal:WeekDayModel}">
-                                <!-- 막대는 칸 여백만큼(왼쪽 3 + 선 1, 오른쪽 3) 밖으로 늘려 옆 칸과 잇는다. -->
+                                <!-- 막대는 칸 여백만큼(왼쪽 3 + 선 1, 오른쪽 3) 밖으로 늘려 옆 칸과 잇는다.
+                                     배경이 없으면 빈 칸 클릭이 바깥 ScrollViewer로 빠져 더블클릭 새 일정이 안 된다. -->
                                 <Border x:Name="AllDay" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,0"
-                                        Padding="3,0,3,4" MinHeight="30">
+                                        Background="Transparent" Padding="3,0,3,4" MinHeight="30">
                                     <ItemsControl ItemsSource="{Binding AllDay}" ItemTemplate="{StaticResource ChipTemplate}">
                                         <ItemsControl.ItemContainerStyle>
                                             <Style TargetType="ContentPresenter">
