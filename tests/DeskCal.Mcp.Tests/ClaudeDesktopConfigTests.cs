@@ -13,7 +13,7 @@ public sealed class ClaudeDesktopConfigTests : IDisposable
 
     public void Dispose() => Directory.Delete(_directory, true);
 
-    private async Task<(int ExitCode, string Error, string Command)> Register(string path)
+    private async Task<(int ExitCode, string Error, string Command)> Register(string path, bool unregister = false)
     {
         var command = Path.GetFullPath(Path.Combine(System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory(),
             "..", "..", "..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
@@ -23,7 +23,7 @@ public sealed class ClaudeDesktopConfigTests : IDisposable
             UseShellExecute = false, CreateNoWindow = true
         };
         start.ArgumentList.Add(typeof(CalendarTools).Assembly.Location);
-        start.ArgumentList.Add("--register-claude-desktop");
+        start.ArgumentList.Add(unregister ? "--unregister-claude-desktop" : "--register-claude-desktop");
         start.ArgumentList.Add(path);
         start.Environment["DESKCAL_DB"] = Path.Combine(_directory, "must-not-create.db");
         using var process = Process.Start(start)!;
@@ -35,6 +35,72 @@ public sealed class ClaudeDesktopConfigTests : IDisposable
         finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
         Assert.Equal("", await output);
         return (process.ExitCode, await error, command);
+    }
+
+    [Fact]
+    public async Task UnregistrationRemovesOnlyDeskcalAndPreservesUserValues()
+    {
+        var nested = "{\"끝\":null}";
+        for (var i = 0; i < 25; i++) nested = "{\"child\":" + nested + "}";
+        var original = "{\"Tool\":1,\"tool\":2,\"한글\":\"설정\",\"nested\":" + nested +
+            ",\"mcpServers\":{\"other\":{\"args\":[\"하나\"]},\"DeskCal\":{},\"deskcal\":{}}}";
+        var path = Path.Combine(_directory, "config.json");
+        File.WriteAllText(path, original, new UTF8Encoding(true));
+        var bytes = File.ReadAllBytes(path);
+        var result = await Register(path, unregister: true);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("", result.Error);
+        Assert.Equal(bytes, File.ReadAllBytes(path + ".bak"));
+        var expected = JsonNode.Parse(original)!;
+        expected["mcpServers"]!.AsObject().Remove("deskcal");
+        var actual = JsonNode.Parse(File.ReadAllText(path))!;
+        Assert.True(JsonNode.DeepEquals(expected, actual));
+        Assert.Equal(expected.AsObject().Select(p => p.Key), actual.AsObject().Select(p => p.Key));
+        Assert.Contains("설정", File.ReadAllText(path));
+        Assert.False(File.ReadAllBytes(path).Take(3).SequenceEqual(new byte[] { 0xef, 0xbb, 0xbf }));
+        Assert.False(File.Exists(Path.Combine(_directory, "must-not-create.db")));
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"mcpServers\":{\"DeskCal\":{}}}")]
+    public async Task UnregistrationWithoutDeskcalLeavesFileAndBackupUntouched(string original)
+    {
+        var path = Path.Combine(_directory, "config.json");
+        File.WriteAllText(path, original, new UTF8Encoding(true));
+        File.WriteAllText(path + ".bak", "previous backup");
+        var bytes = File.ReadAllBytes(path);
+        var timestamp = File.GetLastWriteTimeUtc(path);
+        var result = await Register(path, unregister: true);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("", result.Error);
+        Assert.Equal(bytes, File.ReadAllBytes(path));
+        Assert.Equal(timestamp, File.GetLastWriteTimeUtc(path));
+        Assert.Equal("previous backup", File.ReadAllText(path + ".bak"));
+    }
+
+    [Fact]
+    public async Task UnregistrationLeavesEmptyServersObject()
+    {
+        var path = Path.Combine(_directory, "config.json");
+        File.WriteAllText(path, "{\"mcpServers\":{\"deskcal\":{}}}");
+        Assert.Equal(0, (await Register(path, unregister: true)).ExitCode);
+        Assert.Empty(JsonNode.Parse(File.ReadAllText(path))!["mcpServers"]!.AsObject());
+    }
+
+    [Theory]
+    [InlineData("{broken")]
+    [InlineData("[]")]
+    [InlineData("{\"mcpServers\":42}")]
+    public async Task UnregistrationRejectsInvalidConfigWithoutChanges(string original)
+    {
+        var path = Path.Combine(_directory, "config.json");
+        File.WriteAllText(path, original);
+        var result = await Register(path, unregister: true);
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.False(string.IsNullOrWhiteSpace(result.Error));
+        Assert.Equal(original, File.ReadAllText(path));
+        Assert.False(File.Exists(path + ".bak"));
     }
 
     [Fact]

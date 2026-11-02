@@ -4,17 +4,18 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-if (args.Length > 0 && args[0] == "--register-claude-desktop")
+if (args.Length > 0 && args[0] is "--register-claude-desktop" or "--unregister-claude-desktop")
 {
     try
     {
-        if (args.Length != 2) throw new ArgumentException("Usage: --register-claude-desktop <config_path>");
-        ClaudeDesktopConfig.Register(args[1], Environment.ProcessPath
+        if (args.Length != 2) throw new ArgumentException($"Usage: {args[0]} <config_path>");
+        if (args[0] == "--unregister-claude-desktop") ClaudeDesktopConfig.Unregister(args[1]);
+        else ClaudeDesktopConfig.Register(args[1], Environment.ProcessPath
             ?? throw new InvalidOperationException("Cannot determine the MCP executable path."));
     }
     catch (Exception error)
     {
-        Console.Error.WriteLine($"Claude Desktop registration failed: {error.Message}");
+        Console.Error.WriteLine($"Claude Desktop {args[0]} failed: {error.Message}");
         Environment.ExitCode = 1;
     }
     return;

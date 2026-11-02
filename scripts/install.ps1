@@ -14,6 +14,8 @@ Start-Sleep -Milliseconds 500
 New-Item -ItemType Directory -Force $target | Out-Null
 Copy-Item (Join-Path $source 'DeskCal.exe') $app -Force
 Copy-Item (Join-Path $source 'DeskCal.Mcp.exe') $mcp -Force
+Copy-Item (Join-Path $source 'uninstall.ps1') $target -Force
+Copy-Item (Join-Path $source 'uninstall.cmd') $target -Force
 Write-Output "복사했습니다: $target"
 
 $shell = New-Object -ComObject WScript.Shell

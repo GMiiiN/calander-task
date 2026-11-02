@@ -17,6 +17,12 @@ Windows 바탕화면에 붙어 있는 달력·할 일 앱입니다. Claude가 MC
 
 다시 설치해도 데이터(`%LOCALAPPDATA%\DeskCal`의 DB와 토큰)는 그대로 남습니다.
 
+## 제거
+
+먼저 Claude Desktop을 완전히 종료하세요(켜져 있으면 MCP 서버 파일이 잠겨 프로그램 폴더가 남을 수 있습니다). 그다음 `%LOCALAPPDATA%\Programs\DeskCal\uninstall.cmd`를 실행하면 프로그램, 바로 가기, 시작 시 실행 및 Claude MCP 등록을 제거합니다.
+데이터 삭제 질문은 기본값이 **N(보존)**이며, `y`를 입력할 때만 `%LOCALAPPDATA%\DeskCal`의 일정·할 일 DB와 Google 토큰 등을 삭제합니다.
+제거 후 Claude Desktop을 완전히 종료했다가 다시 시작하세요. 경고가 나온 항목은 수동 확인이 필요합니다.
+
 ## OAuth 클라이언트 파일
 
 Google Cloud 콘솔에서 사용자 본인의 프로젝트를 만들고, Calendar·Tasks·Drive API를 켭니다. OAuth 클라이언트는 **데스크톱 앱** 유형으로 만들고 JSON을 받습니다. 이 파일은 저장소에 넣지 않습니다.
