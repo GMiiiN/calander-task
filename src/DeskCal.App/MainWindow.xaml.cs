@@ -497,6 +497,12 @@ public partial class MainWindow : Window
         }
     }
 
+    // 사이드바 제목 툴팁: 말줄임으로 잘린 제목에만 연다.
+    private void OnTitleToolTipOpening(object sender, ToolTipEventArgs e)
+    {
+        if (sender is TextBlock text && !TextTrim.IsTrimmed(text)) e.Handled = true;
+    }
+
     // +N: 그날 항목 전체를 작은 목록으로 보여준다(§6.3).
     private void OnOverflowClick(object sender, RoutedEventArgs e)
     {
