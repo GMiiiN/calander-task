@@ -81,6 +81,49 @@ public sealed class McpToolTests : IAsyncLifetime
     private static string Id(JsonElement value, string field = "event_id") => value.GetProperty(field).GetString()!;
 
     [Fact]
+    public async Task LockedDatabaseReturnsSqliteCodesAndRetryGuidance()
+    {
+        using var connection = _database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "BEGIN EXCLUSIVE;";
+        command.ExecuteNonQuery();
+        try
+        {
+            var result = await Call("create_todos", new { todos = new[] { new { title = "locked" } } }, error: true);
+            var error = result.GetProperty("error").GetString();
+            Assert.Contains("SQLITE_BUSY(5)", error);
+            Assert.Contains("SqliteExtendedErrorCode=5", error);
+            Assert.Contains("another program", error);
+            Assert.Contains("DeskCal", error);
+            Assert.Contains("Try again shortly", error);
+        }
+        finally
+        {
+            command.CommandText = "ROLLBACK;";
+            command.ExecuteNonQuery();
+        }
+        Assert.Empty(Todos.List());
+    }
+
+    [Fact]
+    public async Task ConstraintFailureReturnsExtendedCodeWithoutExceptionDetails()
+    {
+        using var connection = _database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TRIGGER reject_todo BEFORE INSERT ON todo
+            BEGIN SELECT RAISE(ABORT, 'Exception at DeskCal'); END;
+            """;
+        command.ExecuteNonQuery();
+        var result = await Call("create_todos", new { todos = new[] { new { title = "rejected" } } }, error: true);
+        var error = result.GetProperty("error").GetString();
+        Assert.Contains("SQLITE_CONSTRAINT(19)", error);
+        Assert.Contains("SqliteExtendedErrorCode=1811", error);
+        Assert.Contains("Try again.", error);
+        Assert.Empty(Todos.List());
+    }
+
+    [Fact]
     public async Task OnlySuccessfulWritesSignalTheApp()
     {
         if (!OperatingSystem.IsWindows()) return;
