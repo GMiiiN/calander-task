@@ -14,6 +14,8 @@ if ($LASTEXITCODE -ne 0) { throw 'DeskCal.Mcp publish failed' }
 
 Copy-Item (Join-Path $PSScriptRoot 'install.ps1') $out
 Copy-Item (Join-Path $PSScriptRoot 'install.cmd') $out
+Copy-Item (Join-Path $PSScriptRoot 'uninstall.ps1') $out
+Copy-Item (Join-Path $PSScriptRoot 'uninstall.cmd') $out
 $zip = Join-Path $root 'artifacts\DeskCal-win-x64.zip'
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip

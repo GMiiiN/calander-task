@@ -11,15 +11,32 @@ public static class ClaudeDesktopConfig
 
     public static void Register(string path, string command)
     {
-        var config = JsonNode.Parse(File.ReadAllText(path),
-            new JsonNodeOptions { PropertyNameCaseInsensitive = false },
-            new JsonDocumentOptions { MaxDepth = MAX_DEPTH }) as JsonObject
-            ?? throw new JsonException("Claude Desktop configuration must be a JSON object.");
+        var config = Read(path);
         if (!config.TryGetPropertyValue("mcpServers", out var servers))
             config["mcpServers"] = servers = new JsonObject();
         if (servers is not JsonObject serverObject)
             throw new JsonException("mcpServers must be a JSON object.");
         serverObject["deskcal"] = new JsonObject { ["command"] = command, ["args"] = new JsonArray() };
+        Write(path, config);
+    }
+
+    public static void Unregister(string path)
+    {
+        var config = Read(path);
+        if (!config.TryGetPropertyValue("mcpServers", out var servers)) return;
+        if (servers is not JsonObject serverObject)
+            throw new JsonException("mcpServers must be a JSON object.");
+        if (!serverObject.Remove("deskcal")) return;
+        Write(path, config);
+    }
+
+    private static JsonObject Read(string path) => JsonNode.Parse(File.ReadAllText(path),
+        new JsonNodeOptions { PropertyNameCaseInsensitive = false },
+        new JsonDocumentOptions { MaxDepth = MAX_DEPTH }) as JsonObject
+        ?? throw new JsonException("Claude Desktop configuration must be a JSON object.");
+
+    private static void Write(string path, JsonObject config)
+    {
         // 기본 인코더는 한글을 \uXXXX로 바꾼다. 사용자 설정(한글 폴더 경로 등)을 읽을 수 있게 그대로 쓴다.
         var json = config.ToJsonString(new JsonSerializerOptions
         {
