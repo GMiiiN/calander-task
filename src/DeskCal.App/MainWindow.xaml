@@ -142,7 +142,9 @@
                          Fill="{Binding DotColorHex, Converter={StaticResource HexBrush}}"
                          Visibility="{Binding DotColorHex, Converter={StaticResource Visible}}" />
                 <StackPanel VerticalAlignment="Center">
-                    <TextBlock x:Name="Title" Text="{Binding Title}" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Medium" />
+                    <!-- 잘린 제목은 1초 머무르면 전체 제목을 툴팁으로 보여 준다(feedback 3-2). -->
+                    <TextBlock x:Name="Title" Text="{Binding Title}" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Medium"
+                               ToolTip="{Binding Title}" ToolTipService.InitialShowDelay="1000" ToolTipOpening="OnTitleToolTipOpening" />
                     <TextBlock Text="{Binding Meta}" Style="{StaticResource BaseText}" FontSize="11"
                                Foreground="{DynamicResource MutedBrush}" Margin="0,1,0,0" />
                 </StackPanel>
