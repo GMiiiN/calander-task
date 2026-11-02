@@ -45,7 +45,30 @@ public sealed class CalendarTools(Database database)
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or InvalidOperationException or FormatException or JsonException or SqliteException)
         {
             isError = true;
-            body = new JsonObject { ["error"] = error is SqliteException ? "The local database could not complete the operation. Try again." : error.Message };
+            if (error is SqliteException sqliteError)
+            {
+                Console.Error.WriteLine(sqliteError.ToString());
+                var codeName = sqliteError.SqliteErrorCode switch
+                {
+                    1 => "SQLITE_ERROR",
+                    5 => "SQLITE_BUSY",
+                    6 => "SQLITE_LOCKED",
+                    8 => "SQLITE_READONLY",
+                    10 => "SQLITE_IOERR",
+                    11 => "SQLITE_CORRUPT",
+                    13 => "SQLITE_FULL",
+                    14 => "SQLITE_CANTOPEN",
+                    19 => "SQLITE_CONSTRAINT",
+                    26 => "SQLITE_NOTADB",
+                    _ => null
+                };
+                var code = codeName is null ? sqliteError.SqliteErrorCode.ToString(CultureInfo.InvariantCulture) : $"{codeName}({sqliteError.SqliteErrorCode})";
+                var guidance = sqliteError.SqliteErrorCode is 5 or 6
+                    ? "The database is in use by another program (such as the DeskCal app). Try again shortly."
+                    : "Try again.";
+                body = new JsonObject { ["error"] = $"The local database could not complete the operation. SqliteErrorCode={code}, SqliteExtendedErrorCode={sqliteError.SqliteExtendedErrorCode}. {guidance}" };
+            }
+            else body = new JsonObject { ["error"] = error.Message };
         }
         body["today"] = today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         body["weekday"] = today.DayOfWeek.ToString().ToLowerInvariant();

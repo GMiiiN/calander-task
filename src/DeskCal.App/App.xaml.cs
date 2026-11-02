@@ -64,6 +64,13 @@ public partial class App : Application
                 await RunAsync("holidays", () => HolidaySync.SyncAsync(calendar, holidays, DateTimeOffset.Now, CancellationToken.None));
             ChangeSignal.Notify();
         }
+        catch (Exception exception) when (GoogleAccount.IsRevoked(exception))
+        {
+            // 토큰이 만료·취소됐다. 지우지 않으면 계속 "연결됨"으로 보이고 다시 연결할 수도 없다.
+            LogSync($"token revoked, sign in again: {exception.GetType().Name}: {exception.Message}");
+            await google.ForgetTokenAsync();
+            _tray?.ShowDisconnected(google.Email);
+        }
         catch (Exception exception)
         {
             LogSync($"sign-in failed: {exception.GetType().Name}: {exception.Message}");
@@ -79,7 +86,7 @@ public partial class App : Application
             {
                 await work();
             }
-            catch (Exception exception)
+            catch (Exception exception) when (!GoogleAccount.IsRevoked(exception))
             {
                 LogSync($"{name} failed: {exception.GetType().Name}: {exception.Message}");
             }

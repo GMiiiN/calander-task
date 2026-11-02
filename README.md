@@ -8,7 +8,7 @@ Windows 바탕화면에 붙어 있는 달력·할 일 앱입니다. Claude가 MC
 2. 압축을 푼 폴더에서 `install.cmd`를 두 번 누릅니다. 설치 스크립트가 하는 일은 다음과 같습니다.
    - `%LOCALAPPDATA%\Programs\DeskCal`에 복사하고 시작 메뉴에 바로 가기를 만듭니다. 관리자 권한은 필요 없습니다.
    - `claude` 명령이 있으면 Claude Code에 MCP 서버 `deskcal`을 사용자 범위로 등록합니다.
-   - Claude Desktop 설정 파일(`%APPDATA%\Claude\claude_desktop_config.json`)이 있으면 `mcpServers.deskcal`을 넣습니다. 원래 파일은 `.bak`으로 남깁니다.
+   - Claude Desktop 설정 파일이 있으면 MCP 실행 파일의 등록 명령으로 다른 설정을 보존하면서 `mcpServers.deskcal`만 넣고 원래 파일은 `.bak`으로 남깁니다. 잘못된 설정 파일은 변경하지 않고 경고 후 설치를 계속합니다. 일반 설치는 `%APPDATA%\Claude\claude_desktop_config.json`, Microsoft Store 설치는 `%LOCALAPPDATA%\Claude-Data\claude_*\claude_desktop_config.json`입니다. 로그도 같은 폴더의 `logs`에 있습니다.
    - 설치가 끝나면 앱을 실행합니다.
 3. 알림 영역 아이콘을 오른쪽 클릭하고 **Google 연결**을 누릅니다.
    - 처음이면 OAuth 클라이언트 파일을 고르는 창이 뜹니다. 이미 쓰던 PC의 `%LOCALAPPDATA%\DeskCal\client_secret.json`을 복사해 와서 고르면 됩니다.

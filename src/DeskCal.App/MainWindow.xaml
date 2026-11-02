@@ -10,15 +10,17 @@
     <Window.Resources>
         <local:HexBrushConverter x:Key="HexBrush" />
         <local:VisibilityConverter x:Key="Visible" />
+        <local:BarShapeConverter x:Key="BarShape" />
 
         <!-- 날짜 칸·종일 줄 일정 칩 (Figma Event chip) -->
         <DataTemplate x:Key="ChipTemplate" DataType="{x:Type cal:ChipModel}">
-            <Border x:Name="Chip" Height="16" CornerRadius="4" Padding="4,0" Margin="0,4,0,0"
-                    Background="{Binding ColorHex, Converter={StaticResource HexBrush}, ConverterParameter=0.14}">
+            <Border x:Name="Chip" Height="20" CornerRadius="{Binding Converter={StaticResource BarShape}}" Padding="4,0" Margin="0,4,0,0"
+                    Background="{Binding ColorHex, Converter={StaticResource HexBrush}, ConverterParameter=0.14}"
+                    ToolTip="{Binding PeriodText}">
                 <DockPanel>
-                    <Border x:Name="Bar" Width="2" Height="10" CornerRadius="1" Margin="0,0,4,0"
+                    <Border x:Name="Bar" Width="2" Height="12" CornerRadius="1" Margin="0,0,4,0"
                             Background="{Binding ColorHex, Converter={StaticResource HexBrush}}" />
-                    <TextBlock x:Name="Time" Text="{Binding TimeText}" Style="{StaticResource BaseText}" FontSize="9"
+                    <TextBlock x:Name="Time" Text="{Binding TimeText}" Style="{StaticResource BaseText}" FontSize="11"
                                FontWeight="Medium" Foreground="{DynamicResource SubtleBrush}" Margin="0,0,4,0"
                                VerticalAlignment="Center"
                                Visibility="{Binding TimeText, Converter={StaticResource Visible}}" />
@@ -37,6 +39,13 @@
                     <Setter TargetName="Title" Property="TextDecorations" Value="Strikethrough" />
                     <Setter TargetName="Time" Property="Visibility" Value="Collapsed" />
                 </DataTrigger>
+                <!-- 막대가 앞 칸에서 이어지면 색 띠는 시작 칸에만 둔다. -->
+                <DataTrigger Binding="{Binding JoinsLeft}" Value="True">
+                    <Setter TargetName="Bar" Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
+                    <Setter TargetName="Chip" Property="Visibility" Value="Hidden" />
+                </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
 
@@ -50,7 +59,7 @@
                         <Button Style="{StaticResource BareButton}" DockPanel.Dock="Right" VerticalAlignment="Center"
                                 Click="OnOverflowClick"
                                 Visibility="{Binding OverflowCount, Converter={StaticResource Visible}}">
-                            <TextBlock Style="{StaticResource BaseText}" FontSize="9" FontWeight="Bold" Padding="2,0"
+                            <TextBlock Style="{StaticResource BaseText}" FontSize="11" FontWeight="Bold" Padding="2,0"
                                        Foreground="{DynamicResource SubtleBrush}" Text="{Binding OverflowCount, StringFormat=+{0}}" />
                         </Button>
                         <Grid DockPanel.Dock="Left">
@@ -60,21 +69,29 @@
                                        FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Grid>
                         <!-- 공휴일 이름(§6.3). 칸이 좁으면 말줄임. -->
-                        <TextBlock x:Name="HolidayText" Text="{Binding HolidayName}" Style="{StaticResource BaseText}" FontSize="9"
+                        <TextBlock x:Name="HolidayText" Text="{Binding HolidayName}" Style="{StaticResource BaseText}" FontSize="11"
                                    Foreground="{DynamicResource SundayBrush}" Margin="4,0,0,0" VerticalAlignment="Center"
                                    TextTrimming="CharacterEllipsis" ToolTip="{Binding HolidayName}"
                                    Visibility="{Binding HolidayName, Converter={StaticResource Visible}}" />
                     </DockPanel>
-                    <ItemsControl ItemsSource="{Binding Chips}" ItemTemplate="{StaticResource ChipTemplate}" />
+                    <!-- 막대는 칸 여백(왼쪽 6, 오른쪽 4 + 선 1)만큼 밖으로 늘려 옆 칸과 잇는다. -->
+                    <ItemsControl ItemsSource="{Binding Chips}" ItemTemplate="{StaticResource ChipTemplate}">
+                        <ItemsControl.ItemContainerStyle>
+                            <Style TargetType="ContentPresenter">
+                                <Setter Property="Margin" Value="{Binding Converter={StaticResource BarShape}, ConverterParameter='6,5'}" />
+                            </Style>
+                        </ItemsControl.ItemContainerStyle>
+                    </ItemsControl>
                 </StackPanel>
             </Border>
             <DataTemplate.Triggers>
+                <!-- 주는 월요일에 시작하므로 일요일이 마지막 열이다. -->
                 <DataTrigger Binding="{Binding DayOfWeek}" Value="Sunday">
                     <Setter TargetName="DayNumber" Property="Foreground" Value="{DynamicResource SundayBrush}" />
+                    <Setter TargetName="Cell" Property="BorderThickness" Value="0,0,0,1" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding DayOfWeek}" Value="Saturday">
                     <Setter TargetName="DayNumber" Property="Foreground" Value="{DynamicResource SaturdayBrush}" />
-                    <Setter TargetName="Cell" Property="BorderThickness" Value="0,0,0,1" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding IsHoliday}" Value="True">
                     <Setter TargetName="DayNumber" Property="Foreground" Value="{DynamicResource SundayBrush}" />
@@ -100,7 +117,7 @@
                     <Border x:Name="Bar" Width="3" Background="{Binding Chip.ColorHex, Converter={StaticResource HexBrush}}" />
                     <StackPanel Margin="6,3,4,0">
                         <TextBlock x:Name="Title" Text="{Binding Chip.Title}" Style="{StaticResource BaseText}" FontWeight="Medium" />
-                        <TextBlock Style="{StaticResource BaseText}" FontSize="9" Foreground="{DynamicResource SubtleBrush}"
+                        <TextBlock Style="{StaticResource BaseText}" FontSize="11" Foreground="{DynamicResource SubtleBrush}"
                                    Text="{Binding Converter={x:Static local:WeekBlockTimeConverter.Instance}}" />
                     </StackPanel>
                 </DockPanel>
@@ -117,7 +134,7 @@
 
         <!-- 사이드바 한 줄 (Figma Sidebar item) -->
         <DataTemplate x:Key="SidebarItemTemplate" DataType="{x:Type local:SidebarItemViewModel}">
-            <DockPanel Height="28" Margin="8,0" Background="Transparent">
+            <DockPanel Height="36" Margin="8,0" Background="Transparent">
                 <CheckBox Style="{StaticResource RoundCheck}" IsChecked="{Binding IsDone, Mode=OneWay}" VerticalAlignment="Center"
                           Command="{Binding DataContext.ToggleDoneCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                           CommandParameter="{Binding}" Margin="0,0,8,0" />
@@ -125,8 +142,8 @@
                          Fill="{Binding DotColorHex, Converter={StaticResource HexBrush}}"
                          Visibility="{Binding DotColorHex, Converter={StaticResource Visible}}" />
                 <StackPanel VerticalAlignment="Center">
-                    <TextBlock x:Name="Title" Text="{Binding Title}" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Medium" />
-                    <TextBlock Text="{Binding Meta}" Style="{StaticResource BaseText}" FontSize="9"
+                    <TextBlock x:Name="Title" Text="{Binding Title}" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Medium" />
+                    <TextBlock Text="{Binding Meta}" Style="{StaticResource BaseText}" FontSize="11"
                                Foreground="{DynamicResource MutedBrush}" Margin="0,1,0,0" />
                 </StackPanel>
             </DockPanel>
@@ -165,12 +182,12 @@
                                 <StackPanel Orientation="Horizontal">
                                     <Button Style="{StaticResource BareButton}" Command="{Binding ShowMonthCommand}">
                                         <Border x:Name="MonthTabBox" CornerRadius="99" Padding="10,4">
-                                            <TextBlock x:Name="MonthTabText" Text="월간" Style="{StaticResource BaseText}" FontSize="11" />
+                                            <TextBlock x:Name="MonthTabText" Text="월간" Style="{StaticResource BaseText}" FontSize="13" />
                                         </Border>
                                     </Button>
                                     <Button Style="{StaticResource BareButton}" Command="{Binding ShowWeekCommand}" Margin="2,0,0,0">
                                         <Border x:Name="WeekTabBox" CornerRadius="99" Padding="10,4">
-                                            <TextBlock x:Name="WeekTabText" Text="주간" Style="{StaticResource BaseText}" FontSize="11" />
+                                            <TextBlock x:Name="WeekTabText" Text="주간" Style="{StaticResource BaseText}" FontSize="13" />
                                         </Border>
                                     </Button>
                                 </StackPanel>
@@ -195,7 +212,7 @@
                             <Button Style="{StaticResource BareButton}" Command="{Binding TodayCommand}" Margin="6,0">
                                 <Border Height="26" CornerRadius="13" BorderThickness="1" Padding="10,0" Background="{StaticResource GlassButtonBrush}"
                                         BorderBrush="{StaticResource GlassRimBrush}">
-                                    <TextBlock Text="오늘" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Medium" VerticalAlignment="Center" />
+                                    <TextBlock Text="오늘" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Medium" VerticalAlignment="Center" />
                                 </Border>
                             </Button>
                             <Button Style="{StaticResource BareButton}" Command="{Binding NextCommand}">
@@ -206,9 +223,9 @@
                             </Button>
                         </StackPanel>
                         <StackPanel>
-                            <TextBlock Text="{Binding YearText}" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Medium"
+                            <TextBlock Text="{Binding YearText}" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Medium"
                                        Foreground="{DynamicResource SubtleBrush}" />
-                            <TextBlock Text="{Binding TitleText}" Style="{StaticResource BaseText}" FontSize="22" FontWeight="Bold"
+                            <TextBlock Text="{Binding TitleText}" Style="{StaticResource BaseText}" FontSize="24" FontWeight="Bold"
                                        LineHeight="28" LineStackingStrategy="BlockLineHeight" Margin="0,1,0,0" />
                         </StackPanel>
                     </DockPanel>
@@ -264,7 +281,7 @@
                                                    Text="{Binding Date, Converter={x:Static local:KoreanWeekdayConverter.Instance}}" />
                                         <Grid HorizontalAlignment="Center" Margin="0,2,0,0">
                                             <Ellipse x:Name="Badge" Width="20" Height="20" Fill="{DynamicResource AccentBrush}" Visibility="Collapsed" />
-                                            <TextBlock x:Name="Number" Text="{Binding Date.Day}" Style="{StaticResource BaseText}" FontSize="14"
+                                            <TextBlock x:Name="Number" Text="{Binding Date.Day}" Style="{StaticResource BaseText}" FontSize="16"
                                                        FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                         </Grid>
                                     </StackPanel>
@@ -293,21 +310,30 @@
                     </ItemsControl>
 
                     <!-- 종일 줄 -->
-                    <TextBlock Grid.Row="1" Text="종일" Style="{StaticResource BaseText}" FontSize="9" Foreground="{DynamicResource MutedBrush}"
+                    <TextBlock Grid.Row="1" Text="종일" Style="{StaticResource BaseText}" FontSize="11" Foreground="{DynamicResource MutedBrush}"
                                HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    <ItemsControl Grid.Row="1" Grid.Column="1" ItemsSource="{Binding Week.Days}">
+                    <!-- 종일 항목이 많아도 시간표를 덮지 않도록 높이를 제한하고 휠로 스크롤한다.
+                         칩 3개 반 높이라 넘치는 항목이 있으면 네 번째 칩이 반쯤 보인다.
+                         스크롤은 줄 전체에 하나만 둔다. 날짜마다 따로 스크롤하면 이어진 막대의 높이가 칸마다 어긋난다. -->
+                    <Border Grid.Row="1" Grid.Column="1" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="0,0,0,1">
+                        <ScrollViewer MaxHeight="88" VerticalScrollBarVisibility="Hidden">
+                    <ItemsControl ItemsSource="{Binding Week.Days}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate><UniformGrid Rows="1" /></ItemsPanelTemplate>
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate DataType="{x:Type cal:WeekDayModel}">
-                                <Border x:Name="AllDay" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,1"
-                                        Padding="3,0,3,4" MinHeight="26">
-                                    <!-- 종일 항목이 많아도 시간표를 덮지 않도록 높이를 제한하고 휠로 스크롤한다.
-                                         칩 3개 반 높이라 넘치는 항목이 있으면 네 번째 칩이 반쯤 보인다. -->
-                                    <ScrollViewer MaxHeight="70" VerticalScrollBarVisibility="Hidden">
-                                        <ItemsControl ItemsSource="{Binding AllDay}" ItemTemplate="{StaticResource ChipTemplate}" />
-                                    </ScrollViewer>
+                                <!-- 막대는 칸 여백만큼(왼쪽 3 + 선 1, 오른쪽 3) 밖으로 늘려 옆 칸과 잇는다.
+                                     배경이 없으면 빈 칸 클릭이 바깥 ScrollViewer로 빠져 더블클릭 새 일정이 안 된다. -->
+                                <Border x:Name="AllDay" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,0"
+                                        Background="Transparent" Padding="3,0,3,4" MinHeight="30">
+                                    <ItemsControl ItemsSource="{Binding AllDay}" ItemTemplate="{StaticResource ChipTemplate}">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="Margin" Value="{Binding Converter={StaticResource BarShape}, ConverterParameter='4,3'}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
+                                    </ItemsControl>
                                 </Border>
                                 <DataTemplate.Triggers>
                                     <DataTrigger Binding="{Binding IsToday}" Value="True">
@@ -317,6 +343,8 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
+                        </ScrollViewer>
+                    </Border>
 
                     <!-- 시간표 -->
                     <ScrollViewer x:Name="TimeScroll" Grid.Row="2" Grid.ColumnSpan="2" VerticalScrollBarVisibility="Hidden">
@@ -393,7 +421,7 @@
                 <Border BorderBrush="{DynamicResource HeaderLineBrush}" BorderThickness="0,0,0,1" Padding="20,18,16,14"
                         Visibility="{Binding Ddays.Count, Converter={StaticResource Visible}}">
                     <StackPanel>
-                        <TextBlock Text="D-day" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource SubtleBrush}" />
+                        <TextBlock Text="D-day" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Bold" Foreground="{DynamicResource SubtleBrush}" />
                         <ItemsControl ItemsSource="{Binding Ddays}" Margin="0,8,0,-6">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
@@ -422,7 +450,7 @@
 
                 <DockPanel Grid.Row="1" Margin="12,14,12,0">
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,0,0,10">
-                        <TextBlock Text="할 일 · 2주 일정" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource SubtleBrush}" />
+                        <TextBlock Text="할 일 · 2주 일정" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Bold" Foreground="{DynamicResource SubtleBrush}" />
                         <TextBlock Text="{Binding AgendaCount}" Style="{StaticResource BaseText}" FontWeight="Bold"
                                    Foreground="{DynamicResource AccentBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
@@ -456,11 +484,11 @@
                             <Path Data="{StaticResource PlusIcon}" Width="12" Height="12" Stroke="{DynamicResource AccentBrush}"
                                   StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Margin="0,0,6,0" />
                             <Grid>
-                                <TextBlock Text="할 일 추가" Style="{StaticResource BaseText}" FontSize="11" Foreground="{DynamicResource MutedBrush}"
+                                <TextBlock Text="할 일 추가" Style="{StaticResource BaseText}" FontSize="13" Foreground="{DynamicResource MutedBrush}"
                                            IsHitTestVisible="False"
                                            Visibility="{Binding Text, ElementName=NewTodoBox, Converter={StaticResource Visible}, ConverterParameter=Invert}" />
                                 <TextBox x:Name="NewTodoBox" Text="{Binding NewTodoTitle, UpdateSourceTrigger=PropertyChanged}"
-                                         FontFamily="{StaticResource AppFont}" FontSize="11" Foreground="{DynamicResource TextBrush}"
+                                         FontFamily="{StaticResource AppFont}" FontSize="13" Foreground="{DynamicResource TextBrush}"
                                          Background="Transparent" BorderThickness="0" Padding="0"
                                          PreviewMouseLeftButtonDown="OnInputMouseDown" LostKeyboardFocus="OnInputBlur">
                                     <TextBox.InputBindings>
@@ -482,13 +510,13 @@
                     Background="{DynamicResource PopupBrush}" BorderThickness="1" BorderBrush="{DynamicResource ControlBorderBrush}"
                     Effect="{StaticResource CardShadow}">
                 <StackPanel>
-                    <TextBlock Text="크기·위치 조정" Style="{StaticResource BaseText}" FontSize="14" FontWeight="Bold"
+                    <TextBlock Text="크기·위치 조정" Style="{StaticResource BaseText}" FontSize="16" FontWeight="Bold"
                                HorizontalAlignment="Center" />
-                    <TextBlock Text="안쪽을 끌어 옮기고, 가장자리를 끌어 크기를 바꿉니다." Style="{StaticResource BaseText}" FontSize="11"
+                    <TextBlock Text="안쪽을 끌어 옮기고, 가장자리를 끌어 크기를 바꿉니다." Style="{StaticResource BaseText}" FontSize="13"
                                Foreground="{DynamicResource SubtleBrush}" Margin="0,6,0,12" HorizontalAlignment="Center" />
                     <Button x:Name="AdjustDoneButton" Style="{StaticResource BareButton}" Click="OnAdjustDone" HorizontalAlignment="Center">
                         <Border CornerRadius="99" Padding="16,6" Background="{DynamicResource AccentBrush}">
-                            <TextBlock Text="완료 (Enter)" Style="{StaticResource BaseText}" FontSize="12" FontWeight="Bold" Foreground="White" />
+                            <TextBlock Text="완료 (Enter)" Style="{StaticResource BaseText}" FontSize="14" FontWeight="Bold" Foreground="White" />
                         </Border>
                     </Button>
                 </StackPanel>
