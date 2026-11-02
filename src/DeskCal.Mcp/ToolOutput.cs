@@ -10,6 +10,7 @@ internal sealed class ToolOutput(Database database, EventRepository events)
 {
     internal static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
     private readonly IReadOnlyList<Category> _categories = ReadCategories(database);
+    private readonly bool _signedIn = ReadSignedIn(database);
     private Dictionary<string, EventRecord>? _parents;
 
     public IReadOnlyList<Category> Categories => _categories;
@@ -45,21 +46,39 @@ internal sealed class ToolOutput(Database database, EventRepository events)
             IsRecurring = parent.RecurrenceRule is not null, RepeatEditable = RecurrenceInput.IsEditable(parent.RecurrenceRule),
             value.CreatedBy, IsDeleted = parent.DeletedAt is not null || parent.Status == "cancelled" || value.DeletedAt is not null || value.Status == "cancelled"
         });
-        return AddSync(output);
+        return AddSync(output, value.PushState);
     }
     public JsonObject Occurrence(EventOccurrence value) => Event(value.Event, value.OccurrenceId);
     public JsonObject Todo(TodoRecord value) => AddSync(Object(new
     {
         TodoId = value.TodoUid, value.Title, value.Memo, value.DueDate, value.IsDone, value.CompletedAt,
         value.CreatedBy, IsDeleted = value.DeletedAt is not null
-    }));
+    }), value.PushState);
 
-    // M1 is local-only. Replace this one policy when SyncEngine reports per-revision outcomes.
-    private static JsonObject AddSync(JsonObject item)
+    // SyncEngine records each row's push outcome in push_state; report it as is (§7.3).
+    // Anything not yet on Google is "pending"; reason says why, when there is something to fix.
+    private JsonObject AddSync(JsonObject item, string pushState)
     {
-        item["sync"] = "pending";
-        item["reason"] = "not_signed_in";
+        item["sync"] = pushState == "synced" ? "synced" : "pending";
+        var reason = pushState switch
+        {
+            "synced" => null,
+            _ when !_signedIn => "not_signed_in",
+            "failed" => "push_failed",
+            "unknown" => "needs_review",
+            _ => null
+        };
+        if (reason is not null) item["reason"] = reason;
         return item;
+    }
+
+    private static bool ReadSignedIn(Database database)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM setting WHERE setting_key = $key;";
+        command.Parameters.AddWithValue("$key", ProtectedTokenStore.SettingKey);
+        return command.ExecuteScalar() is not null;
     }
     public static JsonObject Object(object value) => JsonSerializer.SerializeToNode(value, JsonOptions)!.AsObject();
 

@@ -503,7 +503,7 @@ Claude Desktop은 `claude_desktop_config.json`의 `mcpServers`에 같은 경로.
 - ID: `event_id`(= `event_uid`), `todo_id`(= `todo_uid`). 반복 회차는 불투명 **`occurrence_id`**(`<event_uid>~<original_start_key>`). Google ID는 노출하지 않는다.
 - 부분 수정: 필드 **생략 = 유지**, **`null` = 해제**. 해제할 수 없는 필드(`title` 등)에 `null`이면 거부.
 - 검증 실패는 `isError: true` + 사람이 읽을 메시지 → Claude가 고쳐서 재시도.
-- 쓰기 결과의 동기화 상태(항목별): `synced`(그 revision이 원격에 반영됨) / `pending`(로컬에만, 나중에 자동 전송) / `conflict`(원격 우선으로 이 변경이 폐기됨) + `reason`(`offline`, `not_signed_in`, `busy` 등). 412로 폐기된 요청을 성공으로 보고하지 않는다.
+- 쓰기 결과의 동기화 상태(항목별): `synced`(그 revision이 원격에 반영됨) / `pending`(로컬에만, 나중에 자동 전송) / `conflict`(원격 우선으로 이 변경이 폐기됨) + `reason`(`offline`, `not_signed_in`, `busy`, `push_failed`(전송 실패, 다음 차례에 재시도), `needs_review`(전송 결과 불명, §5 unknown) 등). 412로 폐기된 요청을 성공으로 보고하지 않는다.
 
 ### 7.4 도구 (14개)
 
