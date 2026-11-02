@@ -10,11 +10,13 @@
     <Window.Resources>
         <local:HexBrushConverter x:Key="HexBrush" />
         <local:VisibilityConverter x:Key="Visible" />
+        <local:BarShapeConverter x:Key="BarShape" />
 
         <!-- 날짜 칸·종일 줄 일정 칩 (Figma Event chip) -->
         <DataTemplate x:Key="ChipTemplate" DataType="{x:Type cal:ChipModel}">
-            <Border x:Name="Chip" Height="16" CornerRadius="4" Padding="4,0" Margin="0,4,0,0"
-                    Background="{Binding ColorHex, Converter={StaticResource HexBrush}, ConverterParameter=0.14}">
+            <Border x:Name="Chip" Height="16" CornerRadius="{Binding Converter={StaticResource BarShape}}" Padding="4,0" Margin="0,4,0,0"
+                    Background="{Binding ColorHex, Converter={StaticResource HexBrush}, ConverterParameter=0.14}"
+                    ToolTip="{Binding PeriodText}">
                 <DockPanel>
                     <Border x:Name="Bar" Width="2" Height="10" CornerRadius="1" Margin="0,0,4,0"
                             Background="{Binding ColorHex, Converter={StaticResource HexBrush}}" />
@@ -36,6 +38,13 @@
                     <Setter TargetName="Title" Property="Foreground" Value="{DynamicResource MutedBrush}" />
                     <Setter TargetName="Title" Property="TextDecorations" Value="Strikethrough" />
                     <Setter TargetName="Time" Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+                <!-- 막대가 앞 칸에서 이어지면 색 띠는 시작 칸에만 둔다. -->
+                <DataTrigger Binding="{Binding JoinsLeft}" Value="True">
+                    <Setter TargetName="Bar" Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
+                    <Setter TargetName="Chip" Property="Visibility" Value="Hidden" />
                 </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
@@ -65,7 +74,14 @@
                                    TextTrimming="CharacterEllipsis" ToolTip="{Binding HolidayName}"
                                    Visibility="{Binding HolidayName, Converter={StaticResource Visible}}" />
                     </DockPanel>
-                    <ItemsControl ItemsSource="{Binding Chips}" ItemTemplate="{StaticResource ChipTemplate}" />
+                    <!-- 막대는 칸 여백(왼쪽 6, 오른쪽 4 + 선 1)만큼 밖으로 늘려 옆 칸과 잇는다. -->
+                    <ItemsControl ItemsSource="{Binding Chips}" ItemTemplate="{StaticResource ChipTemplate}">
+                        <ItemsControl.ItemContainerStyle>
+                            <Style TargetType="ContentPresenter">
+                                <Setter Property="Margin" Value="{Binding Converter={StaticResource BarShape}, ConverterParameter='6,5'}" />
+                            </Style>
+                        </ItemsControl.ItemContainerStyle>
+                    </ItemsControl>
                 </StackPanel>
             </Border>
             <DataTemplate.Triggers>
@@ -303,11 +319,18 @@
                         <ItemsControl.ItemTemplate>
                             <DataTemplate DataType="{x:Type cal:WeekDayModel}">
                                 <Border x:Name="AllDay" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,1"
-                                        Padding="3,0,3,4" MinHeight="26">
+                                        Padding="0,0,0,4" MinHeight="26">
                                     <!-- 종일 항목이 많아도 시간표를 덮지 않도록 높이를 제한하고 휠로 스크롤한다.
-                                         칩 3개 반 높이라 넘치는 항목이 있으면 네 번째 칩이 반쯤 보인다. -->
+                                         칩 3개 반 높이라 넘치는 항목이 있으면 네 번째 칩이 반쯤 보인다.
+                                         좌우 여백을 ScrollViewer 안쪽에 두어야 막대를 여백만큼 늘려도 잘리지 않는다. -->
                                     <ScrollViewer MaxHeight="70" VerticalScrollBarVisibility="Hidden">
-                                        <ItemsControl ItemsSource="{Binding AllDay}" ItemTemplate="{StaticResource ChipTemplate}" />
+                                        <ItemsControl ItemsSource="{Binding AllDay}" ItemTemplate="{StaticResource ChipTemplate}" Margin="3,0">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="Margin" Value="{Binding Converter={StaticResource BarShape}, ConverterParameter='3,3'}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
+                                        </ItemsControl>
                                     </ScrollViewer>
                                 </Border>
                                 <DataTemplate.Triggers>
