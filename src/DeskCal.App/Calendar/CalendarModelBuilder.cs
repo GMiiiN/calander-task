@@ -13,8 +13,8 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
     public MonthModel BuildMonth(int year, int month, DateOnly today)
     {
         var first = new DateOnly(year, month, 1);
-        var start = first.AddDays(-(int)first.DayOfWeek);
-        var dayCount = ((int)first.DayOfWeek + DateTime.DaysInMonth(year, month) + 6) / 7 * 7;
+        var start = WeekStartOf(first);
+        var dayCount = (DaysFromMonday(first) + DateTime.DaysInMonth(year, month) + 6) / 7 * 7;
         var occurrences = events.List(start, start.AddDays(dayCount - 1));
         var dueTodos = todos.List("all");
         var holidays = new HolidayRepository(database).List(start, start.AddDays(dayCount - 1));
@@ -36,7 +36,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
 
     public WeekModel BuildWeek(DateOnly anyDay, DateOnly today)
     {
-        var start = anyDay.AddDays(-(int)anyDay.DayOfWeek);
+        var start = WeekStartOf(anyDay);
         var occurrences = events.List(start, start.AddDays(6));
         var dueTodos = todos.List("all");
         var holidays = new HolidayRepository(database).List(start, start.AddDays(6));
@@ -119,6 +119,10 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         while (reader.Read()) result.Add(reader.GetString(0), reader.GetString(1));
         return result;
     }
+
+    // 주는 월요일에 시작한다(월~일).
+    private static int DaysFromMonday(DateOnly date) => ((int)date.DayOfWeek + 6) % 7;
+    private static DateOnly WeekStartOf(DateOnly date) => date.AddDays(-DaysFromMonday(date));
 
     private static DateTime Min(DateTime left, DateTime right) => left < right ? left : right;
     private static DateTime Max(DateTime left, DateTime right) => left > right ? left : right;

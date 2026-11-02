@@ -69,12 +69,13 @@
                 </StackPanel>
             </Border>
             <DataTemplate.Triggers>
+                <!-- 주는 월요일에 시작하므로 일요일이 마지막 열이다. -->
                 <DataTrigger Binding="{Binding DayOfWeek}" Value="Sunday">
                     <Setter TargetName="DayNumber" Property="Foreground" Value="{DynamicResource SundayBrush}" />
+                    <Setter TargetName="Cell" Property="BorderThickness" Value="0,0,0,1" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding DayOfWeek}" Value="Saturday">
                     <Setter TargetName="DayNumber" Property="Foreground" Value="{DynamicResource SaturdayBrush}" />
-                    <Setter TargetName="Cell" Property="BorderThickness" Value="0,0,0,1" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding IsHoliday}" Value="True">
                     <Setter TargetName="DayNumber" Property="Foreground" Value="{DynamicResource SundayBrush}" />

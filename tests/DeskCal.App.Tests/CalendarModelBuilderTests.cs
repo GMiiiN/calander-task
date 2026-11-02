@@ -23,10 +23,10 @@ public sealed class CalendarModelBuilderTests : IDisposable
     private CalendarModelBuilder Builder() => new(events, todos, database);
 
     [Theory]
-    [InlineData(2026, 2, 4)]
-    [InlineData(2026, 11, 5)]
-    [InlineData(2026, 8, 6)]
-    public void MonthUsesRequiredSundayBasedWeeks(int year, int month, int count)
+    [InlineData(2027, 2, 4)]
+    [InlineData(2026, 2, 5)]
+    [InlineData(2026, 11, 6)]
+    public void MonthUsesRequiredMondayBasedWeeks(int year, int month, int count)
     {
         var model = Builder().BuildMonth(year, month, TODAY);
         Assert.Equal(year, model.Year);
@@ -35,8 +35,8 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.All(model.Weeks, week =>
         {
             Assert.Equal(7, week.Count);
-            Assert.Equal(DayOfWeek.Sunday, week[0].DayOfWeek);
-            Assert.Equal(DayOfWeek.Saturday, week[6].DayOfWeek);
+            Assert.Equal(DayOfWeek.Monday, week[0].DayOfWeek);
+            Assert.Equal(DayOfWeek.Sunday, week[6].DayOfWeek);
         });
         Assert.Equal(DateTime.DaysInMonth(year, month), model.Weeks.SelectMany(w => w).Count(d => d.IsCurrentMonth));
     }
@@ -155,19 +155,19 @@ public sealed class CalendarModelBuilderTests : IDisposable
         var task = todos.Create([new("done todo", "2026-10-30")])[0];
         todos.Update(task.TodoUid, new() { IsDone = true });
         var model = Builder().BuildWeek(TODAY, TODAY);
-        Assert.Equal(new DateOnly(2026, 10, 25), model.WeekStart);
+        Assert.Equal(new DateOnly(2026, 10, 26), model.WeekStart);
         Assert.Equal(7, model.Days.Count);
-        var thursday = model.Days[4];
+        var thursday = model.Days[3];
         var first = Assert.Single(thursday.Blocks);
         Assert.Equal((1380, 1440), (first.StartMinute, first.EndMinute));
-        var friday = model.Days[5];
+        var friday = model.Days[4];
         Assert.True(friday.IsToday);
         Assert.Equal((0, 90), (friday.Blocks[0].StartMinute, friday.Blocks[0].EndMinute));
         Assert.Equal("23:00", friday.Blocks[0].Chip.TimeText);
         Assert.Equal((1320, 1440), (friday.Blocks[1].StartMinute, friday.Blocks[1].EndMinute));
         Assert.Equal(new[] { "all day", "done todo" }, friday.AllDay.Select(c => c.Title));
         Assert.True(friday.AllDay[1].IsDone);
-        Assert.Empty(model.Days[6].Blocks);
+        Assert.Empty(model.Days[5].Blocks);
     }
 
     [Fact]
@@ -181,7 +181,7 @@ public sealed class CalendarModelBuilderTests : IDisposable
             new("adjacent", "2026-10-30") { StartTime = "11:00", EndTime = "12:00" },
             new("separate", "2026-10-30") { StartTime = "13:00", EndTime = "14:00" }
         ]);
-        var blocks = Builder().BuildWeek(TODAY, TODAY).Days[5].Blocks;
+        var blocks = Builder().BuildWeek(TODAY, TODAY).Days[4].Blocks;
         Assert.Equal(new[] { 0, 1, 0, 2, 0, 0 }, blocks.Select(b => b.Column));
         Assert.Equal(new[] { 3, 3, 3, 3, 1, 1 }, blocks.Select(b => b.ColumnCount));
         foreach (var left in blocks)
@@ -198,7 +198,7 @@ public sealed class CalendarModelBuilderTests : IDisposable
             new("short2", "2026-10-30") { StartTime = "09:10", EndTime = "09:20" },
             new("after", "2026-10-30") { StartTime = "09:30", EndTime = "10:00" }
         ]);
-        var blocks = Builder().BuildWeek(TODAY, TODAY).Days[5].Blocks;
+        var blocks = Builder().BuildWeek(TODAY, TODAY).Days[4].Blocks;
         Assert.Equal(new[] { 0, 1, 0 }, blocks.Select(b => b.Column));
         Assert.Equal(new[] { 2, 2, 2 }, blocks.Select(b => b.ColumnCount));
     }
