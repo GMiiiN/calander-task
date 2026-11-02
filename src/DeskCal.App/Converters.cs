@@ -33,6 +33,26 @@ public sealed class VisibilityConverter : IValueConverter
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotSupportedException();
 }
 
+// 여러 날 일정 막대: 이어지는 쪽은 칸의 안쪽 여백만큼 밖으로 늘리고(옆 칸 막대와 맞닿게) 모서리를 각지게 한다.
+// ConverterParameter = "왼쪽,오른쪽" 늘릴 폭(칸마다 여백이 다르다). 대상이 CornerRadius면 모서리를 돌려준다.
+public sealed class BarShapeConverter : IValueConverter
+{
+    private const double RADIUS = 4;
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        var chip = value as Calendar.ChipModel;
+        var left = chip?.JoinsLeft == true;
+        var right = chip?.JoinsRight == true;
+        if (targetType == typeof(CornerRadius))
+            return new CornerRadius(left ? 0 : RADIUS, right ? 0 : RADIUS, right ? 0 : RADIUS, left ? 0 : RADIUS);
+        var extend = ((string)parameter!).Split(',').Select(s => double.Parse(s, CultureInfo.InvariantCulture)).ToArray();
+        return new Thickness(left ? -extend[0] : 0, 0, right ? -extend[1] : 0, 0);
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotSupportedException();
+}
+
 public sealed class KoreanWeekdayConverter : IValueConverter
 {
     public static readonly KoreanWeekdayConverter Instance = new();
