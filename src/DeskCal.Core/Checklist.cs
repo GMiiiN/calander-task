@@ -14,6 +14,7 @@ public static class Checklist
 {
     public const int MAX_ITEMS = 40;
     public const int MAX_TEXT_LENGTH = 200;
+    private const int MAX_ENCODED_LENGTH = 900;
     private const string KEY_PREFIX = "deskcalCheck";
     private static readonly JsonSerializerOptions Json = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -32,12 +33,10 @@ public static class Checklist
     public static IReadOnlyList<ChecklistItem> Update(IReadOnlyList<ChecklistItem> items, string itemId, string? text = null, bool? isDone = null, bool? isDeleted = null)
     {
         var found = items.SingleOrDefault(i => i.ItemId == itemId) ?? throw new KeyNotFoundException("Checklist item not found.");
-        var changed = found with
-        {
-            Text = text is null ? found.Text : ValidText(text), IsDone = isDone ?? found.IsDone,
-            IsDeleted = isDeleted ?? found.IsDeleted, Revision = found.Revision + 1
-        };
-        return items.Select(i => i.ItemId == itemId ? changed : i).ToArray();
+        var changed = found with { Text = text is null ? found.Text : ValidText(text), IsDone = isDone ?? found.IsDone, IsDeleted = isDeleted ?? found.IsDeleted };
+        // 바뀐 것이 없으면 번호를 올리지 않는다. 올리면 다른 PC의 진짜 변경을 옛 값이 이긴다.
+        if (changed == found) return items;
+        return items.Select(i => i.ItemId == itemId ? changed with { Revision = found.Revision + 1 } : i).ToArray();
     }
 
     // 항목마다 변경 번호가 높은 쪽을 따른다(기기 시계를 믿지 않는다). 같은 번호로 내용이 다르면 서버에 나중에 도착하는 이 PC의 값을 번호를 올려 남긴다.
@@ -81,7 +80,9 @@ public static class Checklist
     private static string ValidText(string text)
     {
         var value = text.Trim();
-        if (value.Length is 0 or > MAX_TEXT_LENGTH) throw new ArgumentException($"Checklist text must be 1 to {MAX_TEXT_LENGTH} characters.");
+        // 제어 문자는 JSON에서 6배로 늘어난다. Google은 1024자가 넘는 값을 잘라 버리므로 직렬화한 길이까지 본다.
+        if (value.Length is 0 or > MAX_TEXT_LENGTH || JsonSerializer.Serialize(value, Json).Length > MAX_ENCODED_LENGTH)
+            throw new ArgumentException($"Checklist text must be 1 to {MAX_TEXT_LENGTH} characters without control characters.");
         return value;
     }
 

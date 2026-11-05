@@ -239,8 +239,10 @@ public sealed class CalendarTools(Database database)
     {
         input.Only("event_id", "occurrence_id", "item_id", "text", "is_done");
         var (id, isOccurrence) = input.EventId();
-        if (!input.Has("text") && !input.Has("is_done")) throw new ArgumentException("Supply text or is_done.");
-        var value = _events.UpdateChecklistItem(id, isOccurrence, input.Required("item_id"), input.Text("text"), input.Boolean("is_done"));
+        var text = input.Text("text");
+        var isDone = input.Boolean("is_done");
+        if (text is null && isDone is null) throw new ArgumentException("Supply text or is_done.");
+        var value = _events.UpdateChecklistItem(id, isOccurrence, input.Required("item_id"), text, isDone);
         return ToolOutput.Object(new { Event = output.Event(value, isOccurrence ? id : null) });
     }
 

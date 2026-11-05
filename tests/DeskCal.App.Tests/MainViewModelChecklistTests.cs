@@ -43,6 +43,20 @@ public sealed class MainViewModelChecklistTests : IDisposable
     }
 
     [Fact]
+    public void SavingAfterTheEventWasDeletedElsewhereDoesNotThrow()
+    {
+        _events.AddChecklistItems(_eventId, false, ["안건"]);
+        var model = new MainViewModel(_database);
+        var item = Item(model).Checklist![0];
+
+        model.BeginChecklistEdit(item);
+        _events.Delete(_eventId);
+        model.EndChecklistEdit(item, "바뀐 안건");
+
+        Assert.DoesNotContain(model.Groups.SelectMany(g => g.Items), i => i.EventId is not null);
+    }
+
+    [Fact]
     public void CheckingAndDeletingChangeTheStoredItem()
     {
         _events.AddChecklistItems(_eventId, false, ["안건", "자료"]);

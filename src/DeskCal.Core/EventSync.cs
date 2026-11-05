@@ -131,7 +131,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                         etag = current.ETag;
                     }
                     var patched = await remote.PatchAsync(instanceId, ToRemote(value, isInstance: true), etag, cancellationToken);
-                    Apply(snapshot, patched.Id, patched.ETag);
+                    Apply(snapshot, patched.Id, patched.ETag, patched);
                 }
                 else if (value.DeletedAt is not null)
                 {
@@ -147,7 +147,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 {
                     patchedId = value.GoogleEventId!;
                     var patched = await remote.PatchAsync(patchedId, ToRemote(value, isInstance: false), snapshot.Etag, cancellationToken);
-                    Apply(snapshot, patched.Id, patched.ETag);
+                    Apply(snapshot, patched.Id, patched.ETag, patched);
                 }
             }
             catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed && patchedId is not null)
@@ -181,8 +181,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             var properties = new Dictionary<string, string>();
             Checklist.WriteProperties(merged, properties);
             await remote.PatchAsync(remoteId, new Event { ExtendedProperties = new Event.ExtendedPropertiesData { Private__ = properties } }, current.ETag, cancellationToken);
-            // 올리는 사이에 또 고쳤으면 dirty로 남겨 다음 동기화에서 다시 합친다.
-            if (SaveMergedChecklist(snapshot, merged)) Discard(snapshot);
+            Discard(snapshot, merged);
         }
         catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed)
         {
@@ -196,14 +195,6 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         {
             MarkFailed(snapshot, exception.Message);
         }
-    }
-
-    private bool SaveMergedChecklist(Stored snapshot, IReadOnlyList<ChecklistItem> merged)
-    {
-        using var connection = database.OpenConnection();
-        using var command = Sql.Command(connection, null, "UPDATE event SET checklist=$checklist WHERE event_id=$event AND local_revision=$revision;",
-            ("$checklist", Checklist.Serialize(merged)), ("$event", snapshot.Record.EventId), ("$revision", snapshot.Record.LocalRevision));
-        return command.ExecuteNonQuery() == 1;
     }
 
     // ID를 미리 정해 두었으므로(§5.3) 응답을 못 받고 다시 보내도 409가 나서 중복이 생기지 않는다.
@@ -232,7 +223,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 return;
             }
             // 지난번 생성이 실제로는 성공했다. 연결하고 dirty를 남겨 다음 회차에 최신 내용을 patch한다.
-            LinkOnly(snapshot, existing.ETag);
+            LinkOnly(snapshot, existing);
         }
     }
 
@@ -273,34 +264,50 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
     // 회차 키(종일 'YYYY-MM-DD', 시간 'YYYY-MM-DDTHH:MM:SSZ')를 Google 인스턴스 ID 꼬리로 바꾼다.
     internal static string InstanceSuffix(string key) => key.Length == 10 ? key.Replace("-", "") : key.Replace("-", "").Replace(":", "");
 
-    private void Apply(Stored snapshot, string? googleId, string? etag)
+    // patch는 보내지 않은 키를 남기므로 응답에 다른 PC가 넣은 항목이 있을 수 있다. 그 뒤 etag가 같으면 pull이 건너뛰므로 여기서 합친다.
+    private void Apply(Stored snapshot, string? googleId, string? etag, Event? response = null)
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
         var same = CurrentRevision(connection, transaction, snapshot.Record.EventId) == snapshot.Record.LocalRevision;
+        var checklist = same && response is not null
+            ? Checklist.Serialize(Checklist.Merge(snapshot.Record.Checklist, Checklist.ReadProperties(response.ExtendedProperties?.Private__))) : null;
         using var command = Sql.Command(connection, transaction,
-            "UPDATE event SET google_event_id=$id, google_etag=$etag, attempt_count=0, last_error=NULL" +
+            "UPDATE event SET google_event_id=$id, google_etag=$etag, attempt_count=0, last_error=NULL, checklist=COALESCE($checklist, checklist)" +
             (same ? ", is_dirty=0, push_state='synced'" : "") + " WHERE event_id=$event;",
-            ("$id", googleId), ("$etag", etag), ("$event", snapshot.Record.EventId));
+            ("$id", googleId), ("$etag", etag), ("$checklist", checklist), ("$event", snapshot.Record.EventId));
         command.ExecuteNonQuery();
         transaction.Commit();
     }
 
-    private void LinkOnly(Stored snapshot, string? etag)
+    private void LinkOnly(Stored snapshot, Event existing)
     {
         using var connection = database.OpenConnection();
-        using var command = Sql.Command(connection, null, "UPDATE event SET google_etag=$etag WHERE event_id=$event;",
-            ("$etag", etag), ("$event", snapshot.Record.EventId));
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var current = ReadAll(connection, transaction).Single(s => s.Record.EventId == snapshot.Record.EventId).Record;
+        // 생성 응답을 못 받은 사이 다른 PC가 고쳤을 수 있다. 다음 patch가 그 값을 되돌리지 않게 먼저 합친다.
+        var merged = Checklist.Merge(current.Checklist, Checklist.ReadProperties(existing.ExtendedProperties?.Private__));
+        using var command = Sql.Command(connection, transaction, "UPDATE event SET google_etag=$etag, checklist=$checklist WHERE event_id=$event;",
+            ("$etag", existing.ETag), ("$checklist", Checklist.Serialize(merged)), ("$event", snapshot.Record.EventId));
         command.ExecuteNonQuery();
+        transaction.Commit();
     }
 
-    private void Discard(Stored snapshot)
+    private void Discard(Stored snapshot, IReadOnlyList<ChecklistItem>? merged = null)
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
         // 보내는 사이에 또 고쳤으면 그 최신 내용을 남긴다(버리는 것은 지금 행이다).
-        var discarded = CurrentRevision(connection, transaction, snapshot.Record.EventId) == snapshot.Record.LocalRevision
-            ? snapshot.Record : ReadAll(connection, transaction).Single(s => s.Record.EventId == snapshot.Record.EventId).Record;
+        var isCurrent = CurrentRevision(connection, transaction, snapshot.Record.EventId) == snapshot.Record.LocalRevision;
+        var discarded = isCurrent ? snapshot.Record : ReadAll(connection, transaction).Single(s => s.Record.EventId == snapshot.Record.EventId).Record;
+        // 체크리스트를 또 고쳤으면 dirty로 남겨 다음 동기화에서 합친다. 여기서 풀면 이어지는 pull이 그 변경을 덮는다.
+        if (!isCurrent && discarded.Checklist.Count > 0) return;
+        if (merged is not null)
+        {
+            using var save = Sql.Command(connection, transaction, "UPDATE event SET checklist=$checklist WHERE event_id=$event;",
+                ("$checklist", Checklist.Serialize(merged)), ("$event", snapshot.Record.EventId));
+            save.ExecuteNonQuery();
+        }
         using (var conflict = Sql.Command(connection, transaction,
             "INSERT INTO sync_conflict(item_kind, item_uid, discarded_json, occurred_at) VALUES ('event', $uid, $json, $at);",
             ("$uid", snapshot.Record.EventUid), ("$json", JsonSerializer.Serialize(discarded, TaskSync.ConflictJson)), ("$at", Validation.Timestamp(_clock))))

@@ -72,6 +72,20 @@ public sealed class ChecklistTests
     }
 
     [Fact]
+    public void ControlCharactersThatWouldOverflowGoogleValueAreRejected() =>
+        Assert.Throws<ArgumentException>(() => Checklist.Add([], ["a" + new string((char)1, 198) + "a"]));
+
+    [Fact]
+    public void UpdateThatChangesNothingKeepsTheRevision()
+    {
+        var items = Checklist.Add([], ["안건"]);
+
+        var same = Checklist.Update(items, items[0].ItemId, text: "안건", isDone: false);
+
+        Assert.Equal(1, same[0].Revision);
+    }
+
+    [Fact]
     public void BrokenRemoteValueIsSkipped()
     {
         var properties = new Dictionary<string, string> { ["deskcalCheckabc"] = "not json", ["deskcalUid"] = "x" };

@@ -302,6 +302,7 @@ public sealed class McpToolTests : IAsyncLifetime
         var checkedOff = (await Call("update_checklist_item", new { occurrence_id = second, item_id = itemId, is_done = true })).GetProperty("event").GetProperty("checklist");
         Assert.True(checkedOff[0].GetProperty("is_done").GetBoolean());
         await Call("update_checklist_item", new { occurrence_id = second, item_id = itemId }, true);
+        await Call("update_checklist_item", new { occurrence_id = second, item_id = itemId, text = (string?)null }, true);
         await Call("update_checklist_item", new { occurrence_id = second, item_id = "missing", is_done = true }, true);
 
         var deleted = (await Call("delete_checklist_item", new { occurrence_id = second, item_id = itemId })).GetProperty("event").GetProperty("checklist");

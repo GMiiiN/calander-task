@@ -286,6 +286,70 @@ public sealed class EventSyncTests
     }
 
     [Fact]
+    public async Task RetryAfterLostInsertResponseKeepsTheOtherPcsCheck()
+    {
+        using var desktop = new TestDatabase();
+        using var laptop = new TestDatabase();
+        var events = new EventRepository(desktop.Database, Seoul);
+        var created = events.Create([new EventInput("회의", "2026-11-02")])[0];
+        var item = events.AddChecklistItems(created.EventUid, false, ["안건"]).Checklist[0];
+        var remote = new FakeCalendar { LoseInsertResponse = true };
+        await Assert.ThrowsAsync<HttpRequestException>(() => Sync(desktop, remote));
+        remote.LoseInsertResponse = false;
+
+        await Sync(laptop, remote);
+        new EventRepository(laptop.Database, Seoul).UpdateChecklistItem(created.EventUid, false, item.ItemId, isDone: true);
+        await Sync(laptop, remote);
+        await Sync(desktop, remote);
+        await Sync(desktop, remote);
+
+        Assert.True(events.Get(created.EventUid).Checklist[0].IsDone);
+        Assert.Contains("\"d\":true", remote.Items[created.EventUid].ExtendedProperties.Private__["deskcalCheck" + item.ItemId]);
+    }
+
+    [Fact]
+    public async Task EditMadeWhileMergingIsNotLost()
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeCalendar();
+        var events = new EventRepository(db.Database, Seoul);
+        var created = events.Create([new EventInput("회의", "2026-11-02")])[0];
+        var item = events.AddChecklistItems(created.EventUid, false, ["안건"]).Checklist[0];
+        await Sync(db, remote);
+
+        remote.Edit(created.EventUid, e => e.Summary = "폰에서 고침");
+        events.UpdateChecklistItem(created.EventUid, false, item.ItemId, text: "바뀐 안건");
+        var patches = 0;
+        remote.BeforePatch = () => { if (++patches == 2) events.UpdateChecklistItem(created.EventUid, false, item.ItemId, isDone: true); };
+        await Sync(db, remote);
+        await Sync(db, remote);
+
+        var value = events.Get(created.EventUid);
+        Assert.Equal("폰에서 고침", value.Title);
+        Assert.True(value.Checklist[0].IsDone);
+        Assert.Equal("바뀐 안건", value.Checklist[0].Text);
+        Assert.False(value.IsDirty);
+    }
+
+    [Fact]
+    public async Task ItemLeftOnGoogleByAPatchIsPickedUpFromTheResponse()
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeCalendar();
+        var events = new EventRepository(db.Database, Seoul);
+        var created = events.Create([new EventInput("회의", "2026-11-02")])[0];
+        var item = events.AddChecklistItems(created.EventUid, false, ["안건"]).Checklist[0];
+        await Sync(db, remote);
+
+        // etag가 그대로인 채 다른 PC의 항목이 있는 상황: patch는 성공하고 pull은 etag가 같아 건너뛴다.
+        Checklist.WriteProperties([new ChecklistItem("other", "다른 PC 항목", false, 9, 1)], remote.Items[created.EventUid].ExtendedProperties.Private__);
+        events.UpdateChecklistItem(created.EventUid, false, item.ItemId, isDone: true);
+        await Sync(db, remote);
+
+        Assert.Equal(["안건", "다른 PC 항목"], events.Get(created.EventUid).Checklist.Select(i => i.Text));
+    }
+
+    [Fact]
     public async Task DeletedItemStaysDeletedOnAnotherPcAndCanBeRestored()
     {
         using var desktop = new TestDatabase();
@@ -316,6 +380,7 @@ public sealed class EventSyncTests
         public Dictionary<string, Event> Items { get; } = [];
         public bool ExpireTokens { get; set; }
         public bool LoseInsertResponse { get; set; }
+        public Action? BeforePatch { get; set; }
 
         public void Put(Event value)
         {
@@ -376,6 +441,7 @@ public sealed class EventSyncTests
 
         public Task<Event> PatchAsync(string eventId, Event value, string? etag, CancellationToken cancellationToken)
         {
+            BeforePatch?.Invoke();
             if (!Items.TryGetValue(eventId, out var stored))
             {
                 stored = Instance(eventId);

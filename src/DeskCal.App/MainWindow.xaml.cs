@@ -648,7 +648,8 @@ public partial class MainWindow : Window
     {
         if (sender is not TextBox { DataContext: ChecklistItemViewModel { IsEditing: true } item } box) return;
         _viewModel.EndChecklistEdit(item, box.Text);
-        if (_pinning.State == PinState.Editing) EndEditing();
+        // 다른 입력란으로 옮겨 갔으면 키보드를 계속 받아야 하므로 편집 상태를 풀지 않는다. 그 입력란이 끝날 때 푼다.
+        if (e.NewFocus is not System.Windows.Controls.Primitives.TextBoxBase && _pinning.State == PinState.Editing) EndEditing();
     }
 
     private void OnChecklistItemRightClick(object sender, MouseButtonEventArgs e)

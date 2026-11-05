@@ -233,8 +233,17 @@ public sealed class MainViewModel : ObservableObject
         Refresh();
     }
 
-    private void UpdateChecklistItem(ChecklistItemViewModel item, string? text = null, bool? isDone = null, bool? isDeleted = null) =>
-        _events.UpdateChecklistItem(item.OccurrenceId ?? item.EventId, item.OccurrenceId is not null, item.ItemId, text, isDone, isDeleted);
+    private void UpdateChecklistItem(ChecklistItemViewModel item, string? text = null, bool? isDone = null, bool? isDeleted = null)
+    {
+        try
+        {
+            _events.UpdateChecklistItem(item.OccurrenceId ?? item.EventId, item.OccurrenceId is not null, item.ItemId, text, isDone, isDeleted);
+        }
+        catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException)
+        {
+            // 화면을 다시 읽기 전에 Claude나 다른 PC가 일정을 지웠다. 뒤따르는 새로 고침으로 항목이 사라진다.
+        }
+    }
 
     private void AddTodo()
     {
