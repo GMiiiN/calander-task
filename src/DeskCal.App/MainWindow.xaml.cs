@@ -299,6 +299,9 @@ public partial class MainWindow : Window
         SidebarCard.Visibility = isCollapsed ? Visibility.Collapsed : Visibility.Visible;
         SidebarGapColumn.Width = new GridLength(isCollapsed ? 0 : 12);
         SidebarColumn.Width = new GridLength(isCollapsed ? 0 : 300);
+        // 손잡이는 달력 칸 오른쪽에 붙어 있다. 펼치면 달력과 사이드바 사이 가운데, 접으면 달력 끝에 걸친다.
+        SidebarToggleButton.Margin = new Thickness(0, 0, isCollapsed ? -12 : -18, 0);
+        SidebarToggleIcon.Data = (Geometry)FindResource(isCollapsed ? "ChevronLeftIcon" : "ChevronRightIcon");
         var label = isCollapsed ? "사이드바 펼치기" : "사이드바 접기";
         SidebarToggleButton.ToolTip = label;
         System.Windows.Automation.AutomationProperties.SetName(SidebarToggleButton, label);
