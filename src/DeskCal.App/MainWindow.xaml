@@ -202,8 +202,8 @@
     <Grid x:Name="Root" Margin="24">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" />
-            <ColumnDefinition x:Name="SidebarGapColumn" Width="12" />
-            <ColumnDefinition x:Name="SidebarColumn" Width="300" />
+            <ColumnDefinition Width="12" />
+            <ColumnDefinition Width="300" />
         </Grid.ColumnDefinitions>
 
         <!-- 달력 카드 -->
@@ -262,6 +262,15 @@
                                     <Path Data="{StaticResource ChevronRightIcon}" Width="16" Height="16" Stroke="{DynamicResource SubtleBrush}"
                                           StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
                                 </Grid>
+                            </Button>
+                            <Button x:Name="SidebarToggleButton" Style="{StaticResource BareButton}" Click="OnSidebarToggleClick" Margin="6,0,0,0">
+                                <Border Width="26" Height="26" CornerRadius="13" BorderThickness="1" Background="{StaticResource GlassButtonBrush}"
+                                        BorderBrush="{StaticResource GlassRimBrush}">
+                                    <Canvas Width="14" Height="14">
+                                        <Path Data="M1.5,2.5 H12.5 V11.5 H1.5 Z M9,2.5 V11.5" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667"
+                                              StrokeLineJoin="Round" />
+                                    </Canvas>
+                                </Border>
                             </Button>
                         </StackPanel>
                         <StackPanel>
@@ -545,16 +554,6 @@
         </Border>
 
         <!-- 조정 모드(§3.3): 켜진 동안만 보인다. 안쪽을 끌면 옮기고 가장자리 10px를 끌면 크기를 바꾼다(WM_NCHITTEST). -->
-        <!-- 달력과 사이드바 사이의 접기 손잡이. 접으면 달력 오른쪽 끝에 걸친다(ApplySidebar). -->
-        <Button x:Name="SidebarToggleButton" Style="{StaticResource BareButton}" Click="OnSidebarToggleClick"
-                HorizontalAlignment="Right" VerticalAlignment="Center">
-            <Border Width="24" Height="24" CornerRadius="12" BorderThickness="1" Background="{DynamicResource HeaderLineBrush}"
-                    BorderBrush="{StaticResource GlassRimBrush}">
-                <Path x:Name="SidebarToggleIcon" Width="16" Height="16" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.6"
-                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" />
-            </Border>
-        </Button>
-
         <Grid x:Name="AdjustOverlay" Grid.ColumnSpan="3" Visibility="Collapsed">
             <Rectangle RadiusX="24" RadiusY="24" Fill="#1A246BDE" Stroke="{DynamicResource AccentBrush}" StrokeThickness="2"
                        StrokeDashArray="4 3" />
