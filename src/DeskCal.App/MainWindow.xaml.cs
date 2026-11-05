@@ -195,6 +195,12 @@ public partial class MainWindow : Window
         for (var node = e.OriginalSource as DependencyObject; node is not null; node = Parent(node))
         {
             if (node is not FrameworkElement { DataContext: var data } element) continue;
+            if (data is ChecklistItemViewModel checklistItem)
+            {
+                e.Handled = true;
+                _viewModel.BeginChecklistEdit(checklistItem);
+                return;
+            }
             var editor = data switch
             {
                 ChipModel chip => Open(chip.EventId, chip.OccurrenceId, chip.TodoId),
@@ -619,6 +625,43 @@ public partial class MainWindow : Window
     private void OnInputBlur(object sender, KeyboardFocusChangedEventArgs e)
     {
         if (_pinning.State == PinState.Editing) EndEditing();
+    }
+
+    private void OnChecklistEditLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox { DataContext: ChecklistItemViewModel { IsEditing: true } } box) return;
+        if (_pinning.State != PinState.Editing) _pinning.BeginEditing();
+        Activate();
+        box.Focus();
+        box.SelectAll();
+    }
+
+    private void OnChecklistEditKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Enter or Key.Escape) || sender is not TextBox { DataContext: ChecklistItemViewModel item } box) return;
+        e.Handled = true;
+        _viewModel.EndChecklistEdit(item, e.Key == Key.Enter ? box.Text : null);
+        if (_pinning.State == PinState.Editing) EndEditing();
+    }
+
+    private void OnChecklistEditBlur(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is not TextBox { DataContext: ChecklistItemViewModel { IsEditing: true } item } box) return;
+        _viewModel.EndChecklistEdit(item, box.Text);
+        if (_pinning.State == PinState.Editing) EndEditing();
+    }
+
+    private void OnChecklistItemRightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ChecklistItemViewModel item } target) return;
+        e.Handled = true;
+        var delete = new MenuItem { Header = "삭제" };
+        delete.Click += (_, _) => _viewModel.DeleteChecklistItem(item);
+        var menu = new ContextMenu { PlacementTarget = target };
+        menu.Items.Add(delete);
+        menu.Opened += (_, _) => _pinning.BeginEditing();
+        menu.Closed += (_, _) => EndEditing();
+        menu.IsOpen = true;
     }
 
     private static string LogPath(string name)

@@ -31,8 +31,13 @@ public sealed class RelayCommand(Action<object?> execute) : ICommand
 
 public sealed record DdayChipViewModel(string Title, string Label, bool IsToday);
 
+public sealed record ChecklistItemViewModel(string ItemId, string Text, bool IsDone, bool IsEditing, string EventId, string? OccurrenceId);
+
 public sealed record SidebarItemViewModel(string Title, string Meta, bool IsDone, string? DotColorHex,
-    string? TodoId, string? EventId, string? OccurrenceId);
+    string? TodoId, string? EventId, string? OccurrenceId, IReadOnlyList<ChecklistItemViewModel>? Checklist = null, bool IsExpanded = false)
+{
+    public bool HasChecklist => Checklist is { Count: > 0 };
+}
 
 public sealed record SidebarGroupViewModel(string Header, string Kind, IReadOnlyList<SidebarItemViewModel> Items);
 
@@ -55,6 +60,9 @@ public sealed class MainViewModel : ObservableObject
     private IReadOnlyList<SidebarGroupViewModel> _groups = [];
     private int _agendaCount;
     private string _newTodoTitle = "";
+    // 펼침 상태는 앱이 켜져 있는 동안만 기억한다(feedback 3-4). 다시 켜면 모두 접혀 있다.
+    private readonly HashSet<string> _expandedChecklists = [];
+    private string? _editingChecklistItemId;
 
     public MainViewModel(Database database)
     {
@@ -72,6 +80,8 @@ public sealed class MainViewModel : ObservableObject
         ShowMonthCommand = new RelayCommand(_ => { IsMonthView = true; SaveView(); Refresh(); });
         ShowWeekCommand = new RelayCommand(_ => { IsMonthView = false; SaveView(); Refresh(); });
         ToggleDoneCommand = new RelayCommand(p => ToggleDone((SidebarItemViewModel)p!));
+        ToggleChecklistCommand = new RelayCommand(p => ToggleChecklist((SidebarItemViewModel)p!));
+        ToggleChecklistItemCommand = new RelayCommand(p => ToggleChecklistItem((ChecklistItemViewModel)p!));
         AddTodoCommand = new RelayCommand(_ => AddTodo());
         Refresh();
     }
@@ -82,6 +92,8 @@ public sealed class MainViewModel : ObservableObject
     public ICommand ShowMonthCommand { get; }
     public ICommand ShowWeekCommand { get; }
     public ICommand ToggleDoneCommand { get; }
+    public ICommand ToggleChecklistCommand { get; }
+    public ICommand ToggleChecklistItemCommand { get; }
     public ICommand AddTodoCommand { get; }
 
     public bool IsMonthView { get => _isMonthView; private set => Set(ref _isMonthView, value); }
@@ -126,6 +138,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void RefreshSidebar()
     {
+        if (_editingChecklistItemId is null) BuildSidebar(); // 고치는 중에 다시 만들면 입력란이 사라진다.
+    }
+
+    private void BuildSidebar()
+    {
         var agenda = new AgendaService(_events, _todos, today: () => _today).GetAgenda();
         var categories = ReadCategories();
         Ddays = agenda.Ddays.Where(d => d.DaysRemaining >= 0)
@@ -149,7 +166,11 @@ public sealed class MainViewModel : ObservableObject
         var value = occurrence.Event;
         var category = value.ColorId is not null && categories.TryGetValue(value.ColorId, out var found) ? found : ("일정", "#246BDE");
         var time = value.StartTime is null ? "종일" : $"{value.StartTime}–{value.EndTime}";
-        return new(value.Title, $"{time} · {category.Item1}", value.IsDone, category.Item2, null, value.EventUid, occurrence.OccurrenceId);
+        var eventId = occurrence.OccurrenceId is { } id ? OccurrenceId.Parse(id).EventUid : value.EventUid;
+        var checklist = Checklist.Visible(value.Checklist)
+            .Select(i => new ChecklistItemViewModel(i.ItemId, i.Text, i.IsDone, i.ItemId == _editingChecklistItemId, eventId, occurrence.OccurrenceId)).ToArray();
+        return new(value.Title, $"{time} · {category.Item1}", value.IsDone, category.Item2, null, value.EventUid, occurrence.OccurrenceId,
+            checklist, _expandedChecklists.Contains(occurrence.OccurrenceId ?? eventId));
     }
 
     private SidebarItemViewModel TodoItem(TodoRecord todo)
@@ -177,6 +198,43 @@ public sealed class MainViewModel : ObservableObject
         else _events.Update(item.EventId!, new EventPatch { IsDone = new(true, done) });
         Refresh();
     }
+
+    private void ToggleChecklist(SidebarItemViewModel item)
+    {
+        var key = item.OccurrenceId ?? item.EventId!;
+        if (!_expandedChecklists.Remove(key)) _expandedChecklists.Add(key);
+        RefreshSidebar();
+    }
+
+    private void ToggleChecklistItem(ChecklistItemViewModel item)
+    {
+        UpdateChecklistItem(item, isDone: !item.IsDone);
+        Refresh();
+    }
+
+    public void BeginChecklistEdit(ChecklistItemViewModel item)
+    {
+        _editingChecklistItemId = item.ItemId;
+        BuildSidebar();
+    }
+
+    // text가 null이면 취소다. 내용을 다 지우고 끝내도 항목은 지우지 않는다(삭제는 메뉴로만).
+    public void EndChecklistEdit(ChecklistItemViewModel item, string? text)
+    {
+        if (_editingChecklistItemId != item.ItemId) return;
+        _editingChecklistItemId = null;
+        if (!string.IsNullOrWhiteSpace(text) && text.Trim() != item.Text) UpdateChecklistItem(item, text: text);
+        Refresh();
+    }
+
+    public void DeleteChecklistItem(ChecklistItemViewModel item)
+    {
+        UpdateChecklistItem(item, isDeleted: true);
+        Refresh();
+    }
+
+    private void UpdateChecklistItem(ChecklistItemViewModel item, string? text = null, bool? isDone = null, bool? isDeleted = null) =>
+        _events.UpdateChecklistItem(item.OccurrenceId ?? item.EventId, item.OccurrenceId is not null, item.ItemId, text, isDone, isDeleted);
 
     private void AddTodo()
     {

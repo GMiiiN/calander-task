@@ -14,7 +14,7 @@ public sealed class DatabaseTests
         Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM category WHERE color_id='11' AND name='토마토' AND color_hex='#D50000'"));
         db.Database.Initialize();
         Assert.Equal(11, db.Scalar("SELECT COUNT(*) FROM category"));
-        Assert.Equal(1, db.Scalar("PRAGMA user_version"));
+        Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
     }
 
     [Fact]
@@ -36,7 +36,7 @@ public sealed class DatabaseTests
         Assert.Equal(5000, db.Scalar("PRAGMA busy_timeout"));
         Assert.Equal(1, db.Scalar("PRAGMA foreign_keys"));
         Assert.Equal(1, db.Scalar("PRAGMA synchronous"));
-        Assert.Equal(1, db.Scalar("PRAGMA user_version"));
+        Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
         Assert.Equal(7, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA journal_mode";
@@ -60,7 +60,7 @@ public sealed class DatabaseTests
             command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table'";
             Assert.Equal(7L, command.ExecuteScalar());
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(1L, command.ExecuteScalar());
+            Assert.Equal((long)Database.LatestVersion, command.ExecuteScalar());
         }
         finally
         {
@@ -92,12 +92,28 @@ public sealed class DatabaseTests
     }
 
     [Fact]
+    public void VersionOneDatabaseKeepsItsEventsWhenChecklistColumnIsAdded()
+    {
+        using var db = new TestDatabase();
+        var created = db.Events.Create([new EventInput("기존 일정", "2026-11-02")])[0];
+        db.Execute("ALTER TABLE event DROP COLUMN checklist");
+        db.Execute("PRAGMA user_version=1");
+
+        db.Database.Initialize();
+
+        Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
+        var value = db.Events.Get(created.EventUid);
+        Assert.Equal("기존 일정", value.Title);
+        Assert.Empty(value.Checklist);
+    }
+
+    [Fact]
     public void NewerSchemaIsRejectedWithoutChangingDatabase()
     {
         using var db = new TestDatabase();
-        db.Execute("PRAGMA user_version=2");
+        db.Execute("PRAGMA user_version=99");
         Assert.Contains("newer", Assert.Throws<InvalidOperationException>(db.Database.Initialize).Message);
-        Assert.Equal(2, db.Scalar("PRAGMA user_version"));
+        Assert.Equal(99, db.Scalar("PRAGMA user_version"));
     }
 
     [Fact]

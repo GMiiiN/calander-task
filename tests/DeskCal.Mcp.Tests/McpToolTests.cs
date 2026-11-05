@@ -162,10 +162,10 @@ public sealed class McpToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DiscoversExactlyFourteenToolsWithAnnotationsAndEnums()
+    public async Task DiscoversExactlyEighteenToolsWithAnnotationsAndEnums()
     {
         var tools = await _client.ListToolsAsync(cancellationToken: _timeout.Token);
-        Assert.Equal(14, tools.Count);
+        Assert.Equal(18, tools.Count);
         var reads = new[] { "get_agenda", "list_events", "get_event", "find_free_time", "list_todos", "list_categories" };
         foreach (var tool in tools)
         {
@@ -282,6 +282,35 @@ public sealed class McpToolTests : IAsyncLifetime
         await Call("update_todo", new { todo_id = todo.TodoUid, due_date = (string?)null, memo = (string?)null });
         Assert.Null(Todos.Get(todo.TodoUid).DueDate);
         Assert.Equal("", Todos.Get(todo.TodoUid).Memo);
+    }
+
+    [Fact]
+    public async Task ChecklistIsPerOccurrenceAndSupportsEditDeleteRestore()
+    {
+        var created = await Call("create_events", """{"events":[{"title":"카공","start_date":"2026-11-08","start_time":"15:30","repeat":{"frequency":"weekly","weekdays":["sunday"],"count":3}}]}""");
+        var series = Id(created.GetProperty("events")[0]);
+        var list = await Call("list_events", new { start_date = "2026-11-08", end_date = "2026-11-15" });
+        var first = list.GetProperty("events")[0].GetProperty("occurrence_id").GetString()!;
+        var second = list.GetProperty("events")[1].GetProperty("occurrence_id").GetString()!;
+
+        await Call("add_checklist_items", new { event_id = series, items = new[] { "시리즈에는 못 붙임" } }, true);
+        var added = (await Call("add_checklist_items", new { occurrence_id = second, items = new[] { "자료구조 3장", "설계패턴 과제" } })).GetProperty("event").GetProperty("checklist");
+        var itemId = added[0].GetProperty("item_id").GetString()!;
+        Assert.Equal(2, added.GetArrayLength());
+        Assert.False((await Call("get_event", new { occurrence_id = first })).GetProperty("event").TryGetProperty("checklist", out _));
+
+        var checkedOff = (await Call("update_checklist_item", new { occurrence_id = second, item_id = itemId, is_done = true })).GetProperty("event").GetProperty("checklist");
+        Assert.True(checkedOff[0].GetProperty("is_done").GetBoolean());
+        await Call("update_checklist_item", new { occurrence_id = second, item_id = itemId }, true);
+        await Call("update_checklist_item", new { occurrence_id = second, item_id = "missing", is_done = true }, true);
+
+        var deleted = (await Call("delete_checklist_item", new { occurrence_id = second, item_id = itemId })).GetProperty("event").GetProperty("checklist");
+        Assert.Equal("설계패턴 과제", Assert.Single(deleted.EnumerateArray()).GetProperty("text").GetString());
+        var restored = (await Call("restore_checklist_item", new { occurrence_id = second, item_id = itemId })).GetProperty("event").GetProperty("checklist");
+        Assert.Equal(2, restored.GetArrayLength());
+
+        var agenda = (await Call("list_events", new { start_date = "2026-11-15", end_date = "2026-11-15" })).GetProperty("events")[0];
+        Assert.Equal(2, agenda.GetProperty("checklist").GetArrayLength());
     }
 
     [Fact]

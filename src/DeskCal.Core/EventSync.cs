@@ -107,6 +107,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         foreach (var snapshot in records.Where(r => r.Record.IsDirty).ToList())
         {
             var value = snapshot.Record;
+            string? patchedId = null;
             try
             {
                 if (value.ParentEventId is { } parentId)
@@ -115,6 +116,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                     var parent = records.Single(r => r.Record.EventId == parentId);
                     if (parent.Etag is null || parent.Record.GoogleEventId is null) continue;
                     var instanceId = value.GoogleEventId ?? parent.Record.GoogleEventId + "_" + InstanceSuffix(value.OriginalStartKey!);
+                    patchedId = instanceId;
                     var etag = snapshot.Etag;
                     if (etag is null)
                     {
@@ -123,7 +125,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                         var current = await remote.GetAsync(instanceId, cancellationToken);
                         if (current.UpdatedDateTimeOffset is { } updated && (LastSyncedAt(database) is not { } seen || updated > seen))
                         {
-                            Discard(snapshot);
+                            await ResolveConflictAsync(snapshot, instanceId, cancellationToken);
                             continue;
                         }
                         etag = current.ETag;
@@ -143,9 +145,14 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 }
                 else
                 {
-                    var patched = await remote.PatchAsync(value.GoogleEventId!, ToRemote(value, isInstance: false), snapshot.Etag, cancellationToken);
+                    patchedId = value.GoogleEventId!;
+                    var patched = await remote.PatchAsync(patchedId, ToRemote(value, isInstance: false), snapshot.Etag, cancellationToken);
                     Apply(snapshot, patched.Id, patched.ETag);
                 }
+            }
+            catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed && patchedId is not null)
+            {
+                await ResolveConflictAsync(snapshot, patchedId, cancellationToken);
             }
             catch (GoogleApiException exception) when (exception.HttpStatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.NotFound or HttpStatusCode.Gone)
             {
@@ -156,6 +163,47 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 MarkFailed(snapshot, exception.Message);
             }
         }
+    }
+
+    // 다른 곳에서 일정이 바뀌었다. 일정 내용은 원격 우선이지만 체크리스트는 항목 단위로 합쳐 올린 뒤 원격을 받는다.
+    private async Task ResolveConflictAsync(Stored snapshot, string remoteId, CancellationToken cancellationToken)
+    {
+        var value = snapshot.Record;
+        if (value.Checklist.Count == 0 || value.DeletedAt is not null || value.Status == "cancelled")
+        {
+            Discard(snapshot);
+            return;
+        }
+        try
+        {
+            var current = await remote.GetAsync(remoteId, cancellationToken);
+            var merged = Checklist.Merge(value.Checklist, Checklist.ReadProperties(current.ExtendedProperties?.Private__));
+            var properties = new Dictionary<string, string>();
+            Checklist.WriteProperties(merged, properties);
+            await remote.PatchAsync(remoteId, new Event { ExtendedProperties = new Event.ExtendedPropertiesData { Private__ = properties } }, current.ETag, cancellationToken);
+            // 올리는 사이에 또 고쳤으면 dirty로 남겨 다음 동기화에서 다시 합친다.
+            if (SaveMergedChecklist(snapshot, merged)) Discard(snapshot);
+        }
+        catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed)
+        {
+            // 합치는 사이에 또 바뀌었다. dirty로 남겨 다음 동기화에서 다시 합친다.
+        }
+        catch (GoogleApiException exception) when (exception.HttpStatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
+        {
+            Discard(snapshot);
+        }
+        catch (GoogleApiException exception)
+        {
+            MarkFailed(snapshot, exception.Message);
+        }
+    }
+
+    private bool SaveMergedChecklist(Stored snapshot, IReadOnlyList<ChecklistItem> merged)
+    {
+        using var connection = database.OpenConnection();
+        using var command = Sql.Command(connection, null, "UPDATE event SET checklist=$checklist WHERE event_id=$event AND local_revision=$revision;",
+            ("$checklist", Checklist.Serialize(merged)), ("$event", snapshot.Record.EventId), ("$revision", snapshot.Record.LocalRevision));
+        return command.ExecuteNonQuery() == 1;
     }
 
     // ID를 미리 정해 두었으므로(§5.3) 응답을 못 받고 다시 보내도 409가 나서 중복이 생기지 않는다.
@@ -202,18 +250,17 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
 
     private static Event ToRemote(EventRecord value, bool isInstance)
     {
+        var properties = new Dictionary<string, string>
+        {
+            ["deskcalUid"] = value.EventUid, ["deskcalDone"] = value.IsDone ? "1" : "0", ["deskcalDday"] = value.IsDday ? "1" : "0",
+        };
+        Checklist.WriteProperties(value.Checklist, properties);
         var result = new Event
         {
             Id = isInstance ? null : value.GoogleEventId, Summary = value.Title, Description = value.Memo, Status = value.Status,
             Start = ToRemoteTime(value.GoogleStartRaw!, value.TimeZone), End = ToRemoteTime(value.GoogleEndRaw!, value.TimeZone),
             ColorId = value.ColorId, Transparency = value.IsBusy ? "opaque" : "transparent",
-            ExtendedProperties = new Event.ExtendedPropertiesData
-            {
-                Private__ = new Dictionary<string, string>
-                {
-                    ["deskcalUid"] = value.EventUid, ["deskcalDone"] = value.IsDone ? "1" : "0", ["deskcalDday"] = value.IsDday ? "1" : "0",
-                },
-            },
+            ExtendedProperties = new Event.ExtendedPropertiesData { Private__ = properties },
         };
         // 반복을 없앤 경우에도 반영되도록 시리즈 본체는 빈 목록까지 보낸다.
         if (!isInstance) result.Recurrence = value.RecurrenceRule?.Split('\n', StringSplitOptions.RemoveEmptyEntries) ?? [];
@@ -406,7 +453,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             GoogleStartRaw = startRaw, GoogleEndRaw = endRaw, TimeZone = item.Start?.TimeZone ?? item.End?.TimeZone,
             RecurrenceRule = item.Recurrence is { Count: > 0 } lines ? string.Join('\n', lines) : null,
             ColorId = item.ColorId, IsBusy = item.Transparency != "transparent", IsDone = Property("deskcalDone") == "1",
-            IsDday = Property("deskcalDday") == "1", CreatedBy = local?.CreatedBy ?? "google", CreatedAt = local?.CreatedAt ?? now,
+            IsDday = Property("deskcalDday") == "1", Checklist = Checklist.ReadProperties(properties), CreatedBy = local?.CreatedBy ?? "google", CreatedAt = local?.CreatedAt ?? now,
             UpdatedAt = now, DeletedAt = null, LocalRevision = local?.LocalRevision ?? 0, IsDirty = false, PushState = "synced",
         };
         return _time.Derive(value);
@@ -449,7 +496,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 GoogleStartRaw = Sql.Text(r, "google_start_raw"), GoogleEndRaw = Sql.Text(r, "google_end_raw"), TimeZone = Sql.Text(r, "time_zone"),
                 StartDate = Sql.Text(r, "start_date")!, EndDate = Sql.Text(r, "end_date")!, StartTime = Sql.Text(r, "start_time"), EndTime = Sql.Text(r, "end_time"),
                 RecurrenceRule = Sql.Text(r, "recurrence_rule"), ColorId = Sql.Text(r, "color_id"), IsBusy = Sql.Number(r, "is_busy") != 0,
-                IsDone = Sql.Number(r, "is_done") != 0, IsDday = Sql.Number(r, "is_dday") != 0, CreatedBy = Sql.Text(r, "created_by")!,
+                IsDone = Sql.Number(r, "is_done") != 0, IsDday = Sql.Number(r, "is_dday") != 0, Checklist = Checklist.Parse(Sql.Text(r, "checklist")!), CreatedBy = Sql.Text(r, "created_by")!,
                 CreatedAt = Sql.Text(r, "created_at")!, UpdatedAt = Sql.Text(r, "updated_at")!, DeletedAt = Sql.Text(r, "deleted_at"),
                 LocalRevision = Sql.Number(r, "local_revision"), IsDirty = Sql.Number(r, "is_dirty") != 0, PushState = Sql.Text(r, "push_state")!,
             };
@@ -470,7 +517,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         ["google_recurring_id"] = e.GoogleRecurringId, ["original_start_key"] = e.OriginalStartKey, ["status"] = e.Status,
         ["title"] = e.Title, ["memo"] = e.Memo, ["google_start_raw"] = e.GoogleStartRaw, ["google_end_raw"] = e.GoogleEndRaw, ["time_zone"] = e.TimeZone,
         ["start_date"] = e.StartDate, ["end_date"] = e.EndDate, ["start_time"] = e.StartTime, ["end_time"] = e.EndTime,
-        ["recurrence_rule"] = e.RecurrenceRule, ["color_id"] = e.ColorId, ["is_busy"] = e.IsBusy, ["is_done"] = e.IsDone, ["is_dday"] = e.IsDday,
+        ["recurrence_rule"] = e.RecurrenceRule, ["color_id"] = e.ColorId, ["is_busy"] = e.IsBusy, ["is_done"] = e.IsDone, ["is_dday"] = e.IsDday, ["checklist"] = Checklist.Serialize(e.Checklist),
         ["created_by"] = e.CreatedBy, ["created_at"] = e.CreatedAt, ["updated_at"] = e.UpdatedAt, ["deleted_at"] = e.DeletedAt,
         ["local_revision"] = e.LocalRevision, ["is_dirty"] = e.IsDirty, ["push_state"] = e.PushState,
     };

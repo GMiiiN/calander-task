@@ -58,6 +58,7 @@ public sealed record EventRecord
     public bool IsBusy { get; init; } = true;
     public bool IsDone { get; init; }
     public bool IsDday { get; init; }
+    public IReadOnlyList<ChecklistItem> Checklist { get; init; } = [];
     public string CreatedBy { get; init; } = "user";
     public string CreatedAt { get; init; } = "";
     public string UpdatedAt { get; init; } = "";

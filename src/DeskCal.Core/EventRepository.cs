@@ -115,6 +115,26 @@ public sealed class EventRepository
     public EventRecord DeleteOccurrence(string occurrenceId) => ChangeOccurrence(occurrenceId, e => e with { Status = "cancelled" });
     public EventRecord RestoreOccurrence(string occurrenceId) => ChangeOccurrence(occurrenceId, e => e with { Status = "confirmed", DeletedAt = null });
 
+    public EventRecord AddChecklistItems(string id, bool isOccurrence, IReadOnlyList<string> texts) =>
+        ChangeChecklist(id, isOccurrence, items => Checklist.Add(items, texts));
+
+    public EventRecord UpdateChecklistItem(string id, bool isOccurrence, string itemId, string? text = null, bool? isDone = null, bool? isDeleted = null) =>
+        ChangeChecklist(id, isOccurrence, items => Checklist.Update(items, itemId, text, isDone, isDeleted));
+
+    // 체크리스트는 회차마다 따로다. 반복 일정은 시리즈가 아니라 회차 예외 행에 둔다.
+    private EventRecord ChangeChecklist(string id, bool isOccurrence, Func<IReadOnlyList<ChecklistItem>, IReadOnlyList<ChecklistItem>> change)
+    {
+        if (isOccurrence) return ChangeOccurrence(id, e => e with { Checklist = change(e.Checklist) });
+        using var connection = _database.OpenConnection();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var value = Get(connection, transaction, id);
+        if (value.ParentEventId is not null || value.RecurrenceRule is not null) throw new ArgumentException("Use occurrence_id for a recurring event.");
+        if (value.DeletedAt is not null) throw new InvalidOperationException("Restore the deleted event before editing.");
+        value = Save(connection, transaction, value with { Checklist = change(value.Checklist) });
+        transaction.Commit();
+        return value;
+    }
+
     private EventRecord ChangeOccurrence(string occurrenceId, Func<EventRecord, EventRecord> change)
     {
         var (uid, key) = OccurrenceId.Parse(occurrenceId);
@@ -172,7 +192,7 @@ public sealed class EventRepository
         GoogleStartRaw = Sql.Text(r, "google_start_raw"), GoogleEndRaw = Sql.Text(r, "google_end_raw"), TimeZone = Sql.Text(r, "time_zone"),
         StartDate = Sql.Text(r, "start_date")!, EndDate = Sql.Text(r, "end_date")!, StartTime = Sql.Text(r, "start_time"), EndTime = Sql.Text(r, "end_time"),
         RecurrenceRule = Sql.Text(r, "recurrence_rule"), ColorId = Sql.Text(r, "color_id"), IsBusy = Sql.Number(r, "is_busy") != 0,
-        IsDone = Sql.Number(r, "is_done") != 0, IsDday = Sql.Number(r, "is_dday") != 0, CreatedBy = Sql.Text(r, "created_by")!,
+        IsDone = Sql.Number(r, "is_done") != 0, IsDday = Sql.Number(r, "is_dday") != 0, Checklist = Checklist.Parse(Sql.Text(r, "checklist")!), CreatedBy = Sql.Text(r, "created_by")!,
         CreatedAt = Sql.Text(r, "created_at")!, UpdatedAt = Sql.Text(r, "updated_at")!, DeletedAt = Sql.Text(r, "deleted_at"),
         LocalRevision = Sql.Number(r, "local_revision"), IsDirty = Sql.Number(r, "is_dirty") != 0, PushState = Sql.Text(r, "push_state")!
     };
@@ -183,7 +203,7 @@ public sealed class EventRepository
         ["google_recurring_id"] = e.GoogleRecurringId, ["original_start_key"] = e.OriginalStartKey, ["status"] = e.Status,
         ["title"] = e.Title, ["memo"] = e.Memo, ["google_start_raw"] = e.GoogleStartRaw, ["google_end_raw"] = e.GoogleEndRaw, ["time_zone"] = e.TimeZone,
         ["start_date"] = e.StartDate, ["end_date"] = e.EndDate, ["start_time"] = e.StartTime, ["end_time"] = e.EndTime,
-        ["recurrence_rule"] = e.RecurrenceRule, ["color_id"] = e.ColorId, ["is_busy"] = e.IsBusy, ["is_done"] = e.IsDone, ["is_dday"] = e.IsDday,
+        ["recurrence_rule"] = e.RecurrenceRule, ["color_id"] = e.ColorId, ["is_busy"] = e.IsBusy, ["is_done"] = e.IsDone, ["is_dday"] = e.IsDday, ["checklist"] = Checklist.Serialize(e.Checklist),
         ["created_by"] = e.CreatedBy, ["created_at"] = e.CreatedAt, ["updated_at"] = e.UpdatedAt, ["deleted_at"] = e.DeletedAt,
         ["local_revision"] = e.LocalRevision, ["is_dirty"] = e.IsDirty, ["push_state"] = e.PushState
     };

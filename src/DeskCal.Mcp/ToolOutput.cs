@@ -46,6 +46,8 @@ internal sealed class ToolOutput(Database database, EventRepository events)
             IsRecurring = parent.RecurrenceRule is not null, RepeatEditable = RecurrenceInput.IsEditable(parent.RecurrenceRule),
             value.CreatedBy, IsDeleted = parent.DeletedAt is not null || parent.Status == "cancelled" || value.DeletedAt is not null || value.Status == "cancelled"
         });
+        var checklist = Checklist.Visible(value.Checklist);
+        if (checklist.Count > 0) output["checklist"] = JsonSerializer.SerializeToNode(checklist.Select(i => new { i.ItemId, i.Text, i.IsDone }), JsonOptions);
         return AddSync(output, value.PushState);
     }
     public JsonObject Occurrence(EventOccurrence value) => Event(value.Event, value.OccurrenceId);

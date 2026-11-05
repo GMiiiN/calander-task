@@ -190,6 +190,7 @@ M-1 spike 체크리스트 (Windows 10 22H2 / Windows 11 23H2·24H2, **노트북�
 | 반복 일정 | 이벤트 `recurrence` (RRULE/EXDATE) + 원본 `start.timeZone` | 전개는 Ical.Net, 원본 시간대 기준 |
 | 반복의 특정 회차 변경·취소 | Google 예외 인스턴스 (`recurringEventId` + `originalStartTime`) | Google 모델 그대로 |
 | 일정 완료 체크 | `extendedProperties.private.deskcalDone = "1"` | Google에는 일정 완료 개념이 없음 |
+| 회차 체크리스트 | 회차 예외 인스턴스(단일 일정은 그 일정)의 `extendedProperties.private.deskcalCheck<항목 ID>`, 항목마다 키 하나 | Google은 키 44자·값 1024자·일정당 32kB 제한. 항목 40개·내용 200자로 제한하고 삭제는 표시만 남긴다. 충돌은 항목별 변경 번호로 합친다(같으면 이 PC 값을 번호를 올려 남긴다) |
 | D-day | 이벤트 + `extendedProperties.private.deskcalDday = "1"` | |
 | 로컬 식별·재생성 세대 | `extendedProperties.private.deskcalUid`, `deskcalGen` | 409/복구 시 "우리가 만든 것인지" 확인용 |
 | 카테고리 | 이벤트 `colorId` | 카테고리 = Google 이벤트 색. 색 없음 = "기본" |
@@ -232,6 +233,7 @@ CREATE TABLE event (
     is_busy               INTEGER NOT NULL DEFAULT 1, -- Google transparency: opaque=1, transparent=0
     is_done               INTEGER NOT NULL DEFAULT 0,
     is_dday               INTEGER NOT NULL DEFAULT 0,
+    checklist             TEXT    NOT NULL DEFAULT '[]', -- v2: 이 회차(또는 단일 일정)의 체크리스트 JSON. 시리즈 본체는 비어 있다
     created_by            TEXT    NOT NULL DEFAULT 'user' CHECK (created_by IN ('user', 'claude', 'google')),
     created_at            TEXT    NOT NULL,
     updated_at            TEXT    NOT NULL,
@@ -476,6 +478,7 @@ Core 검증 계약 (로컬 생성·수정 시):
   - 완료한 일정은 회차 날짜 기준으로 표시(날짜가 지나면 목록에서 빠짐).
 - 하단 "할 일 추가" 입력란.
 - 전송 결과 불명 할 일(§5.4)은 경고 표시.
+- 회차 체크리스트: 항목이 있는 일정에만 토글이 보이고 누르면 바로 아래에 펼쳐진다. 긴 내용은 줄을 바꾼다. 펼침 상태는 앱이 켜져 있는 동안만 기억한다. 체크는 한 번 클릭, 수정은 더블클릭(Enter 저장, Esc 취소), 삭제는 우클릭 메뉴. 항목 추가는 Claude만 하고 달력에는 표시하지 않는다.
 
 ### 6.5 편집·검색
 - **클릭 규칙** (2026-10-30 확정): 날짜 칸·시간대·일정 칩 모두 **한 번 클릭은 아무 동작 없음**, **더블클릭해야** 추가·수정 팝업이 열린다(바탕화면 정리 중 오조작 방지, 기존 앱 사용 경험과 동일). 예외: 사이드바 **체크박스는 한 번 클릭**으로 완료 처리(명확한 목적의 작은 대상).
@@ -511,7 +514,7 @@ Claude Desktop은 `claude_desktop_config.json`의 `mcpServers`에 같은 경로.
 - SQLite 오류는 `isError: true`와 영어 `error`에 `SqliteErrorCode`(흔한 코드는 `SQLITE_BUSY(5)`처럼 이름·숫자, 나머지는 숫자) 및 `SqliteExtendedErrorCode`를 포함하며, BUSY/LOCKED는 다른 프로그램(DeskCal 앱 등)의 DB 사용과 잠시 후 재시도를 안내하고 그 밖은 `Try again.`을 유지한다. 응답에는 예외명·스택을 노출하지 않고 전체 예외는 stderr에 기록한다.
 - 쓰기 결과의 동기화 상태(항목별): `synced`(그 revision이 원격에 반영됨) / `pending`(로컬에만, 나중에 자동 전송) / `conflict`(원격 우선으로 이 변경이 폐기됨) + `reason`(`offline`, `not_signed_in`, `busy`, `push_failed`(전송 실패, 다음 차례에 재시도), `needs_review`(전송 결과 불명, §5 unknown) 등). 412로 폐기된 요청을 성공으로 보고하지 않는다.
 
-### 7.4 도구 (14개)
+### 7.4 도구 (18개)
 
 **조회·분석 (6)**
 | 도구 | 용도 | 입력 |
@@ -530,6 +533,14 @@ Claude Desktop은 `claude_desktop_config.json`의 `mcpServers`에 같은 경로.
 | `update_event` | `event_id` 또는 `occurrence_id`, 바꿀 필드(+ `is_done`) | idempotent |
 | `delete_event` | `event_id` 또는 `occurrence_id` | destructive |
 | `restore_event` | `event_id` 또는 `occurrence_id` | — |
+
+**체크리스트 쓰기 (4)** — 조회는 `get_event`·`list_events`의 `checklist`. 반복 일정은 `occurrence_id`만 받는다.
+| 도구 | 입력 | annotations |
+|---|---|---|
+| `add_checklist_items` | `event_id` 또는 `occurrence_id`, `items` | — |
+| `update_checklist_item` | `event_id` 또는 `occurrence_id`, `item_id`, `text?`, `is_done?` | idempotent |
+| `delete_checklist_item` | `event_id` 또는 `occurrence_id`, `item_id` | destructive |
+| `restore_checklist_item` | `event_id` 또는 `occurrence_id`, `item_id` | — |
 
 **할 일 쓰기 (4)**
 | 도구 | 입력 | annotations |

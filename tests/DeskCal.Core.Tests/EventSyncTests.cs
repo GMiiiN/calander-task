@@ -182,6 +182,133 @@ public sealed class EventSyncTests
 
     private static Task Sync(TestDatabase db, FakeCalendar remote) => new EventSync(db.Database, remote, Seoul).SyncAsync(CancellationToken.None);
 
+    private static string InstanceId(FakeCalendar remote) => remote.Items.Keys.Single(id => id.Contains('_'));
+
+    private static (EventRepository Events, string OccurrenceId, EventRecord Series) WeeklySeries(TestDatabase db)
+    {
+        var events = new EventRepository(db.Database, Seoul);
+        var series = events.Create([new EventInput("카공", "2026-11-08") { StartTime = "15:30", EndTime = "19:00", Repeat = new RecurrenceInput("weekly", Weekdays: [DayOfWeek.Sunday]) }])[0];
+        var occurrenceId = events.List(new DateOnly(2026, 11, 15), new DateOnly(2026, 11, 15))[0].OccurrenceId!;
+        return (events, occurrenceId, series);
+    }
+
+    [Fact]
+    public async Task ChecklistRidesOnTheOccurrenceAndReachesAnotherPc()
+    {
+        using var desktop = new TestDatabase();
+        using var laptop = new TestDatabase();
+        var remote = new FakeCalendar();
+        var (events, occurrenceId, _) = WeeklySeries(desktop);
+        await Sync(desktop, remote);
+
+        events.AddChecklistItems(occurrenceId, true, ["자료구조 3장", "설계패턴 과제"]);
+        await Sync(desktop, remote);
+        await Sync(laptop, remote);
+
+        var other = new EventRepository(laptop.Database, Seoul);
+        var occurrences = other.List(new DateOnly(2026, 11, 8), new DateOnly(2026, 11, 22));
+        Assert.Equal(["자료구조 3장", "설계패턴 과제"], occurrences.Single(o => o.Event.StartDate == "2026-11-15").Event.Checklist.Select(i => i.Text));
+        Assert.All(occurrences.Where(o => o.Event.StartDate != "2026-11-15"), o => Assert.Empty(o.Event.Checklist));
+        Assert.All(remote.Items[InstanceId(remote)].ExtendedProperties.Private__, p => Assert.True(p.Key.Length <= 44 && p.Value.Length <= 1024));
+    }
+
+    [Fact]
+    public async Task EditsOfDifferentItemsOnTwoPcsAreBothKept()
+    {
+        using var desktop = new TestDatabase();
+        using var laptop = new TestDatabase();
+        var remote = new FakeCalendar();
+        var (events, occurrenceId, _) = WeeklySeries(desktop);
+        var items = events.AddChecklistItems(occurrenceId, true, ["하나", "둘"]).Checklist;
+        await Sync(desktop, remote); // 시리즈가 먼저 올라가고 회차는 다음 동기화에서 올라간다.
+        await Sync(desktop, remote);
+        await Sync(laptop, remote);
+        var other = new EventRepository(laptop.Database, Seoul);
+        var otherId = other.List(new DateOnly(2026, 11, 15), new DateOnly(2026, 11, 15))[0].OccurrenceId!;
+
+        events.UpdateChecklistItem(occurrenceId, true, items[0].ItemId, isDone: true);
+        other.UpdateChecklistItem(otherId, true, items[1].ItemId, isDone: true);
+        await Sync(desktop, remote);
+        await Sync(laptop, remote);
+        await Sync(desktop, remote);
+        await Sync(laptop, remote);
+
+        foreach (var repository in new[] { events, other })
+        {
+            var value = repository.List(new DateOnly(2026, 11, 15), new DateOnly(2026, 11, 15))[0].Event;
+            Assert.All(value.Checklist, item => Assert.True(item.IsDone));
+            Assert.False(value.IsDirty);
+        }
+    }
+
+    [Fact]
+    public async Task SameItemEditedOnTwoPcsFollowsTheLastToReachGoogle()
+    {
+        using var desktop = new TestDatabase();
+        using var laptop = new TestDatabase();
+        var remote = new FakeCalendar();
+        var (events, occurrenceId, _) = WeeklySeries(desktop);
+        var item = events.AddChecklistItems(occurrenceId, true, ["원래"]).Checklist[0];
+        await Sync(desktop, remote); // 시리즈가 먼저 올라가고 회차는 다음 동기화에서 올라간다.
+        await Sync(desktop, remote);
+        await Sync(laptop, remote);
+        var other = new EventRepository(laptop.Database, Seoul);
+        var otherId = other.List(new DateOnly(2026, 11, 15), new DateOnly(2026, 11, 15))[0].OccurrenceId!;
+
+        events.UpdateChecklistItem(occurrenceId, true, item.ItemId, text: "데스크탑");
+        other.UpdateChecklistItem(otherId, true, item.ItemId, text: "노트북");
+        await Sync(desktop, remote);
+        await Sync(laptop, remote);
+        await Sync(desktop, remote);
+
+        Assert.Equal("노트북", events.List(new DateOnly(2026, 11, 15), new DateOnly(2026, 11, 15))[0].Event.Checklist[0].Text);
+        Assert.Equal("노트북", other.List(new DateOnly(2026, 11, 15), new DateOnly(2026, 11, 15))[0].Event.Checklist[0].Text);
+    }
+
+    [Fact]
+    public async Task ChecklistSurvivesRemoteEditOfTheSameEvent()
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeCalendar();
+        var events = new EventRepository(db.Database, Seoul);
+        var created = events.Create([new EventInput("회의", "2026-11-02")])[0];
+        await Sync(db, remote);
+
+        remote.Edit(created.EventUid, e => e.Summary = "폰에서 고침");
+        events.AddChecklistItems(created.EventUid, false, ["안건 정리"]);
+        await Sync(db, remote);
+        await Sync(db, remote);
+
+        var value = events.Get(created.EventUid);
+        Assert.Equal("폰에서 고침", value.Title);
+        Assert.Equal("안건 정리", Assert.Single(value.Checklist).Text);
+        Assert.False(value.IsDirty);
+    }
+
+    [Fact]
+    public async Task DeletedItemStaysDeletedOnAnotherPcAndCanBeRestored()
+    {
+        using var desktop = new TestDatabase();
+        using var laptop = new TestDatabase();
+        var remote = new FakeCalendar();
+        var events = new EventRepository(desktop.Database, Seoul);
+        var created = events.Create([new EventInput("회의", "2026-11-02")])[0];
+        var item = events.AddChecklistItems(created.EventUid, false, ["안건"]).Checklist[0];
+        await Sync(desktop, remote);
+        await Sync(laptop, remote);
+
+        events.UpdateChecklistItem(created.EventUid, false, item.ItemId, isDeleted: true);
+        await Sync(desktop, remote);
+        await Sync(laptop, remote);
+        var other = new EventRepository(laptop.Database, Seoul);
+        Assert.Empty(Checklist.Visible(other.Get(created.EventUid).Checklist));
+
+        other.UpdateChecklistItem(created.EventUid, false, item.ItemId, isDeleted: false);
+        await Sync(laptop, remote);
+        await Sync(desktop, remote);
+        Assert.Single(Checklist.Visible(events.Get(created.EventUid).Checklist));
+    }
+
     private sealed class FakeCalendar : ICalendarRemote
     {
         private int _version;
@@ -263,7 +390,12 @@ public sealed class EventSyncTests
             stored.Start = value.Start ?? stored.Start;
             stored.End = value.End ?? stored.End;
             stored.Recurrence = value.Recurrence ?? stored.Recurrence;
-            stored.ExtendedProperties = value.ExtendedProperties ?? stored.ExtendedProperties;
+            // Google patch는 보내지 않은 키를 그대로 둔다.
+            if (value.ExtendedProperties?.Private__ is { } properties)
+            {
+                stored.ExtendedProperties ??= new Event.ExtendedPropertiesData { Private__ = new Dictionary<string, string>() };
+                foreach (var (key, text) in properties) stored.ExtendedProperties.Private__[key] = text;
+            }
             Put(stored);
             return Task.FromResult(Copy(stored));
         }
