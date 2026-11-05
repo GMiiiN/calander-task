@@ -3,6 +3,29 @@ namespace DeskCal.Core.Tests;
 public sealed class AgendaTests
 {
     [Fact]
+    public void MultiDayEventAppearsOnceOnItsFirstVisibleDay()
+    {
+        using var db = new TestDatabase();
+        db.Events.Create([new EventInput("개인 파트 개발", "2026-11-05") { EndDate = "2026-11-18" }]);
+        var service = new AgendaService(db.Events, db.Todos, TestDatabase.Seoul, () => new(2026, 11, 10));
+
+        var agenda = service.GetAgenda();
+
+        Assert.Equal("개인 파트 개발", Assert.Single(agenda.Groups.SelectMany(g => g.Events)).Event.Title);
+        Assert.Single(agenda.Groups[1].Events);
+    }
+
+    [Fact]
+    public void EachOccurrenceOfARepeatingEventStillAppears()
+    {
+        using var db = new TestDatabase();
+        db.Events.Create([new EventInput("카공", "2026-11-08") { Repeat = new RecurrenceInput("weekly", Weekdays: [DayOfWeek.Sunday]) }]);
+        var service = new AgendaService(db.Events, db.Todos, TestDatabase.Seoul, () => new(2026, 11, 5));
+
+        Assert.Equal(2, service.GetAgenda().Groups.Sum(g => g.Events.Count));
+    }
+
+    [Fact]
     public void GroupsIncludeAllOpenTodosAndExactlyFourteenDaysOfEvents()
     {
         using var db = new TestDatabase();
@@ -25,7 +48,7 @@ public sealed class AgendaTests
         var today = agenda.Groups[1];
         Assert.Equal(2, today.Events.Count);
         Assert.Single(today.Todos);
-        Assert.Single(agenda.Groups[2].Events);
+        Assert.Empty(agenda.Groups[2].Events); // 여러 날 일정은 보이는 첫 날에만 나온다.
         Assert.Equal("last", Assert.Single(agenda.Groups[14].Events).Event.Title);
         Assert.DoesNotContain(agenda.Groups.SelectMany(g => g.Events), e => e.Event.Title is "outside" or "past");
         Assert.Equal(5, agenda.Groups.Sum(g => g.Todos.Count));

@@ -26,6 +26,19 @@ public sealed class MainViewModelChecklistTests : IDisposable
     private static SidebarItemViewModel Item(MainViewModel model) => model.Groups.SelectMany(g => g.Items).Single(i => i.EventId is not null);
 
     [Fact]
+    public void MultiDayEventCountsOnceAndShowsItsPeriod()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        _events.Create([new EventInput("개인 파트 개발", today.AddDays(-2).ToString("yyyy-MM-dd")) { EndDate = today.AddDays(11).ToString("yyyy-MM-dd") }]);
+
+        var model = new MainViewModel(_database);
+
+        Assert.Equal(2, model.AgendaCount);
+        var item = model.Groups.SelectMany(g => g.Items).Single(i => i.Title == "개인 파트 개발");
+        Assert.StartsWith(today.AddDays(-2).ToString("M'/'d", System.Globalization.CultureInfo.InvariantCulture) + "–" + today.AddDays(11).ToString("M'/'d", System.Globalization.CultureInfo.InvariantCulture), item.Meta);
+    }
+
+    [Fact]
     public void ToggleAppearsOnlyWithItemsAndExpansionIsNotRemembered()
     {
         var model = new MainViewModel(_database);
