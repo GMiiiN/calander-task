@@ -292,16 +292,12 @@ public partial class MainWindow : Window
         ApplySidebar();
     }
 
-    // 기본은 펼침. 접으면 창 크기는 그대로 두고 달력이 사이드바 자리까지 넓어진다.
+    // 기본은 펼침. 접어도 달력 크기는 그대로이고 사이드바 자리만 비운다. 크기가 안 바뀌므로 흐림 창은 직접 다시 놓는다.
     private void ApplySidebar()
     {
         var isCollapsed = _settings.Get("sidebar_collapsed") == "1";
-        SidebarCard.Visibility = isCollapsed ? Visibility.Collapsed : Visibility.Visible;
-        SidebarGapColumn.Width = new GridLength(isCollapsed ? 0 : 12);
-        SidebarColumn.Width = new GridLength(isCollapsed ? 0 : 300);
-        // 손잡이는 달력 칸 오른쪽에 붙어 있다. 펼치면 달력과 사이드바 사이 가운데, 접으면 달력 끝에 걸친다.
-        SidebarToggleButton.Margin = new Thickness(0, 0, isCollapsed ? -12 : -18, 0);
-        SidebarToggleIcon.Data = (Geometry)FindResource(isCollapsed ? "ChevronLeftIcon" : "ChevronRightIcon");
+        SidebarCard.Visibility = isCollapsed ? Visibility.Hidden : Visibility.Visible;
+        UpdateBlur();
         var label = isCollapsed ? "사이드바 펼치기" : "사이드바 접기";
         SidebarToggleButton.ToolTip = label;
         System.Windows.Automation.AutomationProperties.SetName(SidebarToggleButton, label);
