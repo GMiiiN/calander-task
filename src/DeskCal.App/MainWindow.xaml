@@ -133,7 +133,31 @@
         </DataTemplate>
 
         <!-- 사이드바 한 줄 (Figma Sidebar item) -->
+        <!-- 회차 체크리스트 항목. 긴 내용은 잘리지 않게 줄을 바꾼다(feedback 3-4). -->
+        <DataTemplate x:Key="ChecklistItemTemplate" DataType="{x:Type local:ChecklistItemViewModel}">
+            <DockPanel Margin="26,3,8,3" Background="Transparent" MouseRightButtonUp="OnChecklistItemRightClick">
+                <CheckBox Style="{StaticResource RoundCheck}" IsChecked="{Binding IsDone, Mode=OneWay}" VerticalAlignment="Top"
+                          Command="{Binding DataContext.ToggleChecklistItemCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                          CommandParameter="{Binding}" Margin="0,3,8,0" />
+                <Grid>
+                    <TextBlock x:Name="ItemText" Text="{Binding Text}" Style="{StaticResource BaseText}" FontSize="13" TextWrapping="Wrap" TextTrimming="None"
+                               Visibility="{Binding IsEditing, Converter={StaticResource Visible}, ConverterParameter=Invert}" />
+                    <TextBox Text="{Binding Text, Mode=OneTime}" FontFamily="{StaticResource AppFont}" FontSize="13" Foreground="{DynamicResource TextBrush}"
+                             CaretBrush="{DynamicResource TextBrush}" Background="Transparent" BorderThickness="0" Padding="0" TextWrapping="Wrap" MaxLength="200"
+                             Visibility="{Binding IsEditing, Converter={StaticResource Visible}}"
+                             Loaded="OnChecklistEditLoaded" KeyDown="OnChecklistEditKeyDown" LostKeyboardFocus="OnChecklistEditBlur" />
+                </Grid>
+            </DockPanel>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsDone}" Value="True">
+                    <Setter TargetName="ItemText" Property="Foreground" Value="{DynamicResource MutedBrush}" />
+                    <Setter TargetName="ItemText" Property="TextDecorations" Value="Strikethrough" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+
         <DataTemplate x:Key="SidebarItemTemplate" DataType="{x:Type local:SidebarItemViewModel}">
+            <StackPanel>
             <DockPanel Height="36" Margin="8,0" Background="Transparent">
                 <CheckBox Style="{StaticResource RoundCheck}" IsChecked="{Binding IsDone, Mode=OneWay}" VerticalAlignment="Center"
                           Command="{Binding DataContext.ToggleDoneCommand, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -141,6 +165,14 @@
                 <Ellipse DockPanel.Dock="Right" Width="6" Height="6" VerticalAlignment="Center" Margin="8,0,0,0"
                          Fill="{Binding DotColorHex, Converter={StaticResource HexBrush}}"
                          Visibility="{Binding DotColorHex, Converter={StaticResource Visible}}" />
+                <Button DockPanel.Dock="Right" Style="{StaticResource BareButton}" Margin="6,0,0,0" ToolTip="체크리스트" AutomationProperties.Name="체크리스트"
+                        Command="{Binding DataContext.ToggleChecklistCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"
+                        Visibility="{Binding HasChecklist, Converter={StaticResource Visible}}">
+                    <Grid Width="22" Height="22" Background="Transparent">
+                        <Path x:Name="ChecklistChevron" Data="{StaticResource ChevronRightIcon}" Width="16" Height="16" Stroke="{DynamicResource SubtleBrush}"
+                              StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" RenderTransformOrigin="0.5,0.5" />
+                    </Grid>
+                </Button>
                 <StackPanel VerticalAlignment="Center">
                     <!-- 잘린 제목은 1초 머무르면 전체 제목을 툴팁으로 보여 준다(feedback 3-2). -->
                     <TextBlock x:Name="Title" Text="{Binding Title}" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Medium"
@@ -149,10 +181,18 @@
                                Foreground="{DynamicResource MutedBrush}" Margin="0,1,0,0" />
                 </StackPanel>
             </DockPanel>
+            <ItemsControl ItemsSource="{Binding Checklist}" ItemTemplate="{StaticResource ChecklistItemTemplate}" Margin="0,0,0,6"
+                          Visibility="{Binding IsExpanded, Converter={StaticResource Visible}}" />
+            </StackPanel>
             <DataTemplate.Triggers>
                 <DataTrigger Binding="{Binding IsDone}" Value="True">
                     <Setter TargetName="Title" Property="Foreground" Value="{DynamicResource MutedBrush}" />
                     <Setter TargetName="Title" Property="TextDecorations" Value="Strikethrough" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                    <Setter TargetName="ChecklistChevron" Property="RenderTransform">
+                        <Setter.Value><RotateTransform Angle="90" /></Setter.Value>
+                    </Setter>
                 </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>

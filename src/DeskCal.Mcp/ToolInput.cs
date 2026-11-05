@@ -42,6 +42,14 @@ internal sealed class ToolInput(JsonElement value)
         return items.EnumerateArray().Select(item => new ToolInput(item)).ToArray();
     }
 
+    public string[] Strings(string name)
+    {
+        if (!value.TryGetProperty(name, out var items) || items.ValueKind != JsonValueKind.Array || items.GetArrayLength() < 1
+            || items.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String))
+            throw new ArgumentException($"{name} must be a non-empty list of strings.");
+        return items.EnumerateArray().Select(item => item.GetString()!).ToArray();
+    }
+
     public RecurrenceInput? Repeat()
     {
         if (!value.TryGetProperty("repeat", out var repeat) || repeat.ValueKind == JsonValueKind.Null) return null;

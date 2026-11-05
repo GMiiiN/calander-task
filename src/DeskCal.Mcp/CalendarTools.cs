@@ -34,13 +34,18 @@ public sealed class CalendarTools(Database database)
                 "update_event" => UpdateEvent(input, output),
                 "delete_event" => SetEventDeleted(input, output, true),
                 "restore_event" => SetEventDeleted(input, output, false),
+                "add_checklist_items" => AddChecklistItems(input, output),
+                "update_checklist_item" => UpdateChecklistItem(input, output),
+                "delete_checklist_item" => SetChecklistItemDeleted(input, output, true),
+                "restore_checklist_item" => SetChecklistItemDeleted(input, output, false),
                 "create_todos" => CreateTodos(input, output),
                 "update_todo" => UpdateTodo(input, output),
                 "delete_todo" => SetTodoDeleted(input, output, true),
                 "restore_todo" => SetTodoDeleted(input, output, false),
                 _ => throw new ArgumentException("Unknown tool.")
             };
-            if (name is "create_events" or "update_event" or "delete_event" or "restore_event" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo") ChangeSignal.Notify();
+            if (name is "create_events" or "update_event" or "delete_event" or "restore_event" or "add_checklist_items" or "update_checklist_item" or "delete_checklist_item"
+                or "restore_checklist_item" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo") ChangeSignal.Notify();
         }
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or InvalidOperationException or FormatException or JsonException or SqliteException)
         {
@@ -220,6 +225,32 @@ public sealed class CalendarTools(Database database)
         var value = isOccurrence
             ? deleted ? _events.DeleteOccurrence(id) : _events.RestoreOccurrence(id)
             : deleted ? _events.Delete(id) : _events.Restore(id);
+        return ToolOutput.Object(new { Event = output.Event(value, isOccurrence ? id : null) });
+    }
+
+    private JsonObject AddChecklistItems(ToolInput input, ToolOutput output)
+    {
+        input.Only("event_id", "occurrence_id", "items");
+        var (id, isOccurrence) = input.EventId();
+        return ToolOutput.Object(new { Event = output.Event(_events.AddChecklistItems(id, isOccurrence, input.Strings("items")), isOccurrence ? id : null) });
+    }
+
+    private JsonObject UpdateChecklistItem(ToolInput input, ToolOutput output)
+    {
+        input.Only("event_id", "occurrence_id", "item_id", "text", "is_done");
+        var (id, isOccurrence) = input.EventId();
+        var text = input.Text("text");
+        var isDone = input.Boolean("is_done");
+        if (text is null && isDone is null) throw new ArgumentException("Supply text or is_done.");
+        var value = _events.UpdateChecklistItem(id, isOccurrence, input.Required("item_id"), text, isDone);
+        return ToolOutput.Object(new { Event = output.Event(value, isOccurrence ? id : null) });
+    }
+
+    private JsonObject SetChecklistItemDeleted(ToolInput input, ToolOutput output, bool deleted)
+    {
+        input.Only("event_id", "occurrence_id", "item_id");
+        var (id, isOccurrence) = input.EventId();
+        var value = _events.UpdateChecklistItem(id, isOccurrence, input.Required("item_id"), isDeleted: deleted);
         return ToolOutput.Object(new { Event = output.Event(value, isOccurrence ? id : null) });
     }
 

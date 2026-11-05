@@ -4,7 +4,7 @@ namespace DeskCal.Core;
 
 public sealed class Database
 {
-    public const int LatestVersion = 1;
+    public const int LatestVersion = 2;
     private readonly string _connectionString;
 
     public Database(string path)
@@ -43,7 +43,7 @@ public sealed class Database
         var version = Convert.ToInt32(command.ExecuteScalar());
         if (version > LatestVersion)
             throw new InvalidOperationException($"Database version {version} is newer than supported version {LatestVersion}.");
-        Action<SqliteCommand>[] migrations = [MigrateToV1];
+        Action<SqliteCommand>[] migrations = [MigrateToV1, MigrateToV2];
         while (version < LatestVersion)
         {
             migrations[version](command);
@@ -72,6 +72,12 @@ public sealed class Database
         using var stream = typeof(Database).Assembly.GetManifestResourceStream("DeskCal.Core.SchemaV1.sql")!;
         using var reader = new StreamReader(stream);
         command.CommandText = reader.ReadToEnd();
+        command.ExecuteNonQuery();
+    }
+
+    private static void MigrateToV2(SqliteCommand command)
+    {
+        command.CommandText = "ALTER TABLE event ADD COLUMN checklist TEXT NOT NULL DEFAULT '[]';";
         command.ExecuteNonQuery();
     }
 }

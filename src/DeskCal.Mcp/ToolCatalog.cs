@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using DeskCal.Core;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -32,6 +33,15 @@ internal static class ToolCatalog
             WithIds(Object(eventPatch)), idempotent: true);
         yield return Define("delete_event", "Soft-delete an event series or a single occurrence. Supply exactly one ID." + DELETE_GUIDANCE + SERIES_GUIDANCE, Ids(), destructive: true);
         yield return Define("restore_event", "Restore a series (keeping individually cancelled occurrences) or restore only one occurrence. Supply exactly one ID.", Ids());
+        yield return Define("add_checklist_items", "Add items to the checklist of one occurrence (or of a non-recurring event). Use this when the user says what they plan to do at an event, even without naming it, e.g. \"I'll study chapter 3 this week\" for their weekly study session: find the occurrence with list_events first. If no event or several events match, ask which one. Recurring events need occurrence_id because each occurrence has its own checklist. Existing items appear as checklist in get_event." + RELATIVE_DATES,
+            WithIds(Object(new() { ["event_id"] = String(), ["occurrence_id"] = String(), ["items"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = Checklist.MAX_ITEMS, ["items"] = String() } }, "items")));
+        var checklistPatch = ChecklistItemFields();
+        checklistPatch["text"] = String();
+        checklistPatch["is_done"] = Boolean();
+        yield return Define("update_checklist_item", "Change the text of a checklist item or check it off. Supply text, is_done or both, with the same event_id or occurrence_id that holds the item.",
+            WithIds(Object(checklistPatch, "item_id")), idempotent: true);
+        yield return Define("delete_checklist_item", "Soft-delete a checklist item. It can be restored with restore_checklist_item." + DELETE_GUIDANCE, WithIds(Object(ChecklistItemFields(), "item_id")), destructive: true);
+        yield return Define("restore_checklist_item", "Restore a soft-deleted checklist item.", WithIds(Object(ChecklistItemFields(), "item_id")));
         yield return Define("create_todos", "Create 1–50 todos atomically in the local database. Sync is reported per item." + RELATIVE_DATES,
             Object(new() { ["todos"] = Batch(Object(TodoFields(false), "title")) }, "todos"));
         var todoPatch = TodoFields(true);
@@ -59,6 +69,8 @@ internal static class ToolCatalog
         if (patch) result["is_done"] = Boolean();
         return result;
     }
+
+    private static Dictionary<string, JsonNode?> ChecklistItemFields() => new() { ["event_id"] = String(), ["occurrence_id"] = String(), ["item_id"] = String() };
 
     private static Dictionary<string, JsonNode?> TodoFields(bool patch)
     {
