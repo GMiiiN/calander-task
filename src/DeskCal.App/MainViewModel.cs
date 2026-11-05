@@ -165,7 +165,10 @@ public sealed class MainViewModel : ObservableObject
     {
         var value = occurrence.Event;
         var category = value.ColorId is not null && categories.TryGetValue(value.ColorId, out var found) ? found : ("일정", "#246BDE");
-        var time = value.StartTime is null ? "종일" : $"{value.StartTime}–{value.EndTime}";
+        var firstDay = DateOnly.FromDateTime(occurrence.Start);
+        var lastDay = DateOnly.FromDateTime(occurrence.End.AddTicks(-1));
+        var time = lastDay > firstDay ? $"{firstDay.ToString("M'/'d", CultureInfo.InvariantCulture)}–{lastDay.ToString("M'/'d", CultureInfo.InvariantCulture)}"
+            : value.StartTime is null ? "종일" : $"{value.StartTime}–{value.EndTime}";
         var eventId = occurrence.OccurrenceId is { } id ? OccurrenceId.Parse(id).EventUid : value.EventUid;
         var checklist = Checklist.Visible(value.Checklist)
             .Select(i => new ChecklistItemViewModel(i.ItemId, i.Text, i.IsDone, i.ItemId == _editingChecklistItemId, eventId, occurrence.OccurrenceId)).ToArray();

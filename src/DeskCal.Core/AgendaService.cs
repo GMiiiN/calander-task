@@ -20,12 +20,14 @@ public sealed class AgendaService(EventRepository events, TodoRepository todos, 
         {
             new("overdue", null, [], visibleTodos.Where(t => !t.IsDone && t.DueDate is not null && Validation.Date(t.DueDate) < start).ToArray())
         };
+        // 여러 날 일정은 기간 중 날마다 넣지 않고 보이는 첫 날에만 넣는다. 그래야 할 일 하나가 날짜 수만큼 세어지지 않는다.
+        var placed = new HashSet<string>();
         for (var day = start; day <= end; day = day.AddDays(1))
         {
             var lower = day.ToDateTime(TimeOnly.MinValue);
             var upper = lower.AddDays(1);
             groups.Add(new("date", day,
-                occurrences.Where(o => o.Start < upper && o.End > lower).ToArray(),
+                occurrences.Where(o => o.Start < upper && o.End > lower && placed.Add(o.OccurrenceId ?? o.Event.EventUid)).ToArray(),
                 visibleTodos.Where(t => t.IsDone ? day == current : t.DueDate == day.ToString("yyyy-MM-dd")).ToArray()));
         }
         groups.Add(new("later", null, [], visibleTodos.Where(t => !t.IsDone && t.DueDate is not null && Validation.Date(t.DueDate) > end).ToArray()));
