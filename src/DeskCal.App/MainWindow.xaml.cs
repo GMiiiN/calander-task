@@ -73,6 +73,7 @@ public partial class MainWindow : Window
         BuildWeekdayHeader();
         BuildHourGrid();
         UpdateViewToggle();
+        ApplySidebar();
         _viewModel.PropertyChanged += OnViewModelChanged;
 
         _pinning = new DesktopPinning(this, LogPath("pinning.log"), () => _blur?.Handle ?? IntPtr.Zero);
@@ -146,7 +147,7 @@ public partial class MainWindow : Window
         if (_blur is null || !IsLoaded) return;
         GetWindowRect(new WindowInteropHelper(this).Handle, out var rect);
         var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
-        var cards = new[] { CalendarCard, SidebarCard }.Select(card =>
+        var cards = new[] { CalendarCard, SidebarCard }.Where(card => card.Visibility == Visibility.Visible).Select(card =>
         {
             var bounds = card.TransformToAncestor(this).TransformBounds(new Rect(card.RenderSize));
             return new Rect(bounds.X * scale, bounds.Y * scale, bounds.Width * scale, bounds.Height * scale);
@@ -278,6 +279,24 @@ public partial class MainWindow : Window
     }
 
     private void OnSearchClick(object sender, RoutedEventArgs e) => ShowSearch();
+
+    private void OnSidebarToggleClick(object sender, RoutedEventArgs e)
+    {
+        _settings.Set("sidebar_collapsed", SidebarCard.Visibility == Visibility.Visible ? "1" : "0");
+        ApplySidebar();
+    }
+
+    // 기본은 펼침. 접으면 창 크기는 그대로 두고 달력이 사이드바 자리까지 넓어진다.
+    private void ApplySidebar()
+    {
+        var isCollapsed = _settings.Get("sidebar_collapsed") == "1";
+        SidebarCard.Visibility = isCollapsed ? Visibility.Collapsed : Visibility.Visible;
+        SidebarGapColumn.Width = new GridLength(isCollapsed ? 0 : 12);
+        SidebarColumn.Width = new GridLength(isCollapsed ? 0 : 300);
+        var label = isCollapsed ? "사이드바 펼치기" : "사이드바 접기";
+        SidebarToggleButton.ToolTip = label;
+        System.Windows.Automation.AutomationProperties.SetName(SidebarToggleButton, label);
+    }
 
     // Ctrl+F는 달력 창이 키보드를 받고 있을 때(할 일 입력란 등)만 온다. 평소에는 창이 활성화되지 않기 때문이다.
     protected override void OnPreviewKeyDown(KeyEventArgs e)
