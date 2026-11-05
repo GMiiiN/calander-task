@@ -162,8 +162,8 @@
     <Grid x:Name="Root" Margin="24">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" />
-            <ColumnDefinition Width="12" />
-            <ColumnDefinition Width="300" />
+            <ColumnDefinition x:Name="SidebarGapColumn" Width="12" />
+            <ColumnDefinition x:Name="SidebarColumn" Width="300" />
         </Grid.ColumnDefinitions>
 
         <!-- 달력 카드 -->
@@ -201,6 +201,15 @@
                                         <Path Data="{StaticResource SearchCircleIcon}" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667" />
                                         <Path Data="{StaticResource SearchHandleIcon}" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667"
                                               StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                                    </Canvas>
+                                </Border>
+                            </Button>
+                            <Button x:Name="SidebarToggleButton" Style="{StaticResource BareButton}" Click="OnSidebarToggleClick" Margin="6,0,0,0">
+                                <Border Width="26" Height="26" CornerRadius="13" BorderThickness="1" Background="{StaticResource GlassButtonBrush}"
+                                        BorderBrush="{StaticResource GlassRimBrush}">
+                                    <Canvas Width="14" Height="14">
+                                        <Path Data="M1.5,2.5 H12.5 V11.5 H1.5 Z M9,2.5 V11.5" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.16667"
+                                              StrokeLineJoin="Round" />
                                     </Canvas>
                                 </Border>
                             </Button>
