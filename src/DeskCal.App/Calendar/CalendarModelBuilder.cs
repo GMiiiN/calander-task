@@ -44,15 +44,16 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         var dueTodos = todos.List("all");
         var holidays = new HolidayRepository(database).List(start, start.AddDays(6));
         var days = new List<WeekDayModel>();
-        // 종일 줄에는 종일 일정과 할 일만 둔다. 시간 일정은 시간표에 그린다.
-        var allDay = LayOutRow(start, occurrences.Where(o => o.IsAllDay).ToArray(), dueTodos);
+        // 종일 줄에는 종일 일정, 하루(24시간) 이상 이어지는 시간 일정, 할 일을 둔다. 나머지 시간 일정은 시간표에 그린다.
+        // 금 18시~일 12시 같은 일정을 시간표에 그리면 가운데 날 열 전체를 덮어 다른 일정을 가린다.
+        var allDay = LayOutRow(start, occurrences.Where(IsWeekBar).ToArray(), dueTodos);
         for (var offset = 0; offset < 7; offset++)
         {
             var date = start.AddDays(offset);
             var lower = date.ToDateTime(TimeOnly.MinValue);
             var upper = lower.AddDays(1);
-            var blocks = occurrences.Where(o => !o.IsAllDay && o.Start < upper && o.End > lower)
-                .Select(o => new WeekBlockModel(ToChip(o),
+            var blocks = occurrences.Where(o => !IsWeekBar(o) && o.Start < upper && o.End > lower)
+                .Select(o => new WeekBlockModel(ToChip(o) with { DetailText = DetailText(o) },
                     (int)(Max(o.Start, lower) - lower).TotalMinutes,
                     (int)(Min(o.End, upper) - lower).TotalMinutes, 0, 1))
                 .Where(b => b.EndMinute > b.StartMinute)
@@ -61,6 +62,9 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         }
         return new(start, days);
     }
+
+    private static bool IsWeekBar(EventOccurrence occurrence) =>
+        occurrence.IsAllDay || occurrence.End - occurrence.Start >= TimeSpan.FromHours(24);
 
     private IReadOnlyList<ChipModel> ItemsForDay(DateOnly date, IReadOnlyList<EventOccurrence> occurrences, IReadOnlyList<TodoRecord> dueTodos)
     {

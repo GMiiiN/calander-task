@@ -65,14 +65,34 @@ public sealed class KoreanWeekdayConverter : IValueConverter
 }
 
 // 주간 블록의 "09:00–10:00". 그날로 잘린 범위를 보여준다(자정을 넘는 일정은 날마다 자기 구간).
+// 매개변수 "start"면 시작 시각만(짧은 블록의 한 줄 표시).
 public sealed class WeekBlockTimeConverter : IValueConverter
 {
     public static readonly WeekBlockTimeConverter Instance = new();
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is Calendar.WeekBlockModel block ? $"{Clock(block.StartMinute)}–{Clock(block.EndMinute)}" : "";
+        value is not Calendar.WeekBlockModel block ? ""
+        : parameter as string == "start" ? Clock(block.StartMinute)
+        : $"{Clock(block.StartMinute)}–{Clock(block.EndMinute)}";
 
     private static string Clock(int minute) => $"{minute / 60:00}:{minute % 60:00}";
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotSupportedException();
+}
+
+// 주간 블록 제목이 차지할 수 있는 높이. 블록 높이에서 위 여백과 시각 한 줄을 빼고 남는 만큼, 16px 줄 단위로(최소 한 줄).
+public sealed class WeekBlockTitleHeightConverter : IValueConverter
+{
+    public static readonly WeekBlockTitleHeightConverter Instance = new();
+    public const double LINE_HEIGHT = 16;
+    private const double TIME_LINE_AND_MARGIN = 3 + 15 + 1;
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is not Calendar.WeekBlockModel block) return double.PositiveInfinity;
+        var height = (block.EndMinute - block.StartMinute) / 60.0 * WeekDayPanel.HOUR_HEIGHT;
+        return Math.Max(1, Math.Floor((height - TIME_LINE_AND_MARGIN) / LINE_HEIGHT)) * LINE_HEIGHT;
+    }
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotSupportedException();
 }
