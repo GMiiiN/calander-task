@@ -9,6 +9,8 @@ public sealed record ChipModel(
     public bool JoinsLeft { get; init; }
     public bool JoinsRight { get; init; }
     public string? PeriodText { get; init; }
+    // +N 목록에서 제목 아래에 쓰는 한 줄: 시간 범위, 여러 날이면 기간, 종일, 할 일.
+    public string? DetailText { get; init; }
     // 위 줄의 막대 높이를 맞추려고 비워 두는 자리.
     public bool IsPlaceholder { get; init; }
 

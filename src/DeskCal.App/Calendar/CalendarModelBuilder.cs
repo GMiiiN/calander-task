@@ -66,9 +66,9 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
     {
         var lower = date.ToDateTime(TimeOnly.MinValue);
         var upper = lower.AddDays(1);
-        return occurrences.Where(o => o.Start < upper && o.End > lower).Select(ToChip)
+        return occurrences.Where(o => o.Start < upper && o.End > lower).Select(o => ToChip(o) with { DetailText = DetailText(o) })
             .Concat(dueTodos.Where(t => t.DueDate == date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))
-                .Select(t => new ChipModel(t.Title, null, "#B0BACB", t.IsDone, true, false, null, null, t.TodoUid, t.CreatedBy)))
+                .Select(t => new ChipModel(t.Title, null, "#B0BACB", t.IsDone, true, false, null, null, t.TodoUid, t.CreatedBy) { DetailText = "할 일 · 이날 마감" }))
             .OrderBy(c => c.IsTodo ? 2 : c.TimeText is null ? 0 : 1)
             .ThenBy(c => c.IsDone).ThenBy(c => c.TimeText, StringComparer.Ordinal).ToArray();
     }
@@ -135,6 +135,11 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         var end = occurrence.IsAllDay ? LastDate(occurrence).ToDateTime(TimeOnly.MinValue) : occurrence.End;
         return $"{occurrence.Start.ToString(format, KOREAN)} - {end.ToString(format, KOREAN)}";
     }
+
+    private static string DetailText(EventOccurrence occurrence) =>
+        LastDate(occurrence) > FirstDate(occurrence) ? PeriodText(occurrence)
+        : occurrence.IsAllDay ? "종일"
+        : $"{occurrence.Start.ToString("HH:mm", CultureInfo.InvariantCulture)}–{occurrence.End.ToString("HH:mm", CultureInfo.InvariantCulture)}";
 
     private static readonly CultureInfo KOREAN = CultureInfo.GetCultureInfo("ko-KR");
     private static DateOnly FirstDate(EventOccurrence occurrence) => DateOnly.FromDateTime(occurrence.Start);
