@@ -510,11 +510,26 @@
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type local:SidebarGroupViewModel}">
                                     <StackPanel Margin="0,0,0,10">
-                                        <TextBlock x:Name="Header" Text="{Binding Header}" Style="{StaticResource BaseText}" FontWeight="Bold"
-                                                   Foreground="{DynamicResource SubtleBrush}" Margin="8,0,0,2" />
-                                        <ItemsControl ItemsSource="{Binding Items}" ItemTemplate="{StaticResource SidebarItemTemplate}" />
+                                        <!-- "이후"(2주 다음 ~ 60일, feedback 3-6)만 머리글을 눌러 접고 편다. 다른 묶음의 머리글은 누를 수 없다. -->
+                                        <Button x:Name="HeaderButton" Style="{StaticResource BareButton}" HorizontalAlignment="Left"
+                                                IsHitTestVisible="{Binding IsCollapsible}" Focusable="{Binding IsCollapsible}"
+                                                Command="{Binding DataContext.ToggleGroupCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                AutomationProperties.Name="{Binding Header}">
+                                            <StackPanel Orientation="Horizontal" Margin="8,0,0,2">
+                                                <TextBlock x:Name="Header" Text="{Binding Header}" Style="{StaticResource BaseText}" FontWeight="Bold"
+                                                           Foreground="{DynamicResource SubtleBrush}" />
+                                                <TextBlock x:Name="Chevron" Text="▾" Style="{StaticResource BaseText}" FontSize="11" Margin="4,0,0,0"
+                                                           Foreground="{DynamicResource SubtleBrush}" VerticalAlignment="Center"
+                                                           Visibility="{Binding IsCollapsible, Converter={StaticResource Visible}}" />
+                                            </StackPanel>
+                                        </Button>
+                                        <ItemsControl x:Name="GroupItems" ItemsSource="{Binding Items}" ItemTemplate="{StaticResource SidebarItemTemplate}" />
                                     </StackPanel>
                                     <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding IsCollapsed}" Value="True">
+                                            <Setter TargetName="GroupItems" Property="Visibility" Value="Collapsed" />
+                                            <Setter TargetName="Chevron" Property="Text" Value="▸" />
+                                        </DataTrigger>
                                         <DataTrigger Binding="{Binding Kind}" Value="overdue">
                                             <Setter TargetName="Header" Property="Foreground" Value="{DynamicResource SundayBrush}" />
                                         </DataTrigger>

@@ -39,11 +39,15 @@ public sealed record SidebarItemViewModel(string Title, string Meta, bool IsDone
     public bool HasChecklist => Checklist is { Count: > 0 };
 }
 
-public sealed record SidebarGroupViewModel(string Header, string Kind, IReadOnlyList<SidebarItemViewModel> Items);
+public sealed record SidebarGroupViewModel(string Header, string Kind, IReadOnlyList<SidebarItemViewModel> Items,
+    bool IsCollapsible = false, bool IsCollapsed = false);
 
 public sealed class MainViewModel : ObservableObject
 {
     private static readonly CultureInfo Korean = CultureInfo.GetCultureInfo("ko-KR");
+    // 사이드바 "이후" 묶음에 보이는 일정의 끝(오늘부터 며칠). 2주 목록 다음부터 여기까지(feedback 3-6).
+    public const int LATER_EVENT_DAYS = 60;
+    private const string LATER_COLLAPSED_KEY = "sidebar_later_collapsed";
 
     private readonly Database _database;
     private readonly EventRepository _events;
@@ -83,6 +87,12 @@ public sealed class MainViewModel : ObservableObject
         ToggleChecklistCommand = new RelayCommand(p => ToggleChecklist((SidebarItemViewModel)p!));
         ToggleChecklistItemCommand = new RelayCommand(p => ToggleChecklistItem((ChecklistItemViewModel)p!));
         AddTodoCommand = new RelayCommand(_ => AddTodo());
+        // 접힘 상태는 이 PC 설정으로 기억한다. 길어진 사이드바를 켤 때마다 다시 접지 않도록.
+        ToggleGroupCommand = new RelayCommand(_ =>
+        {
+            _settings.Set(LATER_COLLAPSED_KEY, IsLaterCollapsed ? "0" : "1");
+            RefreshSidebar();
+        });
         Refresh();
     }
 
@@ -95,6 +105,9 @@ public sealed class MainViewModel : ObservableObject
     public ICommand ToggleChecklistCommand { get; }
     public ICommand ToggleChecklistItemCommand { get; }
     public ICommand AddTodoCommand { get; }
+    public ICommand ToggleGroupCommand { get; }
+
+    private bool IsLaterCollapsed => _settings.Get(LATER_COLLAPSED_KEY) == "1";
 
     public bool IsMonthView { get => _isMonthView; private set => Set(ref _isMonthView, value); }
     public string YearText { get => _yearText; private set => Set(ref _yearText, value); }
@@ -143,7 +156,7 @@ public sealed class MainViewModel : ObservableObject
 
     private void BuildSidebar()
     {
-        var agenda = new AgendaService(_events, _todos, today: () => _today).GetAgenda();
+        var agenda = new AgendaService(_events, _todos, today: () => _today).GetAgenda(laterEventsUntil: _today.AddDays(LATER_EVENT_DAYS));
         var categories = ReadCategories();
         Ddays = agenda.Ddays.Where(d => d.DaysRemaining >= 0)
             .Select(d => new DdayChipViewModel(d.Occurrence.Event.Title, d.DaysRemaining == 0 ? "D-day" : $"D-{d.DaysRemaining}", d.DaysRemaining == 0))
@@ -152,16 +165,20 @@ public sealed class MainViewModel : ObservableObject
         // 마감일 없는 할 일은 14일 목록 맨 아래로 밀려 보이지 않았다(feedback 4). 기한 지남 바로 다음에 둔다.
         foreach (var group in agenda.Groups.OrderBy(g => g.Kind switch { "overdue" => 0, "anytime" => 1, _ => 2 }))
         {
-            var items = group.Events.Select(o => EventItem(o, categories))
+            var isLater = group.Kind == "later";
+            // "이후"에는 날짜 머리글이 없으므로 일정마다 날짜를 붙인다.
+            var items = group.Events.Select(o => EventItem(o, categories, showDate: isLater))
                 .Concat(group.Todos.Select(TodoItem)).ToArray();
             if (items.Length == 0) continue;
-            groups.Add(new(GroupHeader(group), group.Kind == "date" && group.Date == _today ? "today" : group.Kind, items));
+            groups.Add(new(GroupHeader(group, items.Length), group.Kind == "date" && group.Date == _today ? "today" : group.Kind, items,
+                IsCollapsible: isLater, IsCollapsed: isLater && IsLaterCollapsed));
         }
         Groups = groups;
-        AgendaCount = groups.Sum(g => g.Items.Count(i => !i.IsDone));
+        // 개수는 2주 안에서 챙길 것이다. "이후"의 일정까지 세면 숫자가 너무 커진다(할 일은 예전처럼 센다).
+        AgendaCount = groups.Sum(g => g.Items.Count(i => !i.IsDone && !(g.Kind == "later" && i.TodoId is null)));
     }
 
-    private SidebarItemViewModel EventItem(EventOccurrence occurrence, IReadOnlyDictionary<string, (string Name, string Hex)> categories)
+    private SidebarItemViewModel EventItem(EventOccurrence occurrence, IReadOnlyDictionary<string, (string Name, string Hex)> categories, bool showDate = false)
     {
         var value = occurrence.Event;
         var category = value.ColorId is not null && categories.TryGetValue(value.ColorId, out var found) ? found : ("일정", "#246BDE");
@@ -169,6 +186,7 @@ public sealed class MainViewModel : ObservableObject
         var lastDay = DateOnly.FromDateTime(occurrence.End.AddTicks(-1));
         var time = lastDay > firstDay ? $"{firstDay.ToString("M'/'d", CultureInfo.InvariantCulture)}–{lastDay.ToString("M'/'d", CultureInfo.InvariantCulture)}"
             : value.StartTime is null ? "종일" : $"{value.StartTime}–{value.EndTime}";
+        if (showDate && lastDay == firstDay) time = $"{firstDay.ToString("M'/'d", CultureInfo.InvariantCulture)} {time}";
         var eventId = occurrence.OccurrenceId is { } id ? OccurrenceId.Parse(id).EventUid : value.EventUid;
         var checklist = Checklist.Visible(value.Checklist)
             .Select(i => new ChecklistItemViewModel(i.ItemId, i.Text, i.IsDone, i.ItemId == _editingChecklistItemId, eventId, occurrence.OccurrenceId)).ToArray();
@@ -184,10 +202,10 @@ public sealed class MainViewModel : ObservableObject
         return new(todo.Title, meta, todo.IsDone, null, todo.TodoUid, null, null);
     }
 
-    private string GroupHeader(AgendaGroup group) => group.Kind switch
+    private string GroupHeader(AgendaGroup group, int count) => group.Kind switch
     {
         "overdue" => "기한 지남",
-        "later" => "이후",
+        "later" => $"이후 · {count}",
         "anytime" => "마감일 없음",
         _ when group.Date == _today => $"오늘 · {group.Date.Value.ToString("M월 d일 ddd", Korean)}",
         _ => group.Date!.Value.ToString("M월 d일 ddd", Korean)

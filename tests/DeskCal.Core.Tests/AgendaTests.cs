@@ -16,6 +16,26 @@ public sealed class AgendaTests
     }
 
     [Fact]
+    public void LaterEventsAreAddedOnlyWhenAsked()
+    {
+        using var db = new TestDatabase();
+        db.Events.Create([
+            new("2주 안", "2026-11-20"), new("3주 뒤", "2026-12-01"), new("석 달 뒤", "2027-02-01"),
+            new("걸쳐 있음", "2026-11-22") { EndDate = "2026-11-26" }
+        ]);
+        var service = new AgendaService(db.Events, db.Todos, TestDatabase.Seoul, () => new(2026, 11, 11));
+
+        // MCP get_agenda는 그대로: later에 일정이 없다.
+        Assert.Empty(service.GetAgenda().Groups.Single(g => g.Kind == "later").Events);
+
+        var agenda = service.GetAgenda(laterEventsUntil: new(2027, 1, 10));
+        var later = agenda.Groups.Single(g => g.Kind == "later");
+        Assert.Equal(["3주 뒤"], later.Events.Select(o => o.Event.Title));
+        // 2주 안에서 시작해 그 뒤로 이어지는 일정은 날짜 목록에 한 번만 나온다.
+        Assert.Single(agenda.Groups.SelectMany(g => g.Events), o => o.Event.Title == "걸쳐 있음");
+    }
+
+    [Fact]
     public void EachOccurrenceOfARepeatingEventStillAppears()
     {
         using var db = new TestDatabase();

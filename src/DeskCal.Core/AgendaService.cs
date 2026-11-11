@@ -8,7 +8,9 @@ public sealed class AgendaService(EventRepository events, TodoRepository todos, 
 {
     private readonly TimeZoneInfo _zone = localTimeZone ?? TimeZoneInfo.Local;
 
-    public Agenda GetAgenda(DateOnly? startDate = null, DateOnly? endDate = null)
+    /// <param name="laterEventsUntil">주면 기간 다음 날부터 이 날짜까지의 일정도 "later" 묶음에 넣는다(사이드바, feedback 3-6).
+    /// 주지 않으면 지금처럼 later에는 할 일만 있다(MCP get_agenda).</param>
+    public Agenda GetAgenda(DateOnly? startDate = null, DateOnly? endDate = null, DateOnly? laterEventsUntil = null)
     {
         var current = today?.Invoke() ?? DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, _zone).DateTime);
         var start = startDate ?? current;
@@ -30,7 +32,11 @@ public sealed class AgendaService(EventRepository events, TodoRepository todos, 
                 occurrences.Where(o => o.Start < upper && o.End > lower && placed.Add(o.OccurrenceId ?? o.Event.EventUid)).ToArray(),
                 visibleTodos.Where(t => t.IsDone ? day == current : t.DueDate == day.ToString("yyyy-MM-dd")).ToArray()));
         }
-        groups.Add(new("later", null, [], visibleTodos.Where(t => !t.IsDone && t.DueDate is not null && Validation.Date(t.DueDate) > end).ToArray()));
+        // 기간에 이미 나온 여러 날 일정(placed)은 다시 넣지 않는다.
+        var laterEvents = laterEventsUntil is { } until && until > end
+            ? events.List(end.AddDays(1), until).Where(o => placed.Add(o.OccurrenceId ?? o.Event.EventUid)).OrderBy(o => o.Start).ToArray()
+            : [];
+        groups.Add(new("later", null, laterEvents, visibleTodos.Where(t => !t.IsDone && t.DueDate is not null && Validation.Date(t.DueDate) > end).ToArray()));
         groups.Add(new("anytime", null, [], visibleTodos.Where(t => !t.IsDone && t.DueDate is null).ToArray()));
         var records = events.GetRecords();
         var expander = new RecurrenceExpander(_zone);
