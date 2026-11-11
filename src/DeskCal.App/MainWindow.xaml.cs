@@ -531,24 +531,38 @@ public partial class MainWindow : Window
         if (sender is TextBlock text && !TextTrim.IsTrimmed(text)) e.Handled = true;
     }
 
-    // +N: 그날 항목 전체를 작은 목록으로 보여준다(§6.3).
+    // +N 목록의 폭: 달력 칸보다 넓게(1.6배) 잡되 너무 작거나 크지 않게. 긴 제목은 줄바꿈한다(feedback 3-7).
+    private const double OVERFLOW_MIN_WIDTH = 280, OVERFLOW_MAX_WIDTH = 420, OVERFLOW_WIDTH_RATIO = 1.6;
+
+    // +N: 그날 항목 전체를 목록으로 보여준다(§6.3). 많으면 목록 안에서 스크롤한다.
     private void OnOverflowClick(object sender, RoutedEventArgs e)
     {
         var cell = (DayCellModel)((FrameworkElement)sender).DataContext;
-        var list = new ItemsControl { ItemsSource = cell.AllItems, ItemTemplate = (DataTemplate)FindResource("ChipTemplate") };
+        var list = new ItemsControl { ItemsSource = cell.AllItems, ItemTemplate = (DataTemplate)FindResource("OverflowItemTemplate") };
+        var header = new TextBlock
+        {
+            Text = $"{cell.Date.ToString("M월 d일 dddd", System.Globalization.CultureInfo.GetCultureInfo("ko-KR"))} · {cell.AllItems.Count}개",
+            Style = (Style)FindResource("BaseText"), FontWeight = FontWeights.Bold, FontSize = 15, Margin = new Thickness(2, 0, 0, 2)
+        };
+        var cellWidth = CalendarCard.ActualWidth / 7;
         var card = new Border
         {
-            Width = 180, Padding = new Thickness(10, 6, 10, 10), CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1),
-            Child = new StackPanel
+            Width = Math.Clamp(cellWidth * OVERFLOW_WIDTH_RATIO, OVERFLOW_MIN_WIDTH, OVERFLOW_MAX_WIDTH),
+            Padding = new Thickness(12, 10, 12, 12), CornerRadius = new CornerRadius(12), BorderThickness = new Thickness(1),
+            Child = new DockPanel
             {
                 Children =
                 {
-                    new TextBlock { Text = $"{cell.Date.Month}월 {cell.Date.Day}일", Style = (Style)FindResource("BaseText"),
-                        FontWeight = FontWeights.Bold, FontSize = 13 },
-                    list
+                    header,
+                    new ScrollViewer
+                    {
+                        Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                        MaxHeight = Math.Max(240, CalendarCard.ActualHeight * 0.6)
+                    }
                 }
             }
         };
+        DockPanel.SetDock(header, Dock.Top);
         card.SetResourceReference(Border.BackgroundProperty, "PopupBrush");
         card.SetResourceReference(Border.BorderBrushProperty, "ControlBorderBrush");
         var popup = new Popup { Child = card, PlacementTarget = (UIElement)sender, Placement = PlacementMode.Bottom, StaysOpen = false };

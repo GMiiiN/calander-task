@@ -22,6 +22,27 @@ public sealed class CalendarModelBuilderTests : IDisposable
 
     private CalendarModelBuilder Builder() => new(events, todos, database);
 
+    // feedback 3-7: +N 목록은 제목을 자르지 않고, 아래 줄에 시간 범위·기간·종일·할 일을 보여 준다.
+    [Fact]
+    public void OverflowItemsCarryFullTitleAndDetail()
+    {
+        events.Create([
+            new EventInput("[모두의 창업] MVP 설계·세팅 + API 연동 테스트까지 한 번에 끝내기", "2026-11-13") { StartTime = "13:00", EndTime = "16:00" },
+            new EventInput("AI 솔루션 2차", "2026-11-11") { EndDate = "2026-11-15" },
+            new EventInput("종일 일정", "2026-11-13"),
+        ]);
+        todos.Create([new TodoInput("보고서 제출", "2026-11-13")]);
+
+        var cell = Builder().BuildMonth(2026, 11, TODAY).Weeks.SelectMany(w => w).Single(c => c.Date == new DateOnly(2026, 11, 13));
+        string? Detail(string title) => cell.AllItems.Single(i => i.Title == title).DetailText;
+
+        Assert.Equal(4, cell.AllItems.Count);
+        Assert.Equal("13:00–16:00", Detail("[모두의 창업] MVP 설계·세팅 + API 연동 테스트까지 한 번에 끝내기"));
+        Assert.Equal("11월 11일 - 11월 15일", Detail("AI 솔루션 2차"));
+        Assert.Equal("종일", Detail("종일 일정"));
+        Assert.Equal("할 일 · 이날 마감", Detail("보고서 제출"));
+    }
+
     [Theory]
     [InlineData(2027, 2, 4)]
     [InlineData(2026, 2, 5)]

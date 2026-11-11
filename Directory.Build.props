@@ -1,6 +1,6 @@
 <Project>
   <!-- 앱·MCP 서버가 같은 버전을 쓴다. 배포할 때 여기만 올린다. 트레이 툴팁·메뉴와 MCP serverInfo에 나온다. -->
   <PropertyGroup>
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
   </PropertyGroup>
 </Project>

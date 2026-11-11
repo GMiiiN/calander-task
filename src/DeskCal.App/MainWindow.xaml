@@ -49,6 +49,35 @@
             </DataTemplate.Triggers>
         </DataTemplate>
 
+        <!-- +N 목록 항목(feedback 3-7). 칸 칩과 달리 제목을 줄바꿈해 전부 보여 주고, 아래 줄에 시간·기간을 쓴다. -->
+        <DataTemplate x:Key="OverflowItemTemplate" DataType="{x:Type cal:ChipModel}">
+            <Border x:Name="Item" CornerRadius="6" Padding="8,6,8,7" Margin="0,6,0,0"
+                    Background="{Binding ColorHex, Converter={StaticResource HexBrush}, ConverterParameter=0.14}">
+                <DockPanel>
+                    <Border x:Name="Bar" Width="3" CornerRadius="1.5" Margin="0,1,8,1" DockPanel.Dock="Left"
+                            Background="{Binding ColorHex, Converter={StaticResource HexBrush}}" />
+                    <StackPanel>
+                        <TextBlock x:Name="Title" Text="{Binding Title}" Style="{StaticResource BaseText}" FontSize="14"
+                                   FontWeight="Medium" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding DetailText}" Style="{StaticResource BaseText}" FontSize="12" Margin="0,2,0,0"
+                                   Foreground="{DynamicResource SubtleBrush}" TextWrapping="Wrap"
+                                   Visibility="{Binding DetailText, Converter={StaticResource Visible}}" />
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsTodo}" Value="True">
+                    <Setter TargetName="Item" Property="Background" Value="{DynamicResource TodoChipBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsDone}" Value="True">
+                    <Setter TargetName="Item" Property="Background" Value="{DynamicResource DoneChipBrush}" />
+                    <Setter TargetName="Bar" Property="Background" Value="{DynamicResource MutedBrush}" />
+                    <Setter TargetName="Title" Property="Foreground" Value="{DynamicResource MutedBrush}" />
+                    <Setter TargetName="Title" Property="TextDecorations" Value="Strikethrough" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+
         <!-- 월간 날짜 칸 -->
         <DataTemplate x:Key="DayCellTemplate" DataType="{x:Type cal:DayCellModel}">
             <Border x:Name="Cell" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="0,0,1,1"
