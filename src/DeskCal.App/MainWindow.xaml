@@ -138,25 +138,52 @@
             </DataTemplate.Triggers>
         </DataTemplate>
 
-        <!-- 주간 시간표 블록 -->
+        <!-- 주간 시간표 블록. 1시간 이상이면 제목을 줄바꿈하고 그 아래 시각, 짧으면 "10:00 제목" 한 줄.
+             잘린 내용은 1초 머무르면 툴팁으로 전부 보인다. -->
         <DataTemplate x:Key="WeekBlockTemplate" DataType="{x:Type cal:WeekBlockModel}">
-            <Border x:Name="Block" CornerRadius="4" ClipToBounds="True"
+            <Border x:Name="Block" CornerRadius="4" ClipToBounds="True" ToolTipService.InitialShowDelay="1000"
                     Background="{Binding Chip.ColorHex, Converter={StaticResource HexBrush}, ConverterParameter=0.18}">
+                <Border.ToolTip>
+                    <ToolTip>
+                        <StackPanel MaxWidth="280">
+                            <TextBlock Text="{Binding Chip.Title}" Style="{StaticResource BaseText}" FontWeight="Bold" TextWrapping="Wrap"
+                                       TextTrimming="None" />
+                            <TextBlock Text="{Binding Chip.DetailText}" Style="{StaticResource BaseText}" FontSize="12" Margin="0,2,0,0"
+                                       Foreground="{DynamicResource SubtleBrush}" />
+                        </StackPanel>
+                    </ToolTip>
+                </Border.ToolTip>
                 <DockPanel>
                     <Border x:Name="Bar" Width="3" Background="{Binding Chip.ColorHex, Converter={StaticResource HexBrush}}" />
-                    <StackPanel Margin="6,3,4,0">
-                        <TextBlock x:Name="Title" Text="{Binding Chip.Title}" Style="{StaticResource BaseText}" FontWeight="Medium" />
-                        <TextBlock Style="{StaticResource BaseText}" FontSize="11" Foreground="{DynamicResource SubtleBrush}"
-                                   Text="{Binding Converter={x:Static local:WeekBlockTimeConverter.Instance}}" />
-                    </StackPanel>
+                    <Grid>
+                        <StackPanel x:Name="Full" Margin="6,3,4,0">
+                            <!-- 블록 길이에 맞춰 들어가는 줄 수만큼 제목을 줄바꿈하고, 남는 글자는 말줄임 -->
+                            <TextBlock x:Name="Title" Text="{Binding Chip.Title}" Style="{StaticResource BaseText}" FontWeight="Medium"
+                                       TextWrapping="Wrap" LineHeight="16" LineStackingStrategy="BlockLineHeight"
+                                       MaxHeight="{Binding Converter={x:Static local:WeekBlockTitleHeightConverter.Instance}}" />
+                            <TextBlock Style="{StaticResource BaseText}" FontSize="11" Foreground="{DynamicResource SubtleBrush}"
+                                       Text="{Binding Converter={x:Static local:WeekBlockTimeConverter.Instance}}" />
+                        </StackPanel>
+                        <TextBlock x:Name="Compact" Style="{StaticResource BaseText}" Margin="6,2,4,0" Visibility="Collapsed">
+                            <Run Text="{Binding Mode=OneWay, Converter={x:Static local:WeekBlockTimeConverter.Instance}, ConverterParameter=start}"
+                                 FontSize="11" Foreground="{DynamicResource SubtleBrush}" />
+                            <Run x:Name="CompactTitle" Text="{Binding Chip.Title, Mode=OneWay}" FontWeight="Medium" />
+                        </TextBlock>
+                    </Grid>
                 </DockPanel>
             </Border>
             <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsCompact}" Value="True">
+                    <Setter TargetName="Full" Property="Visibility" Value="Collapsed" />
+                    <Setter TargetName="Compact" Property="Visibility" Value="Visible" />
+                </DataTrigger>
                 <DataTrigger Binding="{Binding Chip.IsDone}" Value="True">
                     <Setter TargetName="Block" Property="Background" Value="{DynamicResource DoneChipBrush}" />
                     <Setter TargetName="Bar" Property="Background" Value="{DynamicResource MutedBrush}" />
                     <Setter TargetName="Title" Property="Foreground" Value="{DynamicResource MutedBrush}" />
                     <Setter TargetName="Title" Property="TextDecorations" Value="Strikethrough" />
+                    <Setter TargetName="CompactTitle" Property="Foreground" Value="{DynamicResource MutedBrush}" />
+                    <Setter TargetName="CompactTitle" Property="TextDecorations" Value="Strikethrough" />
                 </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
@@ -441,7 +468,9 @@
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate DataType="{x:Type cal:WeekDayModel}">
-                                        <Border x:Name="DayColumn" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,0">
+                                        <!-- 배경이 없으면 빈 곳 클릭이 열을 지나쳐 더블클릭으로 새 일정을 못 연다(오늘 열만 배경이 있어 됐다). -->
+                                        <Border x:Name="DayColumn" BorderBrush="{DynamicResource GridLineBrush}" BorderThickness="1,0,0,0"
+                                                Background="Transparent">
                                             <ItemsControl ItemsSource="{Binding Blocks}" ItemTemplate="{StaticResource WeekBlockTemplate}">
                                                 <ItemsControl.ItemsPanel>
                                                     <ItemsPanelTemplate><local:WeekDayPanel /></ItemsPanelTemplate>

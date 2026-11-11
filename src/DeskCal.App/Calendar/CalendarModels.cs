@@ -27,7 +27,11 @@ public sealed record DayCellModel(
 
 public sealed record MonthModel(int Year, int Month, IReadOnlyList<IReadOnlyList<DayCellModel>> Weeks);
 
-public sealed record WeekBlockModel(ChipModel Chip, int StartMinute, int EndMinute, int Column, int ColumnCount);
+public sealed record WeekBlockModel(ChipModel Chip, int StartMinute, int EndMinute, int Column, int ColumnCount)
+{
+    // 1시간 미만 블록은 두 줄이 들어가지 않으므로 "10:00 제목" 한 줄로 쓴다.
+    public bool IsCompact => EndMinute - StartMinute < 60;
+}
 
 public sealed record WeekDayModel(DateOnly Date, bool IsToday, IReadOnlyList<ChipModel> AllDay, IReadOnlyList<WeekBlockModel> Blocks,
     string? HolidayName = null)

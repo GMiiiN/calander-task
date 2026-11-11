@@ -301,6 +301,37 @@ public sealed class CalendarModelBuilderTests : IDisposable
     }
 
     [Fact]
+    public void WeekDrawsTimedEventsOfADayOrLongerAsAllDayBars()
+    {
+        events.Create([
+            new("hackathon", "2026-10-30") { StartTime = "18:00", EndDate = "2026-11-01", EndTime = "12:00" },
+            new("exactly day", "2026-10-27") { StartTime = "09:00", EndDate = "2026-10-28", EndTime = "09:00" },
+            new("almost day", "2026-10-26") { StartTime = "09:00", EndDate = "2026-10-27", EndTime = "08:59" }
+        ]);
+        var days = Builder().BuildWeek(TODAY, TODAY).Days;
+        Assert.DoesNotContain(days.SelectMany(d => d.Blocks), b => b.Chip.Title is "hackathon" or "exactly day");
+        Assert.Equal(new[] { true, true, true }, days.Skip(4).Select(d => d.AllDay.Any(c => c.EventId is not null && c.PeriodText!.Contains("오후 6:00"))));
+        Assert.Equal("hackathon", days[4].AllDay.Single(c => c.EventId is not null).Title);
+        Assert.Equal(new[] { true, true }, days.Skip(1).Take(2).Select(d => d.AllDay.Any(c => c.EventId is not null)));
+        Assert.Equal(new[] { "almost day", "almost day" }, days.Take(2).SelectMany(d => d.Blocks).Select(b => b.Chip.Title));
+    }
+
+    [Fact]
+    public void WeekBlocksUnderAnHourAreCompactAndCarryTheFullRange()
+    {
+        events.Create([
+            new("short", "2026-10-30") { StartTime = "09:00", EndTime = "09:50" },
+            new("hour", "2026-10-30") { StartTime = "13:00", EndTime = "14:00" },
+            new("overnight", "2026-10-30") { StartTime = "23:00", EndDate = "2026-10-31", EndTime = "01:30" }
+        ]);
+        var days = Builder().BuildWeek(TODAY, TODAY).Days;
+        Assert.Equal(new[] { true, false, false }, days[4].Blocks.Select(b => b.IsCompact));
+        Assert.Equal("09:00–09:50", days[4].Blocks[0].Chip.DetailText);
+        Assert.Equal((0, 90), (days[5].Blocks[0].StartMinute, days[5].Blocks[0].EndMinute));
+        Assert.Contains("10월 31일", days[5].Blocks[0].Chip.DetailText);
+    }
+
+    [Fact]
     public void WeekAssignsColumnsAcrossConnectedGroupsAndReusesFreeColumns()
     {
         events.Create([
