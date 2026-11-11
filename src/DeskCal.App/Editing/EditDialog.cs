@@ -61,8 +61,45 @@ public partial class EditDialog : Window
         MemoBox.Text = _editor.Memo;
         foreach (RadioButton choice in RepeatChoices.Children) choice.IsChecked = Equals(choice.Tag, _editor.Repeat);
         foreach (RadioButton choice in ColorChoices.Children) choice.IsChecked = Equals(((CategoryOption)choice.Tag).ColorId, _editor.ColorId);
-        UpdateCategoryName();
+        // 기본값이 아닌 옵션이 있으면 펼쳐서 연다. 새로 만들 때는 접힌 채로 제목·날짜·시간만 보인다.
+        SetMoreExpanded(_editor.Repeat != RepeatKind.None || _editor.ColorId is not null || _editor.IsDday || _editor.Memo.Length > 0);
+        DdayCheck.Checked += (_, _) => UpdateSummary();
+        DdayCheck.Unchecked += (_, _) => UpdateSummary();
         UpdateLayoutForKind();
+    }
+
+    private void SetMoreExpanded(bool expanded)
+    {
+        MoreOptions.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        MoreChevron.Text = expanded ? "▾" : "▸";
+        UpdateSummary();
+    }
+
+    private void OnMoreToggle(object sender, RoutedEventArgs e) => SetMoreExpanded(MoreOptions.Visibility != Visibility.Visible);
+
+    private void OnTextChanged(object sender, TextChangedEventArgs e)
+    {
+        TitleHint.Visibility = TitleBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        MemoHint.Visibility = MemoBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (e.Source == MemoBox) UpdateSummary();
+    }
+
+    // 접혀 있을 때 정해 둔 옵션을 "매주 · 업무 · D-day · 메모"처럼 한 줄로 보여 준다. 펼쳐 있으면 숨긴다.
+    private void UpdateSummary()
+    {
+        if (!IsInitialized || MoreSummary is null) return;
+        var isEvent = KindTodo.IsChecked != true;
+        var parts = new List<string>();
+        if (isEvent)
+        {
+            if (RepeatChoices.Children.OfType<RadioButton>().FirstOrDefault(c => c.IsChecked == true) is { Tag: not RepeatKind.None } repeat)
+                parts.Add((string)repeat.Content);
+            if (ColorChoices.Children.OfType<RadioButton>().FirstOrDefault(c => c.IsChecked == true)?.Tag is CategoryOption { ColorId: not null } category)
+                parts.Add(category.Name);
+            if (DdayCheck.IsChecked == true) parts.Add("D-day");
+        }
+        if (MemoBox.Text.Trim().Length > 0) parts.Add("메모");
+        MoreSummary.Text = MoreOptions.Visibility == Visibility.Visible ? "" : string.Join(" · ", parts);
     }
 
     private void BuildRepeatChoices()
@@ -72,6 +109,7 @@ public partial class EditDialog : Window
         // 앱에서 고를 수 없는 규칙(격주, 횟수 제한 등)은 그대로 보여 주기만 하고, 다른 값을 고르기 전에는 손대지 않는다.
         if (_editor.Repeat == RepeatKind.Custom)
             RepeatChoices.Children.Add(new RadioButton { Content = "사용자 지정", Tag = RepeatKind.Custom, GroupName = "Repeat", Style = (Style)FindResource("Pill") });
+        foreach (RadioButton choice in RepeatChoices.Children) choice.Checked += (_, _) => UpdateSummary();
         RepeatChoices.IsEnabled = _editor.CanEditRepeat;
         if (!_editor.CanEditRepeat) RepeatChoices.ToolTip = "Google 캘린더에서 만든 반복 규칙은 Google 캘린더에서 바꾸세요.";
     }
@@ -85,14 +123,10 @@ public partial class EditDialog : Window
                 Tag = category, GroupName = "Color", Style = (Style)FindResource("ColorDot"), ToolTip = category.Name,
                 Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(category.ColorHex))
             };
-            dot.Checked += (_, _) => UpdateCategoryName();
+            dot.Checked += (_, _) => UpdateSummary();
             ColorChoices.Children.Add(dot);
         }
     }
-
-    private void UpdateCategoryName() =>
-        CategoryName.Text = ColorChoices.Children.OfType<RadioButton>().FirstOrDefault(c => c.IsChecked == true)?.Tag is CategoryOption selected
-            ? selected.Name : "기본";
 
     // 할 일에는 시간·반복·카테고리·D-day가 없다(설계 §4, Google Tasks).
     private void UpdateLayoutForKind()
@@ -105,6 +139,7 @@ public partial class EditDialog : Window
             element.Visibility = isEvent ? Visibility.Visible : Visibility.Collapsed;
         TimeRow.Visibility = isEvent && AllDayCheck.IsChecked != true ? Visibility.Visible : Visibility.Collapsed;
         DeleteButton.Visibility = _editor.IsNew ? Visibility.Collapsed : Visibility.Visible;
+        UpdateSummary();
     }
 
     private void OnKindChanged(object sender, RoutedEventArgs e)
