@@ -11,14 +11,32 @@ namespace DeskCal.App;
 public partial class App : Application
 {
     private readonly DispatcherTimer _syncTimer = new() { Interval = TimeSpan.FromMinutes(2) };
+    // MCP가 연달아 여러 번 쓸 수 있으므로 신호가 3초 동안 조용해지면 한 번만 동기화한다.
+    private readonly DispatcherTimer _quickSyncTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private Mutex? _singleInstance;
     private TrayIcon? _tray;
     private MainWindow? _calendar;
     private bool _isSyncing;
+    private bool _syncAgain;
+    private string _lastSyncStartedAt = "";
+    private bool _started;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        // 처리되지 않은 예외로 바탕화면 달력이 조용히 사라지지 않게 한다. 기록하고 계속 실행한다.
+        // 단, 시작(DB 초기화 등)이 끝나기 전의 예외는 삼키지 않는다. 창·트레이 없이 단일 인스턴스 잠금만 쥔 프로세스가 남기 때문이다.
+        DispatcherUnhandledException += (_, args) =>
+        {
+            LogError(_started ? "ui" : "startup", args.Exception);
+            args.Handled = _started;
+        };
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            LogError("task", args.Exception);
+            args.SetObserved();
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, args) => LogError("fatal", args.ExceptionObject as Exception);
         // 단일 인스턴스(§8). 이미 떠 있으면 조용히 끝낸다.
         _singleInstance = new Mutex(true, @"Local\DeskCal.App.SingleInstance", out var isFirst);
         if (!isFirst)
@@ -42,15 +60,35 @@ public partial class App : Application
         ShowCalendar(database);
         _syncTimer.Tick += async (_, _) => await SyncAsync(database, google);
         _syncTimer.Start();
+        _quickSyncTimer.Tick += async (_, _) =>
+        {
+            _quickSyncTimer.Stop();
+            if (PendingChanges.ExistSince(database, _lastSyncStartedAt)) await SyncAsync(database, google);
+        };
         _ = SyncAsync(database, google);
+        _started = true;
+    }
+
+    // MCP 쓰기 신호(§2.4 "MCP 쓰기 직후 push"). 다른 PC가 2분까지 기다리지 않게 한다.
+    private void OnExternalChange()
+    {
+        _quickSyncTimer.Stop();
+        _quickSyncTimer.Start();
     }
 
     // 동기화(§2.4): 시작 시와 2분마다. 일정·할 일은 매번(push → pull), 공휴일은 하루 1회(§5.6).
     // 로그인 전이거나 실패하면 다음 차례에 다시 한다. 한쪽이 실패해도 나머지는 한다.
     private async Task SyncAsync(Database database, GoogleAccount google)
     {
-        if (_isSyncing) return;
+        if (_isSyncing)
+        {
+            // 진행 중인 동기화는 이미 보낼 목록을 읽었을 수 있다. 끝나면 한 번 더 확인한다.
+            _syncAgain = true;
+            return;
+        }
         _isSyncing = true;
+        _syncAgain = false;
+        _lastSyncStartedAt = DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
         try
         {
             if (await google.LoadAsync() is not { } credential) return;
@@ -78,6 +116,7 @@ public partial class App : Application
         finally
         {
             _isSyncing = false;
+            if (_syncAgain) OnExternalChange();
         }
 
         static async Task RunAsync(string name, Func<Task> work)
@@ -93,13 +132,18 @@ public partial class App : Application
         }
     }
 
-    private static void LogSync(string message)
+    private static void LogSync(string message) => AppendLog("sync.log", message);
+
+    private static void LogError(string source, Exception? exception) =>
+        AppendLog("app.log", $"unhandled {source}: {exception}");
+
+    private static void AppendLog(string fileName, string message)
     {
         try
         {
             var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskCal", "logs");
             Directory.CreateDirectory(directory);
-            File.AppendAllText(Path.Combine(directory, "sync.log"), $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+            File.AppendAllText(Path.Combine(directory, fileName), $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -112,6 +156,7 @@ public partial class App : Application
     {
         var window = new MainWindow(database);
         _calendar = window;
+        window.ExternalChange += OnExternalChange;
         window.Closed += (_, _) =>
         {
             _calendar = null;

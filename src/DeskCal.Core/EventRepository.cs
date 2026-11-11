@@ -77,7 +77,8 @@ public sealed class EventRepository
         var start = Validation.Required(patch.StartDate, previous.StartDate);
         var value = previous with
         {
-            Title = Validation.Title(Validation.Required(patch.Title, previous.Title)), StartDate = start,
+            // 제목을 바꿀 때만 검사한다. Google에서 받은 "(제목 없음)" 일정도 완료 체크는 되어야 한다.
+            Title = patch.Title.IsSpecified ? Validation.Title(patch.Title.Value) : previous.Title, StartDate = start,
             EndDate = Validation.Required(patch.EndDate, previous.EndDate),
             StartTime = patch.StartTime.IsSpecified ? patch.StartTime.Value : previous.StartTime,
             EndTime = patch.EndTime.IsSpecified ? patch.EndTime.Value : previous.EndTime,

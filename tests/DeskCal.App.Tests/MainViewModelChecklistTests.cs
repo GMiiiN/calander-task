@@ -38,6 +38,27 @@ public sealed class MainViewModelChecklistTests : IDisposable
         Assert.StartsWith(today.AddDays(-2).ToString("M'/'d", System.Globalization.CultureInfo.InvariantCulture) + "–" + today.AddDays(11).ToString("M'/'d", System.Globalization.CultureInfo.InvariantCulture), item.Meta);
     }
 
+    // feedback 3-6: 2주 뒤 일정도 사이드바 "이후"에서 보이고, 접은 상태는 다시 켜도 유지된다.
+    [Fact]
+    public void LaterEventsShowWithDateAndCollapseIsRemembered()
+    {
+        var later = DateOnly.FromDateTime(DateTime.Now).AddDays(30);
+        _events.Create([new EventInput("한 달 뒤 발표", later.ToString("yyyy-MM-dd")) { StartTime = "14:00", EndTime = "15:00" }]);
+
+        var model = new MainViewModel(_database);
+        var group = model.Groups.Single(g => g.Kind == "later");
+        Assert.True(group.IsCollapsible);
+        Assert.False(group.IsCollapsed);
+        Assert.StartsWith("이후", group.Header);
+        var item = Assert.Single(group.Items);
+        Assert.StartsWith(later.ToString("M'/'d", System.Globalization.CultureInfo.InvariantCulture) + " 14:00–15:00", item.Meta);
+        Assert.Equal(1, model.AgendaCount); // 오늘의 "회의"만 센다.
+
+        model.ToggleGroupCommand.Execute(null);
+        Assert.True(model.Groups.Single(g => g.Kind == "later").IsCollapsed);
+        Assert.True(new MainViewModel(_database).Groups.Single(g => g.Kind == "later").IsCollapsed);
+    }
+
     [Fact]
     public void ToggleAppearsOnlyWithItemsAndExpansionIsNotRemembered()
     {

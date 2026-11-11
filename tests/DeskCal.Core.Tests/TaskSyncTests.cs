@@ -115,6 +115,95 @@ public sealed class TaskSyncTests
         Assert.Equal("unknown", todos.Get(created.TodoUid).PushState);
     }
 
+    public static TheoryData<Exception> NotSentFailures => new()
+    {
+        new HttpRequestException(HttpRequestError.NameResolutionError, "No such host is known."),
+        new HttpRequestException(HttpRequestError.ConnectionError, "connection refused"),
+        new HttpRequestException("wrapped", new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused)),
+    };
+
+    // 응답을 받다가 끊긴 경우는 요청이 닿았을 수 있다. 다시 보내면 중복이 생기므로 결과 불명으로 남긴다.
+    [Theory]
+    [InlineData(HttpRequestError.ResponseEnded, null)]
+    [InlineData(HttpRequestError.Unknown, System.Net.Sockets.SocketError.NetworkDown)]
+    [InlineData(HttpRequestError.Unknown, System.Net.Sockets.SocketError.ConnectionReset)]
+    public async Task FailureAfterConnectingStaysUnknown(HttpRequestError error, System.Net.Sockets.SocketError? socket)
+    {
+        using var db = new TestDatabase();
+        var todos = new TodoRepository(db.Database);
+        var created = todos.Create([new TodoInput("응답 도중 끊김")])[0];
+        Exception? inner = socket is { } code ? new System.Net.Sockets.SocketException((int)code) : null;
+        var remote = new FakeTasks { FailInsertWith = new HttpRequestException(error, "failed", inner) };
+
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+        remote.FailInsertWith = null;
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+
+        Assert.Equal(1, remote.InsertCalls);
+        Assert.Equal("unknown", todos.Get(created.TodoUid).PushState);
+    }
+
+    // feedback 2-1: 절전 직후처럼 연결조차 못 한 실패를 결과 불명으로 묶으면 그 할 일과 이후 수정이 영영 올라가지 않았다.
+    [Theory]
+    [MemberData(nameof(NotSentFailures))]
+    public async Task InsertThatNeverReachedGoogleIsSentAgain(Exception failure)
+    {
+        using var db = new TestDatabase();
+        var todos = new TodoRepository(db.Database);
+        var created = todos.Create([new TodoInput("오프라인에서 만든 할 일")])[0];
+        var remote = new FakeTasks { FailInsertWith = failure };
+
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+        var waiting = todos.Get(created.TodoUid);
+        Assert.Equal("pending", waiting.PushState);
+        Assert.True(waiting.IsDirty);
+
+        todos.Update(created.TodoUid, new TodoPatch { DueDate = "2026-11-20" });
+        remote.FailInsertWith = null;
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+
+        Assert.Equal(2, remote.InsertCalls);
+        var item = Assert.Single(remote.Items);
+        Assert.Equal("2026-11-20T00:00:00.000Z", item.Due);
+        Assert.Equal("synced", todos.Get(created.TodoUid).PushState);
+    }
+
+    // feedback 1: 방금 올린 할 일이 바로 이은 목록 조회에 아직 없으면 지워진 것으로 처리돼 잠시 사라졌다.
+    [Fact]
+    public async Task JustInsertedTodoMissingFromImmediateListIsKept()
+    {
+        using var db = new TestDatabase();
+        var todos = new TodoRepository(db.Database);
+        var created = todos.Create([new TodoInput("방금 만든 할 일")])[0];
+        var remote = new FakeTasks { HideNewlyInsertedFromList = true };
+
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+
+        var kept = Assert.Single(todos.List("all"));
+        Assert.Equal(created.TodoUid, kept.TodoUid);
+        Assert.Null(kept.DeletedAt);
+
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+        Assert.Single(todos.List("all"));
+        Assert.Single(remote.Items);
+    }
+
+    [Fact]
+    public async Task UntitledRemoteTodoCanStillBeCompleted()
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeTasks();
+        remote.Add(new GoogleTask { Id = "r1", Title = "", Status = "needsAction" });
+        var todos = new TodoRepository(db.Database);
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+        var untitled = Assert.Single(todos.List("all"));
+
+        var done = todos.Update(untitled.TodoUid, new TodoPatch { IsDone = true });
+
+        Assert.True(done.IsDone);
+        Assert.Throws<ArgumentException>(() => todos.Update(untitled.TodoUid, new TodoPatch { Title = " " }));
+    }
+
     [Fact]
     public async Task EditingUnknownTodoDoesNotCreateItAgain()
     {
@@ -241,8 +330,16 @@ public sealed class TaskSyncTests
             task.ETag = "e" + ++_next;
         }
 
-        public Task<IReadOnlyList<GoogleTask>> ListAllAsync(CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<GoogleTask>>(Items.Select(Copy).ToList());
+        // 쓰기 직후 목록에 아직 안 보이는 항목을 흉내 낸다.
+        public bool HideNewlyInsertedFromList { get; set; }
+        private readonly HashSet<string> _insertedSinceList = [];
+
+        public Task<IReadOnlyList<GoogleTask>> ListAllAsync(CancellationToken cancellationToken)
+        {
+            var visible = Items.Where(t => !HideNewlyInsertedFromList || !_insertedSinceList.Contains(t.Id)).Select(Copy).ToList();
+            _insertedSinceList.Clear();
+            return Task.FromResult<IReadOnlyList<GoogleTask>>(visible);
+        }
 
         public Task<GoogleTask> InsertAsync(GoogleTask task, CancellationToken cancellationToken)
         {
@@ -252,6 +349,7 @@ public sealed class TaskSyncTests
             var stored = Copy(task);
             stored.Id = "g" + ++_next;
             Add(stored);
+            _insertedSinceList.Add(stored.Id);
             return Task.FromResult(Copy(stored));
         }
 
