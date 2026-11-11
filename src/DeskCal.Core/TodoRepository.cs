@@ -61,7 +61,8 @@ public sealed class TodoRepository(Database database, TimeProvider? clock = null
         var done = Validation.Required(patch.IsDone, value.IsDone);
         return value with
         {
-            Title = Validation.Title(Validation.Required(patch.Title, value.Title)), DueDate = due,
+            // 제목을 바꿀 때만 검사한다. Google에서 받은 제목 없는 항목도 완료 체크·마감일 변경은 되어야 한다.
+            Title = patch.Title.IsSpecified ? Validation.Title(patch.Title.Value) : value.Title, DueDate = due,
             Memo = patch.Memo.IsSpecified ? patch.Memo.Value ?? "" : value.Memo, IsDone = done,
             CompletedAt = done ? value.IsDone ? value.CompletedAt : Validation.Timestamp(_clock) : null
         };

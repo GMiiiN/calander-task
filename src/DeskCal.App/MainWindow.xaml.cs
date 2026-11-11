@@ -46,6 +46,9 @@ public partial class MainWindow : Window
 
     public bool IsAdjusting { get; private set; }
 
+    /// <summary>다른 프로세스(MCP)가 DB를 바꿨다는 신호를 받았다. 앱은 이때 올릴 변경이 있으면 바로 동기화한다.</summary>
+    public event Action? ExternalChange;
+
     public void Exit()
     {
         ExitRequested = true;
@@ -177,6 +180,7 @@ public partial class MainWindow : Window
         if (_isClosed) return; // 닫히기 직전에 들어온 신호
         _watcher.HasChanged(); // 신호로 이미 반영한 변경을 30초 확인에서 다시 세지 않도록 기준값을 옮긴다.
         _viewModel.Refresh();
+        ExternalChange?.Invoke();
     }
 
     // 더블클릭으로 추가·수정(§6.5). 한 번 클릭은 아무 동작 없음. 누른 곳에서 위로 올라가며 처음 만나는 항목을 연다.

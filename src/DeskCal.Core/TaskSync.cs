@@ -73,12 +73,14 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
 
     public async Task SyncAsync(CancellationToken cancellationToken)
     {
-        await PushAsync(cancellationToken);
-        Pull(await remote.ListAllAsync(cancellationToken));
+        var pushed = await PushAsync(cancellationToken);
+        Pull(await remote.ListAllAsync(cancellationToken), pushed);
     }
 
-    private async Task PushAsync(CancellationToken cancellationToken)
+    // 보낸 결과를 받은 Google ID를 돌려준다. 방금 올린 항목은 바로 이은 목록 조회에 아직 없을 수 있다.
+    private async Task<HashSet<string>> PushAsync(CancellationToken cancellationToken)
     {
+        var pushed = new HashSet<string>();
         foreach (var snapshot in ReadDirty())
         {
             try
@@ -103,6 +105,12 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                         SetPushState(snapshot, "pending");
                         throw;
                     }
+                    catch (Exception exception) when (IsNotSent(exception))
+                    {
+                        // 연결조차 못 했다(이름 풀이·연결 실패, 절전 직후 등). 요청이 Google에 닿지 않았으므로 다음 차례에 다시 보낸다.
+                        MarkFailed(snapshot, "pending", exception.Message);
+                        continue;
+                    }
                     catch (Exception exception) when (exception is not GoogleApiException && !cancellationToken.IsCancellationRequested)
                     {
                         // 요청이 닿았는지 알 수 없다. 다시 보내면 같은 할 일이 둘 생길 수 있다.
@@ -110,11 +118,13 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                         continue;
                     }
                     Apply(snapshot, created.Id, created.ETag);
+                    if (created.Id is not null) pushed.Add(created.Id);
                 }
                 else
                 {
                     var updated = await remote.UpdateAsync(ToRemote(snapshot), cancellationToken);
                     Apply(snapshot, updated.Id, updated.ETag);
+                    if (updated.Id is not null) pushed.Add(updated.Id);
                 }
             }
             catch (GoogleApiException exception) when (exception.HttpStatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.NotFound or HttpStatusCode.Gone)
@@ -127,6 +137,24 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                 MarkFailed(snapshot, "failed", exception.Message);
             }
         }
+        return pushed;
+    }
+
+    // 요청을 보내기 전 단계에서 실패했는지. 이름 풀이·TCP 연결·TLS 연결 실패는 본문이 서버에 가지 않는다.
+    // 시간 초과나 응답 도중 끊김은 닿았을 수 있으므로 여기에 넣지 않는다.
+    internal static bool IsNotSent(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            // .NET이 실패 단계를 알려 주면 그것만 믿는다. 연결 단계 오류만 미전송이다.
+            if (current is HttpRequestException { HttpRequestError: not HttpRequestError.Unknown } http)
+                return http.HttpRequestError is HttpRequestError.NameResolutionError or HttpRequestError.ConnectionError
+                    or HttpRequestError.SecureConnectionError or HttpRequestError.ProxyTunnelError;
+            // 단계를 모를 때는 연결할 때만 나는 소켓 오류로 좁힌다. NetworkDown 등은 응답을 받다가도 나므로 결과 불명으로 둔다.
+            if (current is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.HostNotFound
+                or System.Net.Sockets.SocketError.ConnectionRefused }) return true;
+        }
+        return false;
     }
 
     private async Task DeleteRemoteAsync(Snapshot snapshot, CancellationToken cancellationToken)
@@ -205,7 +233,7 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
     }
 
     // 원격 전체를 로컬에 반영한다. 보낼 것이 남은 행(dirty·failed·unknown)은 덮지 않는다.
-    private void Pull(IReadOnlyList<GoogleTask> items)
+    private void Pull(IReadOnlyList<GoogleTask> items, IReadOnlySet<string> justPushed)
     {
         var now = Validation.Timestamp(_clock);
         using var connection = database.OpenConnection();
@@ -252,8 +280,10 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
             }
         }
         // 전체 대조: 원격 목록에 없는 동기화된 행은 다른 곳에서 지운 것이다.
+        // 단, 이번 차례에 방금 올린 항목은 목록에 아직 안 보일 수 있으니 지우지 않는다. 정말 지워졌으면 다음 차례에 지운다.
         foreach (var (googleId, local) in locals)
-            if (!seen.Contains(googleId) && !local.Pending && local.DeletedAt is null) MarkDeleted(connection, transaction, local.Id, now);
+            if (!seen.Contains(googleId) && !justPushed.Contains(googleId) && !local.Pending && local.DeletedAt is null)
+                MarkDeleted(connection, transaction, local.Id, now);
         transaction.Commit();
     }
 
