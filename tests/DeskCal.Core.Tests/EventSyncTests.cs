@@ -182,6 +182,30 @@ public sealed class EventSyncTests
 
     private static Task Sync(TestDatabase db, FakeCalendar remote) => new EventSync(db.Database, remote, Seoul).SyncAsync(CancellationToken.None);
 
+    [Fact]
+    public async Task CompletingAndReopeningPushesOnlyTheEventAndSelectedInstance()
+    {
+        using var db = new TestDatabase();
+        var (events, occurrenceId, series) = WeeklySeries(db);
+        var single = events.Create([new EventInput("단일 일정", "2026-11-15")])[0];
+        var remote = new FakeCalendar();
+        await Sync(db, remote);
+
+        var instanceId = series.EventUid + "_20261115T063000Z";
+        foreach (var done in new[] { true, false })
+        {
+            events.Update(single.EventUid, new EventPatch { IsDone = done });
+            events.SetOccurrenceDone(occurrenceId, done);
+            remote.PatchAttempts.Clear();
+            await Sync(db, remote);
+            var expected = done ? "1" : "0";
+            Assert.Equal(expected, remote.Items[single.EventUid].ExtendedProperties.Private__["deskcalDone"]);
+            Assert.Equal(expected, remote.Items[instanceId].ExtendedProperties.Private__["deskcalDone"]);
+            Assert.Equal("0", remote.Items[series.EventUid].ExtendedProperties.Private__["deskcalDone"]);
+            Assert.Equal(new[] { instanceId, single.EventUid }.Order(), remote.PatchAttempts.Select(p => p.Id).Order());
+        }
+    }
+
     private static string InstanceId(FakeCalendar remote) => remote.Items.Keys.Single(id => id.Contains('_'));
 
     private static (EventRepository Events, string OccurrenceId, EventRecord Series) WeeklySeries(TestDatabase db)
