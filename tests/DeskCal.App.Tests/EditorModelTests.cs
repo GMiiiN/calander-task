@@ -172,8 +172,9 @@ public sealed class EditorModelTests : IDisposable
         Assert.Equal("2026-11-02", Assert.Single(_events.GetRecords()).EndDate);
     }
 
+    // S5: 종일 반복을 시간 일정으로 바꿔도 그 월요일의 회차는 하나라 체크리스트가 그 회차에 남는다(예전에는 거부했다).
     [Fact]
-    public void AllDaySeriesWithChecklistExplainsWhyTimedConversionWasRefused()
+    public void AllDaySeriesWithChecklistConvertsToTimedAndKeepsTheChecklist()
     {
         var series = _events.Create([new("종일", "2026-11-02") { Repeat = new("weekly", Weekdays: [DayOfWeek.Monday]) }])[0];
         var occurrence = Assert.Single(_events.List(Date, Date));
@@ -182,8 +183,10 @@ public sealed class EditorModelTests : IDisposable
         model.IsAllDay = false;
         model.StartTime = new(9, 0);
         model.EndTime = new(10, 0);
-        Assert.Contains("체크리스트", model.Save(_events, _todos));
-        Assert.Null(_events.Get(series.EventUid).StartTime);
+        Assert.Null(model.Save(_events, _todos));
+        Assert.Equal("09:00", _events.Get(series.EventUid).StartTime);
+        var moved = Assert.Single(_events.List(Date, Date));
+        Assert.Equal("유지", Assert.Single(moved.Event.Checklist).Text);
     }
 
     [Fact]
