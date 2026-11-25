@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace DeskCal.Core;
@@ -7,23 +10,61 @@ public sealed class Database
     public const int LatestVersion = 2;
     private readonly string _connectionString;
 
-    public Database(string path)
+    private readonly Action<string>? _trace;
+    public string PathFingerprint { get; }
+    public string DiagnosticIdentity => $"db={PathFingerprint} version={typeof(Database).Assembly.GetName().Version} pid={Environment.ProcessId}";
+
+    public Database(string path, Action<string>? trace = null)
     {
+        _trace = trace;
+        path = Path.GetFullPath(path);
+        var normalized = OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path;
+        PathFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)))[..24];
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = path, DefaultTimeout = 5, Pooling = false
         }.ToString();
     }
 
+    // Only fixed operation/stage names and SQLite codes enter diagnostics, never values or paths.
+    public T Measure<T>(string stage, Func<T> action)
+    {
+        var started = Stopwatch.GetTimestamp();
+        SqliteException? failure = null;
+        try { return action(); }
+        catch (SqliteException error)
+        {
+            failure = error;
+            if (!error.Data.Contains("db_stage"))
+            {
+                error.Data["db_stage"] = stage;
+                error.Data["db_elapsed_ms"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            }
+            throw;
+        }
+        finally
+        {
+            if (_trace is not null)
+            {
+                var elapsed = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                var codes = failure is null ? "" : $" code={failure.SqliteErrorCode} extended={failure.SqliteExtendedErrorCode}";
+                try { _trace($"{DateTimeOffset.UtcNow:O} {DiagnosticIdentity} op={Activity.Current?.OperationName ?? "initialize"} stage={stage} ms={elapsed}{codes}"); }
+                catch (IOException) { } // A closed diagnostic stream cannot invalidate a commit.
+            }
+        }
+    }
+
+    internal void Measure(string stage, Action action) => Measure(stage, () => { action(); return true; });
+
     public SqliteConnection OpenConnection()
     {
         var connection = new SqliteConnection(_connectionString);
         try
         {
-            connection.Open();
+            Measure("open", connection.Open);
             using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;";
-            command.ExecuteNonQuery();
+            Measure("pragma", command.ExecuteNonQuery);
             return connection;
         }
         catch

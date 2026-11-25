@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -15,6 +16,7 @@ public sealed class CalendarTools(Database database)
 
     internal CallToolResult Invoke(string name, JsonElement arguments)
     {
+        using var operation = new Activity(name).Start();
         var today = DateOnly.FromDateTime(DateTime.Now);
         JsonObject body;
         var isError = false;
@@ -22,7 +24,7 @@ public sealed class CalendarTools(Database database)
         {
             var input = new ToolInput(arguments);
             var output = new ToolOutput(database, _events);
-            body = name switch
+            body = database.Measure("execute", () => name switch
             {
                 "get_agenda" => GetAgenda(input, output),
                 "list_events" => ListEvents(input, output, today),
@@ -43,7 +45,7 @@ public sealed class CalendarTools(Database database)
                 "delete_todo" => SetTodoDeleted(input, output, true),
                 "restore_todo" => SetTodoDeleted(input, output, false),
                 _ => throw new ArgumentException("Unknown tool.")
-            };
+            });
             if (name is "create_events" or "update_event" or "delete_event" or "restore_event" or "add_checklist_items" or "update_checklist_item" or "delete_checklist_item"
                 or "restore_checklist_item" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo") ChangeSignal.Notify();
         }
@@ -52,7 +54,6 @@ public sealed class CalendarTools(Database database)
             isError = true;
             if (error is SqliteException sqliteError)
             {
-                Console.Error.WriteLine(sqliteError.ToString());
                 var codeName = sqliteError.SqliteErrorCode switch
                 {
                     1 => "SQLITE_ERROR",
@@ -71,7 +72,13 @@ public sealed class CalendarTools(Database database)
                 var guidance = sqliteError.SqliteErrorCode is 5 or 6
                     ? "The database is in use by another program (such as the DeskCal app). Try again shortly."
                     : "Try again.";
-                body = new JsonObject { ["error"] = $"The local database could not complete the operation. SqliteErrorCode={code}, SqliteExtendedErrorCode={sqliteError.SqliteExtendedErrorCode}. {guidance}" };
+                body = new JsonObject
+                {
+                    ["error"] = $"The local database could not complete the operation. SqliteErrorCode={code}, SqliteExtendedErrorCode={sqliteError.SqliteExtendedErrorCode}. {guidance}",
+                    ["db_fingerprint"] = database.PathFingerprint,
+                    ["db_stage"] = sqliteError.Data["db_stage"] as string,
+                    ["db_elapsed_ms"] = sqliteError.Data["db_elapsed_ms"] as long?
+                };
             }
             else body = new JsonObject { ["error"] = error.Message };
         }

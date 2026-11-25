@@ -10,7 +10,7 @@ public sealed class TodoRepository(Database database, TimeProvider? clock = null
     {
         Validation.Batch(inputs.Count);
         using var connection = database.OpenConnection();
-        using var transaction = connection.BeginTransaction(deferred: false);
+        using var transaction = database.Measure("begin", () => connection.BeginTransaction(deferred: false));
         var result = new List<TodoRecord>();
         foreach (var input in inputs)
         {
@@ -23,9 +23,9 @@ public sealed class TodoRepository(Database database, TimeProvider? clock = null
                 Memo = input.Memo ?? "", CreatedBy = input.CreatedBy, CreatedAt = now, UpdatedAt = now,
                 LocalRevision = 1, IsDirty = true, PushState = "pending"
             };
-            result.Add(value with { TodoId = Sql.Insert(connection, transaction, "todo", Values(value)) });
+            result.Add(value with { TodoId = database.Measure("insert", () => Sql.Insert(connection, transaction, "todo", Values(value))) });
         }
-        transaction.Commit();
+        database.Measure("commit", transaction.Commit);
         return result;
     }
 
@@ -40,7 +40,7 @@ public sealed class TodoRepository(Database database, TimeProvider? clock = null
         if (status is not ("open" or "done" or "all")) throw new ArgumentException("Status must be open, done or all.");
         using var connection = database.OpenConnection();
         using var command = Sql.Command(connection, null, "SELECT * FROM todo ORDER BY position, due_date, todo_id;");
-        using var reader = command.ExecuteReader();
+        using var reader = database.Measure("select", command.ExecuteReader);
         var result = new List<TodoRecord>();
         while (reader.Read())
         {
@@ -74,20 +74,20 @@ public sealed class TodoRepository(Database database, TimeProvider? clock = null
     private TodoRecord Write(string uid, Func<TodoRecord, TodoRecord> change)
     {
         using var connection = database.OpenConnection();
-        using var transaction = connection.BeginTransaction(deferred: false);
+        using var transaction = database.Measure("begin", () => connection.BeginTransaction(deferred: false));
         var previous = Get(connection, transaction, uid);
         // 생성 결과 불명(unknown)은 고쳐도 그대로 둔다. pending으로 바꾸면 다음 동기화가 다시 생성해 중복이 생길 수 있다(§5.4).
         var pushState = previous.PushState == "unknown" ? "unknown" : "pending";
         var value = change(previous) with { LocalRevision = previous.LocalRevision + 1, IsDirty = true, PushState = pushState, UpdatedAt = Validation.Timestamp(_clock) };
-        Sql.Update(connection, transaction, "todo", value.TodoId, Values(value));
-        transaction.Commit();
+        database.Measure("update", () => Sql.Update(connection, transaction, "todo", value.TodoId, Values(value)));
+        database.Measure("commit", transaction.Commit);
         return value;
     }
 
-    private static TodoRecord Get(SqliteConnection connection, SqliteTransaction? transaction, string uid)
+    private TodoRecord Get(SqliteConnection connection, SqliteTransaction? transaction, string uid)
     {
         using var command = Sql.Command(connection, transaction, "SELECT * FROM todo WHERE todo_uid=$uid;", ("$uid", uid));
-        using var reader = command.ExecuteReader();
+        using var reader = database.Measure("select", command.ExecuteReader);
         return reader.Read() ? Read(reader) : throw new KeyNotFoundException("Todo not found.");
     }
 

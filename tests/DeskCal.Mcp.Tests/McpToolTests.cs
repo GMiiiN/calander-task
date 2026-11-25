@@ -19,11 +19,7 @@ public sealed class McpToolTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         var path = Path.Combine(_directory, "nested", "deskcal.db");
-        _client = await McpClient.CreateAsync(new StdioClientTransport(new()
-        {
-            Command = "dotnet", Arguments = [typeof(CalendarTools).Assembly.Location],
-            EnvironmentVariables = new Dictionary<string, string?> { ["DESKCAL_DB"] = path }
-        }), cancellationToken: _timeout.Token);
+        _client = await StartServer(path);
         Assert.True(File.Exists(path)); // The executable creates the directory and initializes the DB.
         _database = new Database(path);
         using var connection = _database.OpenConnection();
@@ -31,6 +27,12 @@ public sealed class McpToolTests : IAsyncLifetime
         command.CommandText = "INSERT OR REPLACE INTO category(color_id,name,color_hex) VALUES ('1','개인','#123456'),('2','업무','#654321');";
         command.ExecuteNonQuery();
     }
+
+    private Task<McpClient> StartServer(string path) => McpClient.CreateAsync(new StdioClientTransport(new()
+    {
+        Command = "dotnet", Arguments = [typeof(CalendarTools).Assembly.Location],
+        EnvironmentVariables = new Dictionary<string, string?> { ["DESKCAL_DB"] = path }
+    }), cancellationToken: _timeout.Token);
 
     public async Task DisposeAsync()
     {
@@ -89,7 +91,11 @@ public sealed class McpToolTests : IAsyncLifetime
         command.ExecuteNonQuery();
         try
         {
+            Assert.Empty((await Call("list_todos")).GetProperty("todos").EnumerateArray());
             var result = await Call("create_todos", new { todos = new[] { new { title = "locked" } } }, error: true);
+            Assert.Equal(_database.PathFingerprint, result.GetProperty("db_fingerprint").GetString());
+            Assert.Equal("begin", result.GetProperty("db_stage").GetString());
+            Assert.InRange(result.GetProperty("db_elapsed_ms").GetInt64(), 4000, 15000);
             var error = result.GetProperty("error").GetString();
             Assert.Contains("SQLITE_BUSY(5)", error);
             Assert.Contains("SqliteExtendedErrorCode=5", error);
@@ -103,6 +109,13 @@ public sealed class McpToolTests : IAsyncLifetime
             command.ExecuteNonQuery();
         }
         Assert.Empty(Todos.List());
+        var created = await Call("create_todos", new { todos = new[] { new { title = "저장 확인" } } });
+        var uid = Id(created.GetProperty("todos")[0], "todo_id");
+        Assert.Equal(uid, Assert.Single(Todos.List()).TodoUid);
+        await _client.DisposeAsync();
+        _client = await StartServer(Path.Combine(_directory, "nested", "deskcal.db"));
+        var reopened = await Call("list_todos", new { status = "all", include_deleted = true });
+        Assert.Equal(uid, Id(Assert.Single(reopened.GetProperty("todos").EnumerateArray()), "todo_id"));
     }
 
     [Fact]
@@ -117,6 +130,7 @@ public sealed class McpToolTests : IAsyncLifetime
         command.ExecuteNonQuery();
         var result = await Call("create_todos", new { todos = new[] { new { title = "rejected" } } }, error: true);
         var error = result.GetProperty("error").GetString();
+        Assert.Equal("insert", result.GetProperty("db_stage").GetString());
         Assert.Contains("SQLITE_CONSTRAINT(19)", error);
         Assert.Contains("SqliteExtendedErrorCode=1811", error);
         Assert.Contains("Try again.", error);
