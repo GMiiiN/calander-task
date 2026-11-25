@@ -93,7 +93,7 @@ public sealed class McpToolTests : IAsyncLifetime
     {
         using var connection = _database.OpenConnection();
         using var schema = connection.CreateCommand();
-        schema.CommandText = "DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
+        schema.CommandText = "DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
         schema.ExecuteNonQuery();
         var path = Path.Combine(_directory, "nested", "deskcal.db");
         var clients = await Task.WhenAll(StartServer(path), StartServer(path));

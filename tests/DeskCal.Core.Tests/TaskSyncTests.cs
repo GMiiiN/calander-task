@@ -118,13 +118,15 @@ public sealed class TaskSyncTests
     public static TheoryData<Exception> NotSentFailures => new()
     {
         new HttpRequestException(HttpRequestError.NameResolutionError, "No such host is known."),
-        new HttpRequestException(HttpRequestError.ConnectionError, "connection refused"),
+        new HttpRequestException(HttpRequestError.ConnectionError, "connection refused", new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused)),
         new HttpRequestException("wrapped", new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused)),
     };
 
     // 응답을 받다가 끊긴 경우는 요청이 닿았을 수 있다. 다시 보내면 중복이 생기므로 결과 불명으로 남긴다.
     [Theory]
     [InlineData(HttpRequestError.ResponseEnded, null)]
+    [InlineData(HttpRequestError.ConnectionError, null)]
+    [InlineData(HttpRequestError.ConnectionError, System.Net.Sockets.SocketError.ConnectionReset)]
     [InlineData(HttpRequestError.Unknown, System.Net.Sockets.SocketError.NetworkDown)]
     [InlineData(HttpRequestError.Unknown, System.Net.Sockets.SocketError.ConnectionReset)]
     public async Task FailureAfterConnectingStaysUnknown(HttpRequestError error, System.Net.Sockets.SocketError? socket)
@@ -308,6 +310,106 @@ public sealed class TaskSyncTests
         Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", item.Completed);
     }
 
+    [Fact]
+    public async Task CompletePullLinksLostCreateByMarkerAndKeepsConcurrentEdit()
+    {
+        using var db = new TestDatabase();
+        var original = db.Todos.Create([new("같은 제목", Memo: "메모\n")]).Single();
+        var remote = new FakeTasks { LoseInsertResponse = true, HideAll = true };
+        await new TaskSync(db.Database, remote).SyncAsync(default);
+        Assert.Equal("unknown", db.Todos.Get(original.TodoUid).PushState);
+        db.Todos.Update(original.TodoUid, new() { Memo = "수정한 메모\n" });
+        remote.Add(new() { Id = "other", Title = original.Title, Notes = "별개" });
+        remote.HideAll = false;
+        var restarted = new TaskSync(new Database(db.Path), remote);
+        await restarted.SyncAsync(default);
+        Assert.Equal("pending", db.Todos.Get(original.TodoUid).PushState);
+        await restarted.SyncAsync(default);
+        Assert.Equal("synced", db.Todos.Get(original.TodoUid).PushState);
+        Assert.Equal(2, db.Todos.List().Count);
+        Assert.Equal(1, remote.InsertCalls);
+        Assert.Equal("수정한 메모\n", TaskMarker.Read(remote.Items.Single(i => i.Id != "other").Notes).Memo);
+        Assert.Equal("별개", remote.Items.Single(i => i.Id == "other").Notes);
+    }
+
+    [Fact]
+    public async Task IncompleteListLeavesUnknownUntilNextCompletePull()
+    {
+        using var db = new TestDatabase();
+        var original = db.Todos.Create([new("원문")]).Single();
+        var remote = new FakeTasks { LoseInsertResponse = true, FailList = true };
+        var sync = new TaskSync(db.Database, remote);
+        await Assert.ThrowsAsync<HttpRequestException>(() => sync.SyncAsync(default));
+        Assert.Equal("unknown", db.Todos.Get(original.TodoUid).PushState);
+        Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM sync_state WHERE sync_key='tasks_default'"));
+        remote.FailList = false;
+        await new TaskSync(new Database(db.Path), remote).SyncAsync(default);
+        Assert.Equal("synced", db.Todos.Get(original.TodoUid).PushState);
+        Assert.Single(db.Todos.List());
+        Assert.Equal(1, remote.InsertCalls);
+    }
+
+    [Fact]
+    public async Task KnownIdMissingTwiceIsVerifiedBeforeDelete()
+    {
+        using var db = new TestDatabase();
+        var original = db.Todos.Create([new("지연")]).Single();
+        var remote = new FakeTasks { HideAll = true };
+        var sync = new TaskSync(db.Database, remote);
+        await sync.SyncAsync(default);
+        Assert.Equal(0, remote.GetCalls);
+        await sync.SyncAsync(default);
+        Assert.Equal(1, remote.GetCalls);
+        Assert.Null(db.Todos.Get(original.TodoUid).DeletedAt);
+        remote.Items.Clear();
+        await sync.SyncAsync(default);
+        Assert.NotNull(db.Todos.Get(original.TodoUid).DeletedAt);
+        Assert.Equal(1, remote.InsertCalls);
+    }
+
+    [Theory]
+    [InlineData("legacy")]
+    [InlineData("damaged")]
+    [InlineData("duplicate")]
+    public async Task AmbiguousAndLegacyCreatesRequireExplicitChoice(string scenario)
+    {
+        using var db = new TestDatabase();
+        var original = db.Todos.Create([new("겹치는 이름")]).Single();
+        var remote = new FakeTasks { HideAll = true, LoseInsertResponse = true };
+        var sync = new TaskSync(db.Database, remote);
+        await sync.SyncAsync(default);
+        if (scenario == "legacy") db.Execute("DELETE FROM task_attempt");
+        if (scenario == "damaged") remote.Items[0].Notes += "사용자 편집";
+        if (scenario == "duplicate") remote.Add(new() { Id = "copy", Title = original.Title, Notes = remote.Items[0].Notes });
+        remote.HideAll = false;
+        await sync.SyncAsync(default);
+        Assert.Equal("unknown", db.Todos.Get(original.TodoUid).PushState);
+        var recovery = new TaskRecovery(db.Database);
+        var candidate = recovery.Candidates().First();
+        Assert.True(await recovery.ResolveAsync(original.TodoUid, candidate));
+        Assert.False(await recovery.ResolveAsync(original.TodoUid, candidate));
+        await sync.SyncAsync(default);
+        Assert.Equal(1, remote.InsertCalls);
+        Assert.Equal("synced", db.Todos.Get(original.TodoUid).PushState);
+        Assert.Equal(remote.Items.Count, db.Todos.List().Count);
+    }
+
+    [Fact]
+    public async Task ConfirmedResendUsesOneFreshAttempt()
+    {
+        using var db = new TestDatabase();
+        var original = db.Todos.Create([new("재전송")]).Single();
+        db.Execute("UPDATE todo SET push_state='unknown'");
+        var recovery = new TaskRecovery(db.Database);
+        Assert.True(await recovery.ResolveAsync(original.TodoUid, null));
+        var remote = new FakeTasks();
+        var sync = new TaskSync(db.Database, remote);
+        await sync.SyncAsync(default);
+        await sync.SyncAsync(default);
+        Assert.Equal(1, remote.InsertCalls);
+        Assert.Equal("synced", db.Todos.Get(original.TodoUid).PushState);
+    }
+
     internal sealed class FakeTasks : ITasksRemote
     {
         private int _next;
@@ -331,14 +433,25 @@ public sealed class TaskSyncTests
         }
 
         // 쓰기 직후 목록에 아직 안 보이는 항목을 흉내 낸다.
+        public bool FailList { get; set; }
+        public bool HideAll { get; set; }
+        public bool LoseInsertResponse { get; set; }
         public bool HideNewlyInsertedFromList { get; set; }
         private readonly HashSet<string> _insertedSinceList = [];
 
         public Task<IReadOnlyList<GoogleTask>> ListAllAsync(CancellationToken cancellationToken)
         {
-            var visible = Items.Where(t => !HideNewlyInsertedFromList || !_insertedSinceList.Contains(t.Id)).Select(Copy).ToList();
+            if (FailList) throw new HttpRequestException("다음 페이지 조회 실패");
+            var visible = Items.Where(t => !HideAll && (!HideNewlyInsertedFromList || !_insertedSinceList.Contains(t.Id))).Select(Copy).ToList();
             _insertedSinceList.Clear();
             return Task.FromResult<IReadOnlyList<GoogleTask>>(visible);
+        }
+
+        public int GetCalls { get; private set; }
+        public Task<GoogleTask?> GetAsync(string id, CancellationToken ct)
+        {
+            GetCalls++;
+            return Task.FromResult(Items.Where(t => t.Id == id).Select(Copy).SingleOrDefault());
         }
 
         public Task<GoogleTask> InsertAsync(GoogleTask task, CancellationToken cancellationToken)
@@ -350,6 +463,7 @@ public sealed class TaskSyncTests
             stored.Id = "g" + ++_next;
             Add(stored);
             _insertedSinceList.Add(stored.Id);
+            if (LoseInsertResponse) throw new HttpRequestException("응답 유실");
             return Task.FromResult(Copy(stored));
         }
 

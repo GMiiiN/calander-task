@@ -155,6 +155,28 @@ public sealed class OrphanEventDiagnosisTests
         Assert.Equal("변경", actual.Value.Summary);
     }
 
+    [Fact]
+    public async Task TaskRecoveryAndRepeatedSyncKeepOneEditedCalendarEvent()
+    {
+        using var db = new TestDatabase();
+        var events = new FakeCalendar();
+        var tasks = new TaskSyncTests.FakeTasks { LoseInsertResponse = true };
+        var coordinator = new SyncCoordinator(db.Database, new(db.Database, "unused"), _ => { });
+        var ev = db.Events.Create([new("이전 일정", "2026-11-09")]).Single();
+        var todo = db.Todos.Create([new("메모", Memo: "원문\n")]).Single();
+        await coordinator.SyncDataAsync(events, tasks, default);
+        db.Events.Update(ev.EventUid, new() { Title = "수정 일정", StartTime = "11:00", EndTime = "12:00" });
+        await coordinator.SyncDataAsync(events, tasks, default);
+        await coordinator.SyncDataAsync(events, tasks, default);
+        Assert.Equal("원문\n", db.Todos.Get(todo.TodoUid).Memo);
+        Assert.Equal("synced", db.Todos.Get(todo.TodoUid).PushState);
+        Assert.Single(tasks.Items);
+        Assert.Equal(1, tasks.InsertCalls);
+        Assert.Equal(ev.GoogleEventId, Assert.Single(events.Items).Key);
+        Assert.Equal("수정 일정", events.Items[ev.GoogleEventId!].Summary);
+        Assert.Single(events.InsertAttempts);
+    }
+
     private static EventPatch SwitchTimeType(bool originallyAllDay) => originallyAllDay
         ? new() { StartTime = "11:00", EndTime = "12:00" }
         : new() { StartTime = new(true, null), EndTime = new(true, null) };

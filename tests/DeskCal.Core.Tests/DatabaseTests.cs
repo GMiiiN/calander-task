@@ -48,12 +48,12 @@ public sealed class DatabaseTests
         Assert.Equal(1, db.Scalar("PRAGMA foreign_keys"));
         Assert.Equal(1, db.Scalar("PRAGMA synchronous"));
         Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
-        Assert.Equal(8, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
+        Assert.Equal(9, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA journal_mode";
         Assert.Equal("wal", command.ExecuteScalar());
         db.Database.Initialize();
-        Assert.Equal(8, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
+        Assert.Equal(9, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class DatabaseTests
             using var connection = new Database(path).OpenConnection();
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table'";
-            Assert.Equal(8L, command.ExecuteScalar());
+            Assert.Equal(9L, command.ExecuteScalar());
             command.CommandText = "PRAGMA user_version";
             Assert.Equal((long)Database.LatestVersion, command.ExecuteScalar());
         }
@@ -107,7 +107,7 @@ public sealed class DatabaseTests
     {
         using var db = new TestDatabase();
         var created = db.Events.Create([new EventInput("기존 일정", "2026-11-02")])[0];
-        db.Execute("DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist");
+        db.Execute("DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist");
         db.Execute("PRAGMA user_version=1");
 
         db.Database.Initialize();
@@ -132,7 +132,7 @@ public sealed class DatabaseTests
     {
         using var db = new TestDatabase();
         var ev = db.Events.Create([new("이전 일정", "2026-11-02")]).Single();
-        db.Execute("DROP TABLE day_event_order; PRAGMA user_version=2;");
+        db.Execute("DROP TABLE task_attempt; DROP TABLE day_event_order; PRAGMA user_version=2;");
         db.Database.Initialize();
         var path = Assert.Single(Directory.GetFiles(db.Path + ".backups", "v2-*.db"));
         using var old = new Database(path).OpenConnection();
@@ -145,6 +145,18 @@ public sealed class DatabaseTests
         Assert.Equal(0L, sql.ExecuteScalar());
         Assert.Equal(ev.EventUid, new EventRepository(new Database(path)).Get(ev.EventUid).EventUid);
         Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM day_event_order"));
+    }
+
+    [Fact]
+    public void VersionThreeUnknownHasNoInventedAttemptAfterUpgrade()
+    {
+        using var db = new TestDatabase();
+        var original = db.Todos.Create([new("이전 버전")]).Single();
+        db.Execute("UPDATE todo SET push_state='unknown'; DROP TABLE task_attempt; PRAGMA user_version=3");
+        db.Database.Initialize();
+        Assert.Equal("unknown", db.Todos.Get(original.TodoUid).PushState);
+        Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM task_attempt"));
+        Assert.Single(Directory.GetFiles(db.Path + ".backups", "v3-*.db"));
     }
 
     private static SqliteConnection BackupDestination(string path)

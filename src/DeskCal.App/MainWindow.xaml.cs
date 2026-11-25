@@ -188,6 +188,8 @@ public partial class MainWindow : Window
     private void OnSyncDetails(object sender, RoutedEventArgs e)
     {
         var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = PlacementMode.Top };
+        var recovery = new TaskRecovery(_database);
+        IReadOnlyList<TaskRecovery.Candidate>? candidates = null;
         foreach (var item in PendingChanges.List(_database))
         {
             var reason = item.Reason switch
@@ -197,9 +199,40 @@ public partial class MainWindow : Window
                 "push_failed" => "전송 실패 · 재시도 대기",
                 _ => "전송 대기"
             };
-            menu.Items.Add(new MenuItem { Header = $"{item.Kind} · {item.Title} · {reason}", IsEnabled = false });
+            var row = new MenuItem { Header = $"{item.Kind} · {item.Title} · {reason}", IsEnabled = item.Reason == "needs_review" };
+            menu.Items.Add(row);
+            if (!row.IsEnabled) continue;
+            var original = _todos.Get(item.Uid);
+            row.ToolTip = $"{original.DueDate} {original.Memo} · {original.TodoUid}";
+            foreach (var candidate in (candidates ??= recovery.Candidates()).OrderByDescending(c => c.Title == original.Title))
+            {
+                var choice = new MenuItem { Header = $"연결 · {candidate.Title} · {candidate.DueDate ?? "날짜 없음"} · {candidate.Uid[..8]}",
+                    ToolTip = candidate.Memo };
+                choice.Click += async (_, _) => await Resolve(candidate);
+                row.Items.Add(choice);
+            }
+            var retry = new MenuItem { Header = "새 할 일로 다시 전송…" };
+            retry.Click += async (_, _) => await Resolve(null);
+            row.Items.Add(retry);
+
+            async Task Resolve(TaskRecovery.Candidate? candidate)
+            {
+                var message = candidate is null
+                    ? $"Google Tasks에 이미 ‘{original.Title}’이 있으면 중복됩니다. 새 할 일로 다시 전송할까요?"
+                    : $"‘{original.Title}’을 Google의 ‘{candidate.Title}’과 연결하고 이 PC의 내용으로 갱신할까요?\n\nGoogle 메모\n{candidate.Memo}";
+                if (MessageBox.Show(this, message, "할 일 복구", MessageBoxButton.YesNo, MessageBoxImage.Question,
+                        MessageBoxResult.No) != MessageBoxResult.Yes) return;
+                if (await recovery.ResolveAsync(item.Uid, candidate))
+                {
+                    _viewModel.Refresh();
+                    ExternalChange?.Invoke();
+                }
+                else MessageBox.Show(this, "동기화 중이거나 후보가 변경되었습니다. 상태 상세를 다시 열어 주세요.", "할 일 복구");
+            }
         }
         if (menu.Items.Count == 0) menu.Items.Add(new MenuItem { Header = "전송 대기 항목이 없습니다.", IsEnabled = false });
+        menu.Opened += (_, _) => BeginDialogEditing();
+        menu.Closed += (_, _) => EndEditing();
         menu.IsOpen = true;
     }
 

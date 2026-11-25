@@ -1,6 +1,5 @@
 using Google.Apis.Calendar.v3;
 using Google.Apis.Services;
-using Google.Apis.Tasks.v1;
 
 namespace DeskCal.Core;
 
@@ -28,7 +27,8 @@ public sealed class SyncCoordinator(Database database, GoogleAccount google, Act
             if (await google.LoadAsync() is not { } credential) return false;
             var init = new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "DeskCal" };
             using var calendar = new CalendarService(init);
-            using var tasks = new TasksService(init);
+            using var tasks = GoogleTasksRemote.CreateService(new BaseClientService.Initializer
+                { HttpClientInitializer = credential, ApplicationName = "DeskCal" });
             await SyncDataAsync(new GoogleCalendarRemote(calendar), new GoogleTasksRemote(tasks), token);
             if (includeHolidays)
             {

@@ -7,8 +7,8 @@ namespace DeskCal.Core;
 
 public sealed class Database
 {
-    private static readonly Action<SqliteCommand>[] Migrations = [MigrateToV1, MigrateToV2, MigrateToV3];
-    public const int LatestVersion = 3;
+    private static readonly Action<SqliteCommand>[] Migrations = [MigrateToV1, MigrateToV2, MigrateToV3, MigrateToV4];
+    public const int LatestVersion = 4;
     private readonly string _connectionString;
 
     private readonly Action<string>? _trace;
@@ -166,6 +166,17 @@ public sealed class Database
         using var stream = typeof(Database).Assembly.GetManifestResourceStream("DeskCal.Core.SchemaV1.sql")!;
         using var reader = new StreamReader(stream);
         command.CommandText = reader.ReadToEnd();
+        command.ExecuteNonQuery();
+    }
+
+    private static void MigrateToV4(SqliteCommand command)
+    {
+        command.CommandText = """
+            CREATE TABLE task_attempt (
+                todo_id INTEGER PRIMARY KEY REFERENCES todo(todo_id) ON DELETE CASCADE,
+                marker TEXT NOT NULL, sent_revision INTEGER, ambiguous INTEGER NOT NULL DEFAULT 0
+            );
+            """;
         command.ExecuteNonQuery();
     }
 
