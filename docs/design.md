@@ -461,6 +461,14 @@ Core 검증 계약 (로컬 생성·수정 시):
 - 경합은 §5.5와 같다. 서버에 먼저 확정된 날짜 순서가 이기고, 진 쪽 순서는 `sync_conflict`의 `settings`에 남는다.
 - U6에서 이 PC에만 저장한 순서(`day_event_order`)는 공유 항목이 없는 날짜에만 쓰고, Google 공유 동기화 때 공유 항목으로 옮긴 뒤 지운다.
 
+#### 5.5.2 학기 설정 (S7, v0.19.0)
+- 키 `semester`, 값 `{ "enabled": bool, "start": "YYYY-MM-DD", "weeks": n }`. 개강일·총 주차·모드를 한 항목으로 함께 보낸다. 이 PC의 값은 U5와 같은 `setting.semester`다.
+- 기본값(꺼짐)이 다른 기기의 학기를 덮지 않게, 켜짐과 관련된 변경(켜기, 켠 상태에서 바꾸기, 켠 것을 끄기)만 보낸다. 설정 창을 학기 그대로 저장하면 아무것도 보내지 않는다.
+- S7 이전에 켜 둔 학기는 첫 공유 동기화 때 올린다(꺼진 값은 올리지 않는다).
+- 다른 버전이 쓴 값: 시작일이 없거나 틀리면 쓰지 않고, 총 주차가 없거나 틀리면 16주다.
+- MCP `get_agenda`는 학생 모드가 켜져 있고 오늘이 학기 안이면 `semester_week: { current, total }`(앱 상태줄과 같은 현지 오늘 기준, 조회 구간과 무관)을 준다. 아니면 필드를 생략한다.
+- 받은 학기는 앱의 주기 동기화 뒤 화면 새로 고침에서 상태줄 주차와 주간 보기 시작 요일(개강 요일)에 반영된다. 월간 보기 시작 요일은 학기와 상관없다. 글자 크기·창 위치·펼침은 PC 전용이다.
+
 ### 5.6 공휴일
 - 하루 1회 `events.list(공휴일 캘린더, timeMin=올해 1/1T00:00+09:00, timeMax=내후년 1/1T00:00+09:00)` — `timeMax`는 배타적. **모든 페이지 성공 후에만** `holiday` 캐시를 교체. 오프라인이면 캐시 사용.
 - 캘린더 ID 후보 `ko.south_korea#holiday@group.v.calendar.google.com`와 휴일/기념일 구분(어버이날 등은 쉬는 날 아님) 규칙은 공식 보장이 없어 M0.5에서 실데이터로 확인한다.
@@ -559,7 +567,7 @@ Claude Desktop은 `claude_desktop_config.json`의 `mcpServers`에 같은 경로.
 **조회·분석 (6)**
 | 도구 | 용도 | 입력 |
 |---|---|---|
-| `get_agenda` | 브리핑용 = 사이드바 데이터(§6.4) | `start_date?`, `end_date?` (생략 시 오늘~+13일) |
+| `get_agenda` | 브리핑용 = 사이드바 데이터(§6.4). 학생 모드가 켜져 있고 오늘이 학기 안이면 `semester_week`(S7, §5.5.2) | `start_date?`, `end_date?` (생략 시 오늘~+13일) |
 | `list_events` | 기간 일정(반복 전개) | `start_date?`, `end_date?` (생략 시 오늘~+30일, 최대 366일), `keyword?`, `category?`, `include_deleted?`, `cursor?` |
 | `get_event` | 단건 | `event_id` 또는 `occurrence_id` |
 | `find_free_time` | 빈 시간 찾기 | `start_date`, `end_date`(최대 31일), `duration_minutes`(>0), `day_start?`(기본 09:00), `day_end?`(기본 22:00) |

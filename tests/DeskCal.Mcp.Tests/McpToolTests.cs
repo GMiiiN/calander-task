@@ -429,6 +429,21 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Contains("entire series", tools.Single(t => t.Name == "delete_event").Description);
     }
 
+    // S7: 학생 모드가 켜져 있고 오늘이 학기 안이면 get_agenda에 앱 상태줄과 같은 현지 오늘의 주차가 붙는다.
+    // 조회 구간과 상관없고, 꺼져 있거나 학기 밖이면 필드가 없다(이전 클라이언트가 받던 모양과 같다).
+    [Fact]
+    public async Task AgendaReportsTodaysSemesterWeekOnlyWhenOn()
+    {
+        Assert.False((await Call("get_agenda")).TryGetProperty("semester_week", out _));
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        SemesterSettings.Write(_database, new Semester(true, today.AddDays(-8), 16));
+        var on = await Call("get_agenda", new { start_date = "2026-01-05", end_date = "2026-01-05" });
+        Assert.Equal(2, on.GetProperty("semester_week").GetProperty("current").GetInt32());
+        Assert.Equal(16, on.GetProperty("semester_week").GetProperty("total").GetInt32());
+        SemesterSettings.Write(_database, new Semester(true, today.AddDays(1), 16));
+        Assert.False((await Call("get_agenda")).TryGetProperty("semester_week", out _));
+    }
+
     // S8: Claude가 get_agenda의 day_order를 보고 그날 순서를 통째로 다시 보낸다. 일정 자체는 바뀌지 않는다.
     [Fact]
     public async Task ReorderEventsUsesTheAgendaDayOrderAndRejectsStaleLists()
