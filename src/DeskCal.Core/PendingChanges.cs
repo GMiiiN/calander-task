@@ -24,6 +24,10 @@ public static class PendingChanges
         return (long)cmd.ExecuteScalar()! != 0;
     }
 
+    public static bool ShouldResumeStandaloneSync(Database database, TimeProvider? clock = null) =>
+        !AppPresence.IsRunning(database) && HasToken(database)
+        && (HasUnsent(database) || SharedSettingsSync.HasDueFileRetry(database, (clock ?? TimeProvider.System).GetUtcNow()));
+
     public static bool HasToken(Database database)
     {
         using var connection = database.OpenConnection();

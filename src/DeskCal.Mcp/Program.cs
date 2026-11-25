@@ -53,7 +53,7 @@ async Task ResumeAsync()
         {
             try
             {
-                if (!AppPresence.IsRunning(database) && PendingChanges.HasToken(database) && PendingChanges.HasUnsent(database))
+                if (PendingChanges.ShouldResumeStandaloneSync(database))
                     await coordinator.RunAsync(false, lifetime.ApplicationStopping);
             }
             catch (Exception ex) when (!lifetime.ApplicationStopping.IsCancellationRequested)

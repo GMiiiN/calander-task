@@ -112,6 +112,7 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
     internal const string FilePrefix = "deskcal-shared-";
     internal const string SyncKey = "settings";
     private const string CachePrefix = "shared_file:";
+    private const string ReadFailed = "read_failed";
     internal const int Format = 1;
     public const string ScopeMissing = "drive_scope_missing";
     public const string ApiDisabled = "drive_api_disabled";
@@ -363,8 +364,18 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             ON CONFLICT(sync_key) DO UPDATE SET sync_token=excluded.sync_token, remote_id=excluded.remote_id,
                 last_error=excluded.last_error, last_synced_at=excluded.last_synced_at
             """, ("$key", CachePrefix + file.Id), ("$token", recheck ? null : Token(file, own)), ("$id", file.Id),
-            ("$error", retryAfter.HasValue ? "read_failed" : null), ("$retry", retryAfter?.ToString("O")));
+            ("$error", retryAfter.HasValue ? ReadFailed : null), ("$retry", retryAfter?.ToUniversalTime().ToString("O")));
         command.ExecuteNonQuery();
+    }
+
+    internal static bool HasDueFileRetry(Database database, DateTimeOffset now)
+    {
+        using var connection = database.OpenConnection();
+        using var command = Sql.Command(connection, null, """
+            SELECT EXISTS(SELECT 1 FROM sync_state
+                WHERE sync_key GLOB $files AND last_error=$error AND last_synced_at <= $now)
+            """, ("$files", CachePrefix + "*"), ("$error", ReadFailed), ("$now", now.ToUniversalTime().ToString("O")));
+        return (long)command.ExecuteScalar()! != 0;
     }
 
     private (string? FileId, string? Hash) ReadState()

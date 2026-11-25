@@ -76,6 +76,46 @@ public sealed class PendingChangesTests
         Assert.True(PendingChanges.HasUnsent(db.Database));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StandaloneMcpResumesDueFileReadsWithoutUnsentChanges(bool failsAgain)
+    {
+        using var db = new TestDatabase();
+        var drive = new SharedSettingsTests.FakeAppData();
+        var peer = drive.Put("deskcal-shared-peer.json",
+            SharedSettingsTests.Document("peer", ("category_name:2", "\"복구된 별칭\"", 1, "peer")));
+        drive.FailedRead = peer;
+        Task Sync() => new SharedSettingsSync(db.Database, drive, db.Clock).SyncAsync(default);
+        await Sync();
+        Assert.False(PendingChanges.HasUnsent(db.Database));
+
+        var reopened = new Database(db.Path);
+        bool ShouldResume() => PendingChanges.ShouldResumeStandaloneSync(reopened, db.Clock);
+        db.Clock.Now = db.Clock.Now.AddMinutes(15).AddSeconds(-1);
+        db.Execute("INSERT INTO setting VALUES ($key,'offline')", ("$key", ProtectedTokenStore.SettingKey));
+        Assert.False(ShouldResume());
+        db.Clock.Now = db.Clock.Now.AddSeconds(1);
+        using (AppPresence.Register(reopened)) Assert.False(ShouldResume());
+        db.Execute("DELETE FROM setting WHERE setting_key=$key", ("$key", ProtectedTokenStore.SettingKey));
+        Assert.False(ShouldResume());
+        db.Execute("INSERT INTO setting VALUES ($key,'offline')", ("$key", ProtectedTokenStore.SettingKey));
+        Assert.True(ShouldResume());
+        if (failsAgain)
+        {
+            await Sync();
+            Assert.False(ShouldResume());
+            db.Clock.Now = db.Clock.Now.AddMinutes(15);
+            Assert.True(ShouldResume());
+        }
+
+        drive.FailedRead = null;
+        await Sync();
+        Assert.Equal("복구된 별칭", new CategoryRepository(reopened).List().Single(c => c.ColorId == "2").Name);
+        Assert.False(ShouldResume());
+        Assert.Equal(failsAgain ? 3 : 2, drive.ReadIds.Count(id => id == peer));
+    }
+
     [Fact]
     public void UnknownTodosDoNotTriggerSync()
     {
