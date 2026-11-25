@@ -179,11 +179,22 @@ public partial class MainWindow : Window
 
     // 트레이에서 로그인하면 30초 안에 바뀐다. 동기화는 2분마다 하므로 마지막으로 받은 시각을 보여 준다.
     // 토큰이 없는데 계정 결합 정보가 있으면 만료·취소로 끊긴 것이다(GoogleAccount.NeedsReconnect와 같은 기준).
-    private void UpdateSyncStatus() => SyncStatusText.Text = _settings.Get(ProtectedTokenStore.SettingKey) is null
-        ? _settings.Get("google_account_id") is null ? "Google 연결 전 · 이 PC에만 저장" : "Google 연결 끊김 · 알림 영역 메뉴에서 다시 연결"
-        : EventSync.LastSyncedAt(_database) is { } last
-            ? $"Calendar 동기화 · {last.ToLocalTime():HH:mm}"
-            : "Google 연결됨 · 동기화 준비 중";
+    // 기기 사이 설정 공유(카테고리 별칭 등, S6)를 Drive에서 못 하면 그 이유를 덧붙인다. Calendar·Tasks 동기화와는 따로다.
+    private void UpdateSyncStatus()
+    {
+        if (_settings.Get(ProtectedTokenStore.SettingKey) is null)
+        {
+            SyncStatusText.Text = _settings.Get("google_account_id") is null ? "Google 연결 전 · 이 PC에만 저장" : "Google 연결 끊김 · 알림 영역 메뉴에서 다시 연결";
+            return;
+        }
+        var text = EventSync.LastSyncedAt(_database) is { } last ? $"Calendar 동기화 · {last.ToLocalTime():HH:mm}" : "Google 연결됨 · 동기화 준비 중";
+        SyncStatusText.Text = SharedSettingsSync.UnavailableReason(_database) switch
+        {
+            SharedSettingsSync.ScopeMissing => text + " · 설정 공유에 Drive 권한 필요",
+            SharedSettingsSync.ApiDisabled => text + " · 설정 공유에 Drive API 필요",
+            _ => text
+        };
+    }
 
     private void OnSyncDetails(object sender, RoutedEventArgs e)
     {
@@ -197,6 +208,8 @@ public partial class MainWindow : Window
                 "needs_review" => "전송 결과 확인 필요",
                 "not_signed_in" => "Google 로그인 대기",
                 "push_failed" => "전송 실패 · 재시도 대기",
+                SharedSettingsSync.ScopeMissing => "Drive 권한 없음 · 알림 영역 메뉴에서 Google 다시 연결",
+                SharedSettingsSync.ApiDisabled => "Google Cloud 프로젝트에서 Drive API를 켜야 함",
                 _ => "전송 대기"
             };
             var row = new MenuItem { Header = $"{item.Kind} · {item.Title} · {reason}", IsEnabled = item.Reason == "needs_review" };

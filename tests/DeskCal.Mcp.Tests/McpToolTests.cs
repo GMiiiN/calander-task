@@ -94,7 +94,8 @@ public sealed class McpToolTests : IAsyncLifetime
     {
         using var connection = _database.OpenConnection();
         using var schema = connection.CreateCommand();
-        schema.CommandText = "DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
+        schema.CommandText = "DROP TABLE shared_entry; ALTER TABLE sync_state DROP COLUMN last_error; " +
+            "DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
         schema.ExecuteNonQuery();
         var path = Path.Combine(_directory, "nested", "deskcal.db");
         var clients = await Task.WhenAll(StartServer(path), StartServer(path));
@@ -404,6 +405,7 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Equal(19, tools.Count);
         var rename = tools.Single(t => t.Name == "rename_category").ProtocolTool.InputSchema;
         Assert.Equal(new[] { "color_id", "name" }, rename.GetProperty("required").EnumerateArray().Select(p => p.GetString()));
+        Assert.Contains("other DeskCal devices", tools.Single(t => t.Name == "rename_category").Description);
         var reads = new[] { "get_agenda", "list_events", "get_event", "find_free_time", "list_todos", "list_categories" };
         foreach (var tool in tools)
         {
@@ -427,6 +429,14 @@ public sealed class McpToolTests : IAsyncLifetime
         var changed = await Call("rename_category", new { color_id = "1", name = " 수업 " });
         Assert.Equal("수업", changed.GetProperty("category").GetProperty("name").GetString());
         Assert.Equal("#123456", changed.GetProperty("category").GetProperty("color_hex").GetString());
+        // S6: 별칭은 다른 기기와 맞출 변경으로 남는다(로그인 전이라 대기).
+        Pending(changed.GetProperty("category"));
+        using (var connection = _database.OpenConnection())
+        using (var shared = connection.CreateCommand())
+        {
+            shared.CommandText = "SELECT value_json || ':' || is_dirty FROM shared_entry WHERE entry_key='category_name:1'";
+            Assert.Equal("\"수업\":1", shared.ExecuteScalar());
+        }
         var result = await Call("list_events", new { start_date = "2026-11-03", category = "수업" });
         Assert.Equal(existing.EventUid, Id(result.GetProperty("events")[0]));
         var created = await Call("create_events", new { events = new[] { new { title = "새 수업", start_date = "2026-11-03", category = "수업" } } });
