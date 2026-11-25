@@ -173,6 +173,20 @@ public sealed class EditorModelTests : IDisposable
     }
 
     [Fact]
+    public void AllDaySeriesWithChecklistExplainsWhyTimedConversionWasRefused()
+    {
+        var series = _events.Create([new("종일", "2026-11-02") { Repeat = new("weekly", Weekdays: [DayOfWeek.Monday]) }])[0];
+        var occurrence = Assert.Single(_events.List(Date, Date));
+        _events.AddChecklistItems(occurrence.OccurrenceId!, true, ["유지"]);
+        var model = EditorModel.FromEvent(series, occurrence.OccurrenceId);
+        model.IsAllDay = false;
+        model.StartTime = new(9, 0);
+        model.EndTime = new(10, 0);
+        Assert.Contains("체크리스트", model.Save(_events, _todos));
+        Assert.Null(_events.Get(series.EventUid).StartTime);
+    }
+
+    [Fact]
     public void RefusedSeriesChangeExplainsWhy()
     {
         var series = _events.Create([new("반복", "2026-11-02") { Repeat = new("daily") }])[0];

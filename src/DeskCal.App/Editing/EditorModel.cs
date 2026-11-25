@@ -162,8 +162,8 @@ public sealed class EditorModel
     private static string Explain(Exception exception, string action) => exception.Message switch
     {
         "Edit this recurrence in Google Calendar." => "Google 캘린더에서 만든 반복 규칙입니다. 반복은 Google 캘린더에서 바꾸세요.",
-        "Edit in Google Calendar or resolve occurrence exceptions first." =>
-            "따로 바뀐 회차(완료·삭제 등)가 있는 반복 일정은 시작일과 반복을 바꿀 수 없습니다. 그 회차들을 먼저 되돌리거나 Google 캘린더에서 바꾸세요.",
+        EventRepository.OccurrenceKeyChangeError =>
+            "따로 바뀐 회차의 체크리스트·완료·삭제 상태를 보존하기 위해 시작 날짜·시각, 시간대, 종일 여부와 반복 규칙은 바꿀 수 없습니다.",
         "Restore the deleted event before editing." => "삭제된 일정입니다.",
         "Restore the series first." => "반복 일정 전체가 삭제된 상태입니다.",
         _ => $"{action}: {exception.Message}"

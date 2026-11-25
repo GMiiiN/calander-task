@@ -59,6 +59,17 @@ public sealed class RecurrenceExpander(TimeZoneInfo? localTimeZone = null)
             .FirstOrDefault(o => o.Event.OriginalStartKey == originalStartKey);
     }
 
+    // Occurrence keys are dates for all-day series and UTC instants for timed series.
+    // Even an identical first UTC instant can expand differently after a DST transition.
+    internal static bool HasSameSeriesStart(EventRecord before, EventRecord after)
+    {
+        if (before.TimeZone != after.TimeZone) return false;
+        if (before.GoogleStartRaw == after.GoogleStartRaw) return true;
+        if (before.GoogleStartRaw is not { Length: > 10 } first || after.GoogleStartRaw is not { Length: > 10 } second)
+            return false;
+        return EventTime.ParseInstant(first, before.TimeZone) == EventTime.ParseInstant(second, after.TimeZone);
+    }
+
     private IEnumerable<EventOccurrence> Originals(EventRecord parent, DateTime localFrom)
     {
         var allDay = parent.GoogleStartRaw!.Length == 10;

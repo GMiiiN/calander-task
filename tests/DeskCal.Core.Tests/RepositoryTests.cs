@@ -41,6 +41,52 @@ public sealed class RepositoryTests
         Assert.Equal(id, occurrence.OccurrenceId);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void SeriesEditPreservesChecklistAndCancellationWhenStartKeyWouldChange(bool allDay, bool unlinked)
+    {
+        using var db = new TestDatabase();
+        var original = db.Events.Create([new("원본", "2026-11-02") { StartTime = "09:00", Repeat = new("daily", Count: 3) }])[0];
+        var occurrences = db.Events.List(new(2026, 11, 2), new(2026, 11, 4));
+        var checkedId = occurrences[1].OccurrenceId!;
+        var exception = db.Events.AddChecklistItems(checkedId, true, ["자료"]);
+        db.Events.UpdateChecklistItem(checkedId, true, exception.Checklist[0].ItemId, isDone: true);
+        db.Events.DeleteOccurrence(occurrences[2].OccurrenceId!);
+        db.Execute("UPDATE event SET is_dirty=0, push_state='synced'");
+        if (unlinked) db.Execute("UPDATE event SET parent_event_id=NULL WHERE google_recurring_id IS NOT NULL");
+
+        Assert.Throws<InvalidOperationException>(() => db.Events.Update(original.EventUid, new()
+        {
+            Title = "저장되면 안 됨", StartTime = allDay ? null : "11:00", EndTime = allDay ? null : "12:00"
+        }));
+        var reopened = new EventRepository(new Database(db.Path), TestDatabase.Seoul);
+        var saved = reopened.Get(original.EventUid);
+        Assert.Equal(original.Title, saved.Title);
+        Assert.Equal(original.GoogleStartRaw, saved.GoogleStartRaw);
+        Assert.Equal(original.LocalRevision, saved.LocalRevision);
+        Assert.False(saved.IsDirty);
+        var children = reopened.GetRecords().Where(e => e.GoogleRecurringId == original.GoogleEventId).ToArray();
+        Assert.Equal(2, children.Length);
+        Assert.True(Assert.Single(children.Single(e => e.OriginalStartKey == exception.OriginalStartKey).Checklist).IsDone);
+        Assert.Single(children, e => e.Status == "cancelled");
+        Assert.Equal("제목 변경", reopened.Update(original.EventUid, new() { Title = "제목 변경" }).Title);
+        Assert.Equal("12:00", reopened.Update(original.EventUid, new() { EndTime = "12:00" }).EndTime);
+    }
+
+    [Fact]
+    public void SeriesEditProtectsFutureDstKeysEvenWhenFirstUtcStartMatches()
+    {
+        using var db = new TestDatabase();
+        var la = new EventRepository(db.Database, TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles"));
+        var phoenix = new EventRepository(db.Database, TimeZoneInfo.FindSystemTimeZoneById("America/Phoenix"));
+        var series = la.Create([new("DST", "2026-07-01") { StartTime = "09:00", Repeat = new("weekly", Weekdays: [DayOfWeek.Wednesday]) }])[0];
+        la.SetOccurrenceDone(la.List(new(2026, 11, 4), new(2026, 11, 4)).Single().OccurrenceId!, true);
+        Assert.Throws<InvalidOperationException>(() => phoenix.Update(series.EventUid, new() { StartTime = "09:00" }));
+        Assert.Equal("America/Los_Angeles", la.Get(series.EventUid).TimeZone);
+    }
+
     [Fact]
     public void SeriesWithoutExceptionsAllowsRuleAndStartChanges()
     {
