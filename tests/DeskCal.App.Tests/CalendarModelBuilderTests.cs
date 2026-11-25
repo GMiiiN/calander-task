@@ -77,9 +77,17 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.Equal("September", Assert.Single(next.AllItems).Title);
     }
 
-    [Fact]
-    public void MonthLimitsChipsAndOrdersGroupsWithCompletedItemsLast()
+    [Theory]
+    [InlineData(100)]
+    [InlineData(115)]
+    [InlineData(130)]
+    public void MonthLimitsChipsAndOrdersGroupsWithCompletedItemsLast(int textSize)
     {
+        var settings = new SettingStore(database);
+        Assert.Equal(100, settings.TextSizePercent); // an existing DB has no text-size setting
+        settings.TextSizePercent = textSize;
+        var reopened = new SettingStore(new Database(databasePath));
+        Assert.Equal(textSize, reopened.TextSizePercent);
         var created = events.Create([
             new("done all day", "2026-10-30"),
             new("late", "2026-10-30") { StartTime = "15:00" },
@@ -99,6 +107,10 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.Equal("09:00", cell.AllItems[2].TimeText);
         Assert.Null(cell.AllItems[0].TimeText);
         Assert.Null(cell.AllItems[5].TimeText);
+        reopened.TextSizePercent = 100;
+        Assert.Equal(100, settings.TextSizePercent);
+        reopened.Set("text_size_percent", "invalid");
+        Assert.Equal(100, settings.TextSizePercent);
     }
 
     [Fact]

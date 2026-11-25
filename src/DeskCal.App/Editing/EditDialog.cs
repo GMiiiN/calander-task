@@ -38,13 +38,7 @@ public partial class EditDialog : Window
     }
 
     // 달력 창 가운데에 띄운다. 달력이 화면 가장자리에 있어도 작업 영역 안에 들어오게 한다.
-    public void CenterOver(Window owner)
-    {
-        WindowStartupLocation = WindowStartupLocation.Manual;
-        var workArea = SystemParameters.WorkArea;
-        Left = Math.Clamp(owner.Left + (owner.ActualWidth - Width) / 2, workArea.Left, Math.Max(workArea.Left, workArea.Right - Width));
-        Top = Math.Clamp(owner.Top + 80, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - 640));
-    }
+    public void CenterOver(Window owner) => TextSize.PlaceDialog(this, owner, 80, 640);
 
     private void Load()
     {

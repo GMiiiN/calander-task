@@ -7,7 +7,7 @@ namespace DeskCal.App;
 // 주간 시간표의 하루 열. 자식의 DataContext(WeekBlockModel)로 세로 위치·높이와 겹침 열을 정한다.
 public sealed class WeekDayPanel : Panel
 {
-    // 1시간 블록에 제목·시각 두 줄(13pt·11pt)이 들어가는 높이.
+    // 공통 LayoutTransform 적용 전의 높이. 눈금·현재 시각선·클릭 좌표도 같은 단위를 쓴다.
     public const double HOUR_HEIGHT = 40;
     private const double GAP = 2;
 

@@ -264,7 +264,7 @@
 
         <!-- 달력 카드 -->
         <Border x:Name="CalendarCard" Style="{StaticResource Card}" Background="#EDFFFFFF">
-            <Grid>
+            <Grid LayoutTransform="{DynamicResource TextLayoutScale}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
@@ -273,8 +273,8 @@
 
                 <!-- 헤더 -->
                 <Border BorderBrush="{DynamicResource HeaderLineBrush}" BorderThickness="0,0,0,1" Padding="20,16,16,12">
-                    <DockPanel>
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <DockPanel SizeChanged="OnToolbarSizeChanged">
+                        <StackPanel x:Name="HeaderButtons" DockPanel.Dock="Right" HorizontalAlignment="Right" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Background="{StaticResource GlassButtonBrush}" BorderThickness="1" BorderBrush="{StaticResource GlassRimBrush}"
                                     CornerRadius="99" Padding="2">
                                 <StackPanel Orientation="Horizontal">
@@ -339,27 +339,30 @@
                 </Border>
 
                 <!-- 월간 -->
-                <Grid Grid.Row="1" Visibility="{Binding IsMonthView, Converter={StaticResource Visible}}">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="28" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-                    <UniformGrid x:Name="WeekdayHeader" Columns="7" />
-                    <ItemsControl Grid.Row="1" ItemsSource="{Binding Month.Weeks}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate><UniformGrid Columns="1" /></ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <ItemsControl ItemsSource="{Binding}" ItemTemplate="{StaticResource DayCellTemplate}" ClipToBounds="True">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate><UniformGrid Rows="1" Columns="7" /></ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                </ItemsControl>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </Grid>
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                              Visibility="{Binding IsMonthView, Converter={StaticResource Visible}}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="28" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <UniformGrid x:Name="WeekdayHeader" Columns="7" />
+                        <ItemsControl Grid.Row="1" ItemsSource="{Binding Month.Weeks}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate><UniformGrid Columns="1" /></ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <ItemsControl ItemsSource="{Binding}" ItemTemplate="{StaticResource DayCellTemplate}" ClipToBounds="True">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate><UniformGrid Rows="1" Columns="7" /></ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                    </ItemsControl>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
+                </ScrollViewer>
 
                 <!-- 주간 -->
                 <Grid Grid.Row="1" Visibility="{Binding IsMonthView, Converter={StaticResource Visible}, ConverterParameter=Invert}">
@@ -498,8 +501,8 @@
 
                 <!-- 하단 바 -->
                 <Border Grid.Row="2" BorderBrush="{DynamicResource FooterLineBrush}" BorderThickness="0,1,0,0" Padding="16,10,12,10">
-                    <DockPanel>
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <DockPanel SizeChanged="OnFooterSizeChanged">
+                        <StackPanel x:Name="SyncStatusPanel" DockPanel.Dock="Right" HorizontalAlignment="Right" Orientation="Horizontal">
                             <Ellipse Width="5" Height="5" Fill="{DynamicResource MutedBrush}" VerticalAlignment="Center" />
                             <TextBlock x:Name="SyncStatusText" Text="Google 연결 전 · 이 PC에만 저장" Style="{StaticResource BaseText}"
                                        Foreground="{DynamicResource SubtleBrush}" Margin="5,0,12,0" VerticalAlignment="Center" />
@@ -520,7 +523,7 @@
 
         <!-- 사이드바 -->
         <Border Grid.Column="2" x:Name="SidebarCard" Style="{StaticResource Card}" Background="#EDFFFFFF">
-            <Grid>
+            <Grid LayoutTransform="{DynamicResource TextLayoutScale}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
@@ -630,7 +633,7 @@
         <Grid x:Name="AdjustOverlay" Grid.ColumnSpan="3" Visibility="Collapsed">
             <Rectangle RadiusX="24" RadiusY="24" Fill="#1A246BDE" Stroke="{DynamicResource AccentBrush}" StrokeThickness="2"
                        StrokeDashArray="4 3" />
-            <Border HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="14" Padding="22,16"
+            <Border LayoutTransform="{DynamicResource TextLayoutScale}" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="14" Padding="22,16"
                     Background="{DynamicResource PopupBrush}" BorderThickness="1" BorderBrush="{DynamicResource ControlBorderBrush}"
                     Effect="{StaticResource CardShadow}">
                 <StackPanel>

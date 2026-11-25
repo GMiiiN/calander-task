@@ -62,6 +62,7 @@ public partial class MainWindow : Window
         _events = new EventRepository(database);
         _todos = new TodoRepository(database);
         _settings = new SettingStore(database);
+        TextSize.Apply(Application.Current.Resources, _settings.TextSizePercent);
         _viewModel = new MainViewModel(database);
         DataContext = _viewModel;
         // 자리는 물리 픽셀로 옮기므로 창 핸들이 생긴 뒤(보이기 전)에 놓는다.
@@ -278,9 +279,13 @@ public partial class MainWindow : Window
         _pinning.BeginEditing();
         try
         {
-            var dialog = new SettingsDialog(new CategoryRepository(_database));
+            var dialog = new SettingsDialog(new CategoryRepository(_database), _settings);
             dialog.PlaceOver(this);
-            if (dialog.ShowDialog() == true) _viewModel.Refresh();
+            if (dialog.ShowDialog() == true)
+            {
+                TextSize.Apply(Application.Current.Resources, _settings.TextSizePercent);
+                _viewModel.Refresh();
+            }
         }
         finally
         {
@@ -448,6 +453,13 @@ public partial class MainWindow : Window
         });
     }
 
+    // The local widths already account for both Windows DPI and the selected text scale.
+    private void OnToolbarSizeChanged(object sender, SizeChangedEventArgs e) =>
+        DockPanel.SetDock(HeaderButtons, e.NewSize.Width < 400 ? Dock.Top : Dock.Right);
+
+    private void OnFooterSizeChanged(object sender, SizeChangedEventArgs e) =>
+        DockPanel.SetDock(SyncStatusPanel, e.NewSize.Width < 400 ? Dock.Bottom : Dock.Right);
+
     private void BuildWeekdayHeader()
     {
         for (var day = 0; day < 7; day++)
@@ -563,6 +575,7 @@ public partial class MainWindow : Window
             }
         };
         DockPanel.SetDock(header, Dock.Top);
+        card.SetResourceReference(LayoutTransformProperty, "TextLayoutScale");
         card.SetResourceReference(Border.BackgroundProperty, "PopupBrush");
         card.SetResourceReference(Border.BorderBrushProperty, "ControlBorderBrush");
         var popup = new Popup { Child = card, PlacementTarget = (UIElement)sender, Placement = PlacementMode.Bottom, StaysOpen = false };
