@@ -492,6 +492,44 @@ public sealed class ConflictMergeTests
         Assert.Equal(editDuringPatch ? 2 : 1, Checklist.Visible(Checklist.ReadProperties(final.ExtendedProperties.Private__)).Count);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ExplicitRestoreReactivatesAKnownSparseCancelledOccurrence(bool pendingEdit)
+    {
+        using var db = new TestDatabase();
+        var remote = new EventSyncTests.FakeCalendar();
+        var day = new DateOnly(2026, 11, 15);
+        var series = db.Events.Create([new EventInput("시리즈", "2026-11-08") { Repeat = new RecurrenceInput("weekly", Weekdays: [DayOfWeek.Sunday]) }]).Single();
+        await Sync(db, remote);
+        var occurrence = db.Events.List(day, day).Single().OccurrenceId!;
+        db.Events.AddChecklistItems(occurrence, true, ["처음"]);
+        await Sync(db, remote);
+        var id = remote.Items.Keys.Single(key => key.Contains('_'));
+        if (pendingEdit) db.Events.AddChecklistItems(occurrence, true, ["동기화 전 수정"]);
+        var cancelled = new Event { Id = id, Status = "cancelled", RecurringEventId = series.EventUid,
+            OriginalStartTime = remote.Items[id].OriginalStartTime };
+        remote.Put(cancelled);
+        cancelled.ETag = null;
+        cancelled.UpdatedRaw = null;
+        await Sync(db, remote);
+        Assert.Empty(db.Events.List(day, day));
+        var conflicts = ConflictLog.UnseenCount(db.Database);
+        var patches = remote.PatchAttempts.Count;
+        if (pendingEdit) db.Events.AddChecklistItems(occurrence, true, ["복원 전 추가"]);
+        else db.Execute("UPDATE event SET sync_base=NULL WHERE parent_event_id IS NOT NULL"); // 이전 버전의 취소 행
+
+        db.Events.RestoreOccurrence(occurrence);
+        await Sync(db, remote);
+        await Sync(db, remote);
+
+        Assert.Equal(patches + 1, remote.PatchAttempts.Count);
+        Assert.Equal("confirmed", remote.Items[id].Status);
+        Assert.Equal(occurrence, Assert.Single(db.Events.List(day, day)).OccurrenceId);
+        Assert.Equal(conflicts, ConflictLog.UnseenCount(db.Database));
+        Assert.False(db.Events.GetRecords().Single(e => e.ParentEventId is not null).IsDirty);
+    }
+
     private static Task Sync(TestDatabase db, EventSyncTests.FakeCalendar remote) =>
         new EventSync(db.Database, remote, TestDatabase.Seoul, db.Clock).SyncAsync(CancellationToken.None);
 

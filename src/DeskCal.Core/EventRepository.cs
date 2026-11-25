@@ -115,13 +115,7 @@ public sealed class EventRepository
         var value = Get(connection, transaction, uid);
         if (value.ParentEventId is not null) throw new ArgumentException("Use occurrence ID for occurrence changes.");
         if (!deleted && value.DeletedAt is not null && !value.IsDirty)
-        {
-            // 이미 받은 삭제는 ETag가 없어도 새 일정과 구별한다. 예전 DB는 취소의 기준값이 NULL이다.
-            using var known = Sql.Command(connection, transaction, """
-                UPDATE event SET sync_base='{"status":"cancelled"}' WHERE event_id=$id AND sync_base IS NULL
-                """, ("$id", value.EventId));
-            known.ExecuteNonQuery();
-        }
+            RememberCancellation(connection, transaction, value.EventId);
         value = Save(connection, transaction, value with { DeletedAt = deleted ? value.DeletedAt ?? Validation.Timestamp(_clock) : null });
         transaction.Commit();
         return value;
@@ -171,9 +165,21 @@ public sealed class EventRepository
                 CreatedAt = now, UpdatedAt = now, LocalRevision = 0, DeletedAt = null
             };
         }
-        value = Save(connection, transaction, change(value));
+        var changed = change(value);
+        if (!value.IsDirty && value.Status == "cancelled" && changed.Status == "confirmed")
+            RememberCancellation(connection, transaction, value.EventId);
+        value = Save(connection, transaction, changed);
         transaction.Commit();
         return value;
+    }
+
+    // 최소 취소 응답에는 ETag와 시작 시각이 없을 수 있다. 명시적 복원을 다음 전송에서 새 편집과 구별한다.
+    private static void RememberCancellation(SqliteConnection connection, SqliteTransaction transaction, long id)
+    {
+        using var command = Sql.Command(connection, transaction, """
+            UPDATE event SET sync_base=$base WHERE event_id=$id AND sync_base IS NULL
+            """, ("$base", EventFields.CancelledBase), ("$id", id));
+        command.ExecuteNonQuery();
     }
 
     private EventRecord Save(SqliteConnection connection, SqliteTransaction transaction, EventRecord value)

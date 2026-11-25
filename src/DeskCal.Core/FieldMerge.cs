@@ -73,6 +73,8 @@ public static class EventFields
     public static JsonObject Of(EventRecord value) => Of(value.Title, value.Memo, value.GoogleStartRaw, value.GoogleEndRaw, value.TimeZone,
         value.RecurrenceRule, value.ColorId, value.IsBusy, value.IsDone, value.IsDday, value.Status);
 
+    internal const string CancelledBase = """{"status":"cancelled"}""";
+
     public static JsonObject Baseline(Event item)
     {
         var fields = Of(item);

@@ -271,15 +271,23 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         try
         {
             var current = fetched ?? await remote.GetAsync(remoteId, cancellationToken);
+            var baseline = FieldMerge.Parse(snapshot.Base);
             if (current.Status == "cancelled")
             {
+                if (value.ParentEventId is not null && value.Status == "confirmed" && (string?)baseline?["status"] == "cancelled"
+                    && current.Id == remoteId && current.RecurringEventId == value.GoogleRecurringId
+                    && current.OriginalStartTime is { } original && OriginalKey(original) == value.OriginalStartKey)
+                {
+                    var restored = await remote.PatchAsync(remoteId, ToRemote(value, isInstance: true), current.ETag, cancellationToken);
+                    Apply(snapshot, restored.Id, restored.ETag, restored);
+                    return;
+                }
                 var cancelled = value.ParentEventId is null
                     ? value with { DeletedAt = value.DeletedAt ?? Validation.Timestamp(_clock) }
                     : value with { Status = "cancelled" };
                 AcceptRemote(snapshot, cancelled, current, value.Status == "cancelled" || value.DeletedAt is not null ? null : "remote");
                 return;
             }
-            var baseline = FieldMerge.Parse(snapshot.Base);
             if (value.DeletedAt is not null || value.Status == "cancelled")
             {
                 await ResolveLocalDeleteAsync(snapshot, current, baseline, cancellationToken);
@@ -399,7 +407,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         if (CurrentRevision(connection, transaction, accepted.EventId) != snapshot.Record.LocalRevision) return;
         var saved = accepted with { GoogleEventId = response.Id, IsDirty = false, PushState = "synced", UpdatedAt = now };
         Sql.Update(connection, transaction, "event", saved.EventId,
-            Values(saved, response.ETag, response.Status == "cancelled" ? null : EventFields.Baseline(response).ToJsonString()));
+            Values(saved, response.ETag, response.Status == "cancelled" ? EventFields.CancelledBase : EventFields.Baseline(response).ToJsonString()));
         using var reset = Sql.Command(connection, transaction, "UPDATE event SET attempt_count=0, last_error=NULL WHERE event_id=$id;", ("$id", saved.EventId));
         reset.ExecuteNonQuery();
         if (deleted is not null) InsertConflict(connection, transaction, snapshot.Record, FieldMerge.Detail([], deleted), now);
@@ -686,8 +694,8 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             var isOccurrence = local.Record.ParentEventId is not null;
             using var command = Sql.Command(connection, transaction,
                 (isOccurrence ? "UPDATE event SET status='cancelled'" : "UPDATE event SET deleted_at=COALESCE(deleted_at, $now)") +
-                ", google_etag=$etag, updated_at=$now, sync_base=NULL WHERE event_id=$id;",
-                ("$now", now), ("$etag", item.ETag), ("$id", local.Record.EventId));
+                ", google_event_id=$google, google_etag=$etag, updated_at=$now, sync_base=$base WHERE event_id=$id;",
+                ("$now", now), ("$google", item.Id), ("$etag", item.ETag), ("$base", EventFields.CancelledBase), ("$id", local.Record.EventId));
             command.ExecuteNonQuery();
             return;
         }
@@ -702,7 +710,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             GoogleRecurringId = item.RecurringEventId, OriginalStartKey = key, RecurrenceRule = null, Status = "cancelled",
             CreatedBy = "google", CreatedAt = now, UpdatedAt = now, DeletedAt = null, LocalRevision = 0, IsDirty = false, PushState = "synced",
         };
-        var id = Sql.Insert(connection, transaction, "event", Values(value, item.ETag));
+        var id = Sql.Insert(connection, transaction, "event", Values(value, item.ETag, EventFields.CancelledBase));
         byGoogleId[item.Id!] = new Stored(value with { EventId = id }, item.ETag);
     }
 
