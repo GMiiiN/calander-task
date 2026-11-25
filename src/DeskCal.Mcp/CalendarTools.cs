@@ -25,7 +25,7 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
         {
             var input = new ToolInput(arguments);
             var isWrite = name is "rename_category" or "create_events" or "update_event" or "delete_event" or "restore_event" or "add_checklist_items" or "update_checklist_item" or "delete_checklist_item"
-                or "restore_checklist_item" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo";
+                or "restore_checklist_item" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo" or "reorder_events";
             var output = new ToolOutput(database, _events, isWrite);
             body = database.Measure("execute", () => name switch
             {
@@ -38,6 +38,7 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
                 "list_categories" => ListCategories(input, output),
                 "create_events" => CreateEvents(input, output),
                 "update_event" => UpdateEvent(input, output),
+                "reorder_events" => ReorderEvents(input, output),
                 "delete_event" => SetEventDeleted(input, output, true),
                 "restore_event" => SetEventDeleted(input, output, false),
                 "add_checklist_items" => AddChecklistItems(input, output),
@@ -112,11 +113,31 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
     {
         input.Only("start_date", "end_date");
         var agenda = new AgendaService(_events, _todos).GetAgenda(input.Date("start_date"), input.Date("end_date"));
-        return ToolOutput.Object(new
+        var dates = agenda.Groups.Where(g => g.Date is not null).Select(g => g.Date!.Value).ToArray();
+        var order = dates.Length == 0 ? null : DayEventOrder.Read(database, dates.Min(), dates.Max());
+        var groups = new JsonArray();
+        foreach (var g in agenda.Groups)
         {
-            Ddays = agenda.Ddays.Select(d => new { Event = output.Occurrence(d.Occurrence), d.DaysRemaining }),
-            Groups = agenda.Groups.Select(g => new { g.Kind, Date = g.Date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), Events = g.Events.Select(output.Occurrence), Todos = g.Todos.Select(output.Todo) })
-        });
+            var group = ToolOutput.Object(new { g.Kind, Date = g.Date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), Events = g.Events.Select(output.Occurrence), Todos = g.Todos.Select(output.Todo) });
+            // 앱 달력·우측과 같은 하루 안 순서. reorder_events에 이 목록을 새 순서로 보낸다. 여러 날 일정은 위에 고정이라 빠진다.
+            if (g.Date is { } date && order is not null)
+                group["day_order"] = new JsonArray(order.Sort(date, g.Events.Where(o => !DayEventOrder.IsPeriod(o)))
+                    .Select(o => (JsonNode)JsonValue.Create(DayEventOrder.Key(o))).ToArray());
+            groups.Add(group);
+        }
+        var result = ToolOutput.Object(new { Ddays = agenda.Ddays.Select(d => new { Event = output.Occurrence(d.Occurrence), d.DaysRemaining }) });
+        result["groups"] = groups;
+        return result;
+    }
+
+    // 하루 안 일정 순서(S8). 순서만 저장하고 일정 자체(시각·Google 일정)는 바꾸지 않는다.
+    private JsonObject ReorderEvents(ToolInput input, ToolOutput output)
+    {
+        input.Only("date", "event_ids");
+        var date = ToolInput.ParseDate(input.Required("date"));
+        var ids = input.Strings("event_ids");
+        if (ids.Length > 200) throw new ArgumentException("event_ids can contain at most 200 IDs.");
+        return output.OrderOutput(date, DayEventOrder.Reorder(_events, date, ids));
     }
 
     private JsonObject ListEvents(ToolInput input, ToolOutput output, DateOnly today)

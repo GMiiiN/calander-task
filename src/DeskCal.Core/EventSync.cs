@@ -114,10 +114,13 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         return command.ExecuteScalar() is string text ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture) : null;
     }
 
+    // S8: 생성 시각을 Google의 created로 맞춘 적이 있는지. 없으면 한 번 전체를 받아 바뀌지 않은 옛 일정까지 맞춘다.
+    private const string CreatedBasisKey = "event_created_basis";
+
     public async Task SyncAsync(CancellationToken cancellationToken)
     {
         await PushAsync(cancellationToken);
-        var token = ReadSyncToken();
+        var token = HasCreatedBasis() ? ReadSyncToken() : null;
         try
         {
             var (items, next) = await remote.ListAsync(token, cancellationToken);
@@ -402,6 +405,15 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 ApplyCancelled(connection, transaction, item, local, byGoogleId, now);
                 continue;
             }
+            // 같은 날 일정의 기본 순서는 생성순이다. 두 PC가 같은 순서를 쓰도록 생성 시각은 Google의 created로 맞춘다(S8).
+            // 일정 내용이 그대로여도(같은 etag) 맞춘다. 순서에만 쓰는 값이라 dirty·revision은 바꾸지 않는다.
+            if (local is not null && Created(item) is { } created && created != local.Record.CreatedAt)
+            {
+                using var align = Sql.Command(connection, transaction, "UPDATE event SET created_at=$created WHERE event_id=$id;",
+                    ("$created", created), ("$id", local.Record.EventId));
+                align.ExecuteNonQuery();
+                local = local with { Record = local.Record with { CreatedAt = created } };
+            }
             if (local is not null && local.Etag == item.ETag && local.Record.DeletedAt is null) continue;
             var value = FromRemote(item, local?.Record, byGoogleId, usedUids, now);
             if (local is null)
@@ -442,7 +454,24 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             "ON CONFLICT(sync_key) DO UPDATE SET sync_token=excluded.sync_token, last_synced_at=excluded.last_synced_at;",
             ("$key", SYNC_KEY), ("$token", nextSyncToken), ("$at", now)))
             command.ExecuteNonQuery();
+        if (fullList)
+        {
+            using var basis = Sql.Command(connection, transaction,
+                "INSERT INTO setting(setting_key, setting_value) VALUES ($key, '1') ON CONFLICT(setting_key) DO NOTHING;", ("$key", CreatedBasisKey));
+            basis.ExecuteNonQuery();
+        }
         transaction.Commit();
+    }
+
+    // Google이 정한 생성 시각(로컬 시각 문자열과 같은 형식, UTC). 없으면(옛 응답·가짜) null.
+    private static string? Created(Event item) =>
+        item.CreatedDateTimeOffset?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+
+    private bool HasCreatedBasis()
+    {
+        using var connection = database.OpenConnection();
+        using var command = Sql.Command(connection, null, "SELECT 1 FROM setting WHERE setting_key=$key;", ("$key", CreatedBasisKey));
+        return command.ExecuteScalar() is not null;
     }
 
     // 삭제 항목은 ID(취소 회차는 recurringEventId·originalStartTime)만 보장된다. 기존 값은 두고 상태만 바꾼다.
@@ -502,7 +531,8 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             GoogleStartRaw = startRaw, GoogleEndRaw = endRaw, TimeZone = item.Start?.TimeZone ?? item.End?.TimeZone,
             RecurrenceRule = item.Recurrence is { Count: > 0 } lines ? string.Join('\n', lines) : null,
             ColorId = item.ColorId, IsBusy = item.Transparency != "transparent", IsDone = Property("deskcalDone") == "1",
-            IsDday = Property("deskcalDday") == "1", Checklist = Checklist.ReadProperties(properties), CreatedBy = local?.CreatedBy ?? "google", CreatedAt = local?.CreatedAt ?? now,
+            IsDday = Property("deskcalDday") == "1", Checklist = Checklist.ReadProperties(properties), CreatedBy = local?.CreatedBy ?? "google",
+            CreatedAt = local?.CreatedAt ?? Created(item) ?? now,
             UpdatedAt = now, DeletedAt = null, LocalRevision = local?.LocalRevision ?? 0, IsDirty = false, PushState = "synced",
         };
         return _time.Derive(value);

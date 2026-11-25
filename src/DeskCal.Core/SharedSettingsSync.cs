@@ -106,7 +106,8 @@ public sealed class GoogleAppDataStore(DriveService service) : IAppDataStore
 /// 자기 파일이 여럿이면(생성 응답 유실 뒤 다시 만듦) 만든 시각, 같으면 ID가 가장 앞선 것이 정본이고 나머지는 합친 뒤 지운다.
 /// 모르는 키(새 버전이 쓴 항목)와 모르는 최상위 필드도 그대로 다시 올린다. 다른 Google 계정이 쓴 파일은 읽지 않는다.
 /// </summary>
-public sealed class SharedSettingsSync(Database database, IAppDataStore store, TimeProvider? clock = null, Action<string>? log = null)
+public sealed class SharedSettingsSync(Database database, IAppDataStore store, TimeProvider? clock = null, Action<string>? log = null,
+    TimeZoneInfo? localTimeZone = null)
 {
     internal const string FilePrefix = "deskcal-shared-";
     internal const string SyncKey = "settings";
@@ -187,6 +188,7 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         using (var transaction = connection.BeginTransaction(deferred: false))
         {
             SharedSettings.SeedCategoryNames(connection, transaction, now);
+            DayEventOrder.SeedLegacy(connection, transaction, new EventRepository(database, localTimeZone));
             SharedSettings.Merge(connection, transaction, read.Values.OfType<Document>().SelectMany(d => d.Entries), now);
             SharedSettings.ApplyCategoryNames(connection, transaction);
             foreach (var file in files.Where(f => read.ContainsKey(f.Id))) WriteCache(connection, transaction, file);

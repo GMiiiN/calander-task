@@ -244,5 +244,10 @@ public static class SharedSettings
 
     // 상태 상세에 보일 이름. 모르는 키는 키 그대로 보인다.
     public static string Describe(string key, string valueJson) =>
-        key.StartsWith(CategoryPrefix, StringComparison.Ordinal) ? $"카테고리 이름 ‘{Text(valueJson) ?? "?"}’" : key;
+        key.StartsWith(CategoryPrefix, StringComparison.Ordinal) ? $"카테고리 이름 ‘{Text(valueJson) ?? "?"}’"
+        : key.StartsWith(DayEventOrder.Prefix, StringComparison.Ordinal)
+            && DateOnly.TryParseExact(key[DayEventOrder.Prefix.Length..], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None, out var day)
+            ? $"{day.Month}월 {day.Day}일 일정 순서"
+        : key;
 }
