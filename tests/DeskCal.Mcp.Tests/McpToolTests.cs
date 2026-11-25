@@ -402,7 +402,7 @@ public sealed class McpToolTests : IAsyncLifetime
     public async Task DiscoversToolsWithAnnotationsAndEnums()
     {
         var tools = await _client.ListToolsAsync(cancellationToken: _timeout.Token);
-        Assert.Equal(19, tools.Count);
+        Assert.Equal(20, tools.Count);
         var rename = tools.Single(t => t.Name == "rename_category").ProtocolTool.InputSchema;
         Assert.Equal(new[] { "color_id", "name" }, rename.GetProperty("required").EnumerateArray().Select(p => p.GetString()));
         Assert.Contains("other DeskCal devices", tools.Single(t => t.Name == "rename_category").Description);
@@ -410,7 +410,7 @@ public sealed class McpToolTests : IAsyncLifetime
         foreach (var tool in tools)
         {
             Assert.Equal(reads.Contains(tool.Name), tool.ProtocolTool.Annotations!.ReadOnlyHint);
-            Assert.Equal(tool.Name.StartsWith("update_") || tool.Name == "rename_category", tool.ProtocolTool.Annotations.IdempotentHint);
+            Assert.Equal(tool.Name.StartsWith("update_") || tool.Name is "rename_category" or "reorder_events", tool.ProtocolTool.Annotations.IdempotentHint);
             Assert.Equal(tool.Name.StartsWith("delete_"), tool.ProtocolTool.Annotations.DestructiveHint);
         }
         var schema = tools.Single(t => t.Name == "create_events").ProtocolTool.InputSchema;
@@ -420,6 +420,34 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Contains("transparent", tools.Single(t => t.Name == "find_free_time").Description);
         Assert.Contains("get_agenda", tools.Single(t => t.Name == "create_events").Description);
         Assert.Contains("entire series", tools.Single(t => t.Name == "delete_event").Description);
+    }
+
+    // S8: Claude가 get_agenda의 day_order를 보고 그날 순서를 통째로 다시 보낸다. 일정 자체는 바뀌지 않는다.
+    [Fact]
+    public async Task ReorderEventsUsesTheAgendaDayOrderAndRejectsStaleLists()
+    {
+        await Call("create_events", new { events = new[] { new { title = "첫째", start_date = "2026-12-01" }, new { title = "둘째", start_date = "2026-12-01" } } });
+        await Call("create_events", new { events = new[] { new { title = "셋째", start_date = "2026-12-01" } } });
+        await Call("create_events", new { events = new[] { new { title = "기간", start_date = "2026-11-30", end_date = "2026-12-02" } } });
+        string[] DayOrder(JsonElement agenda) => agenda.GetProperty("groups").EnumerateArray().Single(g => g.GetProperty("kind").GetString() == "date")
+            .GetProperty("day_order").EnumerateArray().Select(x => x.GetString()!).ToArray();
+        var order = DayOrder(await Call("get_agenda", new { start_date = "2026-12-01", end_date = "2026-12-01" }));
+        Assert.Equal(3, order.Length); // 여러 날 일정은 빠진다
+        var reversed = order.Reverse().ToArray();
+
+        var result = await Call("reorder_events", new { date = "2026-12-01", event_ids = reversed });
+        Assert.Equal("2026-12-01", result.GetProperty("date").GetString());
+        Assert.Equal(reversed, result.GetProperty("events").EnumerateArray().Select(e => Id(e)));
+        Pending(result);
+        Assert.Equal(reversed, DayOrder(await Call("get_agenda", new { start_date = "2026-12-01", end_date = "2026-12-01" })));
+
+        var stale = await Call("reorder_events", new { date = "2026-12-01", event_ids = reversed.Take(2).ToArray() }, error: true);
+        Assert.Contains("Current order", stale.GetProperty("error").GetString());
+        await Call("reorder_events", new { date = "2026-12-01", event_ids = new[] { reversed[0], reversed[0], reversed[1] } }, error: true);
+        var period = Events.GetRecords().Single(e => e.Title == "기간").EventUid;
+        Assert.Contains("multi-day", (await Call("reorder_events", new { date = "2026-12-01", event_ids = reversed.Prepend(period).ToArray() }, error: true))
+            .GetProperty("error").GetString());
+        Assert.All(Events.GetRecords(), e => Assert.Equal(1, e.LocalRevision));
     }
 
     [Fact]

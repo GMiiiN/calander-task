@@ -387,6 +387,9 @@ public sealed class EventSyncTests
         public bool LoseInsertResponse { get; set; }
         public Action? BeforeListReturns { get; set; }
         public Action? BeforePatch { get; set; }
+        public List<string?> ListTokens { get; } = [];
+        // Google은 만들 때 created를 붙인다. 시험마다 같은 값이 나오도록 만든 순서로 1초씩 늘린다.
+        public DateTimeOffset NextCreated { get; set; } = DateTimeOffset.Parse("2026-11-20T00:00:00Z", CultureInfo.InvariantCulture);
 
         public void Put(Event value)
         {
@@ -406,6 +409,7 @@ public sealed class EventSyncTests
 
         public Task<(IReadOnlyList<Event> Items, string? NextSyncToken)> ListAsync(string? syncToken, CancellationToken cancellationToken)
         {
+            ListTokens.Add(syncToken);
             if (syncToken is not null && ExpireTokens)
             {
                 ExpireTokens = false;
@@ -447,6 +451,8 @@ public sealed class EventSyncTests
             if (Items.ContainsKey(value.Id)) throw new GoogleApiException("calendar", "conflict") { HttpStatusCode = HttpStatusCode.Conflict };
             var stored = Copy(value);
             stored.Status ??= "confirmed";
+            stored.CreatedDateTimeOffset ??= NextCreated;
+            NextCreated = NextCreated.AddSeconds(1);
             Put(stored);
             if (LoseInsertResponse) throw new HttpRequestException("connection reset");
             return Task.FromResult(Copy(stored));
@@ -495,7 +501,7 @@ public sealed class EventSyncTests
         {
             Id = e.Id, ETag = e.ETag, Summary = e.Summary, Description = e.Description, Status = e.Status, Start = e.Start, End = e.End,
             Recurrence = e.Recurrence, RecurringEventId = e.RecurringEventId, OriginalStartTime = e.OriginalStartTime, ColorId = e.ColorId,
-            Transparency = e.Transparency, ExtendedProperties = e.ExtendedProperties, UpdatedRaw = e.UpdatedRaw,
+            Transparency = e.Transparency, ExtendedProperties = e.ExtendedProperties, UpdatedRaw = e.UpdatedRaw, CreatedRaw = e.CreatedRaw,
         };
     }
 }

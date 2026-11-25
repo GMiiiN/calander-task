@@ -432,6 +432,21 @@ Core 검증 계약 (로컬 생성·수정 시):
 - 권한·API: `drive.appdata`는 처음 연결(M4)부터 요청해 왔으므로 기존 사용자에게 새 동의가 필요 없다. 동의 화면에서 이 권한만 뺐으면 공유하지 않고 이 PC 변경을 남긴 채 상태줄·상태 상세에 알리고, 트레이에서 같은 계정으로 다시 연결해 더할 수 있다. Drive API가 꺼진 Cloud 프로젝트도 같은 방식으로 알린다.
 - 두 PC는 같은 OAuth 클라이언트(같은 Cloud 프로젝트의 `client_secret.json`)를 써야 같은 `appDataFolder`를 본다.
 
+#### 5.5.1 하루 안 일정 순서 (S8, v0.16.0)
+- 키 `day_order:<YYYY-MM-DD>`, 값은 그날 단일 일정의 **원격 키** 배열이다. 원격 키는 두 PC에서 같은 일정을 가리킨다.
+  - 단일 일정: Google 일정 ID. 이 PC에서 만든 일정은 올리기 전에 미리 정한 ID(= `event_uid`)라 올리기 전에도 같다.
+  - 반복 회차: `<시리즈 Google ID>~<원래 회차 키>`. 폰에서 만든 일정처럼 PC마다 로컬 UID가 달라도 같다.
+  - 로컬 행 번호(`event_id`)나 PC마다 다른 로컬 UID는 쓰지 않는다.
+- 순서는 화면에 그릴 때 그날 일정의 원격 키로 찾는다. 목록에 없는 일정(새로 생긴 일정)은 목록 뒤에 생성순으로 간다.
+  지운 일정은 목록에 남아 있어도 보이지 않는다. 여러 날 일정은 위에 고정이고, 완료한 일정은 미완료 아래다(U6 규칙).
+- 생성순도 두 PC에서 같아야 하므로 `created_at`은 Google의 `created`로 맞춘다. 일정 내용이 그대로여도(같은 etag) 맞추고, S8 이전 행을 맞추려고
+  한 번 전체 목록을 받는다(`setting.event_created_basis`). 같은 시각이면 원격 키 순이다.
+- 앱의 끌어 놓기(`DayEventOrder.Move`)와 Claude의 `reorder_events`(`DayEventOrder.Reorder`)가 같은 공유 항목 하나를 한 트랜잭션에 쓴다.
+  `reorder_events`는 그날 단일 일정을 모두 한 번씩 받아야 하고, 여러 날 일정·다른 날·중복·빠지거나 낡은 목록·미완료보다 앞선 완료 일정은 거부한다.
+  일정 자체(시각·Google 일정)는 바꾸지 않는다. 순서 정보만 Drive로 간다.
+- 경합은 §5.5와 같다. 서버에 먼저 확정된 날짜 순서가 이기고, 진 쪽 순서는 `sync_conflict`의 `settings`에 남는다.
+- U6에서 이 PC에만 저장한 순서(`day_event_order`)는 공유 항목이 없는 날짜에만 쓰고, Google 공유 동기화 때 공유 항목으로 옮긴 뒤 지운다.
+
 ### 5.6 공휴일
 - 하루 1회 `events.list(공휴일 캘린더, timeMin=올해 1/1T00:00+09:00, timeMax=내후년 1/1T00:00+09:00)` — `timeMax`는 배타적. **모든 페이지 성공 후에만** `holiday` 캐시를 교체. 오프라인이면 캐시 사용.
 - 캘린더 ID 후보 `ko.south_korea#holiday@group.v.calendar.google.com`와 휴일/기념일 구분(어버이날 등은 쉬는 날 아님) 규칙은 공식 보장이 없어 M0.5에서 실데이터로 확인한다.
@@ -543,6 +558,7 @@ Claude Desktop은 `claude_desktop_config.json`의 `mcpServers`에 같은 경로.
 | `create_events` | `events`: 1~50개 | — |
 | `update_event` | `event_id` 또는 `occurrence_id`, 바꿀 필드(+ `is_done`) | idempotent |
 | `delete_event` | `event_id` 또는 `occurrence_id` | destructive |
+| `reorder_events` (S8) | `date`, `event_ids`(그날 단일 일정 전체를 새 순서로, 반복은 회차 ID). 먼저 `get_agenda`의 날짜 묶음 `day_order`를 본다 | idempotent |
 | `restore_event` | `event_id` 또는 `occurrence_id` | — |
 
 **체크리스트 쓰기 (4)** — 조회는 `get_event`·`list_events`의 `checklist`. 반복 일정은 `occurrence_id`만 받는다.

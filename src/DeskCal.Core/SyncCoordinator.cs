@@ -69,7 +69,7 @@ public sealed class SyncCoordinator(Database database, GoogleAccount google, Act
             SharedSettingsSync.RecordError(database, SharedSettingsSync.ScopeMissing);
             return;
         }
-        await new SharedSettingsSync(database, store, log: log).SyncAsync(token);
+        await new SharedSettingsSync(database, store, log: log).SyncAsync(token); // 카테고리 별칭(S6), 날짜별 일정 순서(S8)
     }, token);
 
     private async Task RunService(string name, Func<Task> work, CancellationToken token)
