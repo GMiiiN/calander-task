@@ -89,12 +89,36 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
             if (reason is null && state == "synced") { item["sync"] = "synced"; item.Remove("reason"); }
             else { item["sync"] = "pending"; item["reason"] = reason ?? (sent ? "retry_pending" : "sync_deferred"); }
         }
+        // 카테고리 별칭(S6): Drive 앱 전용 공간에 올렸는지 다시 읽는다.
+        if (result["category"] is JsonObject category && (string?)category["color_id"] is { } colorId)
+        {
+            if (SharedState(database, colorId) == "synced") { category["sync"] = "synced"; category.Remove("reason"); }
+            else
+            {
+                category["sync"] = "pending";
+                category["reason"] = PendingChanges.Reason("pending", signedIn)
+                    ?? SharedSettingsSync.UnavailableReason(database) ?? (sent ? "retry_pending" : "sync_deferred");
+            }
+        }
         return result;
+    }
+
+    // 카테고리 별칭. 이 PC에서 바꾸고 아직 다른 기기용으로 올리지 않았으면 pending이다.
+    public JsonObject CategoryOutput(CategoryRecord value) =>
+        AddSync(Object(new { value.ColorId, value.Name, value.ColorHex }), SharedState(database, value.ColorId));
+
+    private static string SharedState(Database database, string colorId)
+    {
+        using var connection = database.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT is_dirty FROM shared_entry WHERE entry_key=$key";
+        cmd.Parameters.AddWithValue("$key", SharedSettings.CategoryPrefix + colorId);
+        return cmd.ExecuteScalar() is long dirty && dirty != 0 ? "pending" : "synced";
     }
 
     private static IEnumerable<JsonObject> ReceiptItems(JsonObject receipt)
     {
-        foreach (var field in new[] { "event", "todo", "events", "todos" })
+        foreach (var field in new[] { "event", "todo", "events", "todos", "category" })
             if (receipt[field] is JsonObject item) yield return item;
             else if (receipt[field] is JsonArray items)
                 foreach (var value in items.OfType<JsonObject>()) yield return value;
