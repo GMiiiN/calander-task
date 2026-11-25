@@ -57,6 +57,14 @@ public static class Checklist
             properties[KEY_PREFIX + item.ItemId] = JsonSerializer.Serialize(new Wire(item.Text, item.IsDone, item.Position, item.Revision, item.IsDeleted), Json);
     }
 
+    // 삭제 경쟁에서는 해석하지 못한 항목과 삭제 표식도 변경으로 센다. 속성이 열거되는 순서는 무시한다.
+    internal static string Fingerprint(IDictionary<string, string>? properties)
+    {
+        var entries = properties?.Where(p => p.Key.StartsWith(KEY_PREFIX, StringComparison.Ordinal))
+            .OrderBy(p => p.Key, StringComparer.Ordinal).ToArray() ?? [];
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(entries)));
+    }
+
     public static IReadOnlyList<ChecklistItem> ReadProperties(IDictionary<string, string>? properties)
     {
         if (properties is null) return [];

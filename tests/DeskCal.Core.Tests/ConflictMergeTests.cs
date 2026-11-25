@@ -357,6 +357,65 @@ public sealed class ConflictMergeTests
         Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM sync_conflict WHERE discarded_json LIKE '%오프라인 수정%'"));
     }
 
+    [Theory]
+    [InlineData(false, "current", true)]
+    [InlineData(true, "current", true)]
+    [InlineData(false, "legacy", false)]
+    [InlineData(true, "legacy", false)]
+    [InlineData(false, "missing", false)]
+    [InlineData(true, "missing", false)]
+    [InlineData(true, "current", false)]
+    public async Task DeleteChecksTheOtherPcsChecklistAndRequiresAKnownBaseline(bool occurrence, string baseline, bool addItem)
+    {
+        using var a = new TestDatabase();
+        using var b = new TestDatabase();
+        var remote = new EventSyncTests.FakeCalendar();
+        var day = new DateOnly(2026, 11, 15);
+        var series = a.Events.Create([new EventInput("일정", "2026-11-15")
+        {
+            Repeat = occurrence ? new RecurrenceInput("weekly", Weekdays: [DayOfWeek.Sunday]) : null
+        }]).Single();
+        await Sync(a, remote);
+        string id = occurrence ? a.Events.List(day, day).Single().OccurrenceId! : series.EventUid;
+        a.Events.AddChecklistItems(id, occurrence, ["기준 항목"]);
+        await Sync(a, remote);
+        await Sync(b, remote);
+        var googleId = occurrence ? remote.Items.Keys.Single(key => key.Contains('_')) : series.EventUid;
+        if (baseline == "legacy")
+            a.Execute("UPDATE event SET sync_base=json_remove(sync_base, '$.checklistHash') WHERE google_event_id=$id", ("$id", googleId));
+        else if (baseline == "missing")
+            a.Execute("UPDATE event SET sync_base=NULL WHERE google_event_id=$id", ("$id", googleId));
+
+        if (occurrence) a.Events.DeleteOccurrence(id);
+        else a.Events.Delete(id);
+        if (addItem)
+        {
+            var otherId = occurrence ? b.Events.List(day, day).Single().OccurrenceId! : id;
+            b.Events.AddChecklistItems(otherId, occurrence, ["B의 항목"]);
+            await Sync(b, remote);
+        }
+        else remote.Edit(googleId, _ => { });
+        // GET으로 확인한 상태는 후속 목록이 비어 있어도 곧바로 저장되어야 한다.
+        a.Execute("UPDATE sync_state SET sync_token=$token WHERE sync_key='calendar_primary'", ("$token", "1000000"));
+        var deletes = remote.DeleteAttempts.Count;
+        await Sync(a, remote);
+
+        var local = a.Events.GetRecords().Single(e => e.GoogleEventId == googleId);
+        if (!addItem && baseline == "current")
+        {
+            Assert.Equal("cancelled", remote.Items[googleId].Status);
+            Assert.Equal(0, ConflictLog.UnseenCount(a.Database));
+            return;
+        }
+        Assert.Equal(deletes + (occurrence ? 0 : 1), remote.DeleteAttempts.Count);
+        Assert.Equal("confirmed", remote.Items[googleId].Status);
+        Assert.Single(a.Events.List(day, day));
+        Assert.Null(local.DeletedAt);
+        Assert.False(local.IsDirty);
+        Assert.Equal(addItem ? 2 : 1, Checklist.Visible(local.Checklist).Count);
+        Assert.Equal("local", Assert.Single(ConflictLog.Unseen(a.Database)).Deleted);
+    }
+
     private static Task Sync(TestDatabase db, EventSyncTests.FakeCalendar remote) =>
         new EventSync(db.Database, remote, TestDatabase.Seoul, db.Clock).SyncAsync(CancellationToken.None);
 

@@ -73,6 +73,13 @@ public static class EventFields
     public static JsonObject Of(EventRecord value) => Of(value.Title, value.Memo, value.GoogleStartRaw, value.GoogleEndRaw, value.TimeZone,
         value.RecurrenceRule, value.ColorId, value.IsBusy, value.IsDone, value.IsDday, value.Status);
 
+    public static JsonObject Baseline(Event item)
+    {
+        var fields = Of(item);
+        fields["checklistHash"] = Checklist.Fingerprint(item.ExtendedProperties?.Private__);
+        return fields;
+    }
+
     public static JsonObject Of(Event item)
     {
         var properties = item.ExtendedProperties?.Private__;

@@ -181,7 +181,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         foreach (var snapshot in records.Where(r => r.Record.IsDirty).ToList())
         {
             var value = snapshot.Record;
-            string? patchedId = null;
+            string? remoteId = null;
             try
             {
                 if (value.ParentEventId is { } parentId)
@@ -190,7 +190,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                     var parent = records.Single(r => r.Record.EventId == parentId);
                     if (parent.Etag is null || parent.Record.GoogleEventId is null) continue;
                     var instanceId = value.GoogleEventId ?? parent.Record.GoogleEventId + "_" + InstanceSuffix(value.OriginalStartKey!);
-                    patchedId = instanceId;
+                    remoteId = instanceId;
                     var etag = snapshot.Etag;
                     if (etag is null)
                     {
@@ -210,19 +210,8 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 else if (value.DeletedAt is not null)
                 {
                     // etag가 없어도 지운다. 생성 응답만 못 받았고 실제로는 올라가 있을 수 있다(없으면 404로 끝난다).
-                    try { await DeleteRemoteAsync(value.GoogleEventId!, snapshot.Etag, cancellationToken); }
-                    catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed
-                        && FieldMerge.Parse(snapshot.Base) is { } baseline)
-                    {
-                        // 지우기 전에 다른 곳에서 고쳤다. 고친 내용이 있으면 삭제/수정 겹침이라 원격 우선(삭제 취소), 없으면 지금 etag로 지운다.
-                        var current = await remote.GetAsync(value.GoogleEventId!, cancellationToken);
-                        if (current.Status != "cancelled" && FieldMerge.Changed(baseline, EventFields.Of(current), EventFields.Same))
-                        {
-                            Discard(snapshot, deleted: "local");
-                            continue;
-                        }
-                        await DeleteRemoteAsync(value.GoogleEventId!, current.ETag, cancellationToken);
-                    }
+                    remoteId = value.GoogleEventId!;
+                    await DeleteRemoteAsync(remoteId, snapshot.Etag, cancellationToken);
                     Apply(snapshot, value.GoogleEventId, null);
                 }
                 else if (snapshot.Etag is null)
@@ -231,14 +220,14 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 }
                 else
                 {
-                    patchedId = value.GoogleEventId!;
-                    var patched = await remote.PatchAsync(patchedId, ToRemote(value, isInstance: false), snapshot.Etag, cancellationToken);
+                    remoteId = value.GoogleEventId!;
+                    var patched = await remote.PatchAsync(remoteId, ToRemote(value, isInstance: false), snapshot.Etag, cancellationToken);
                     Apply(snapshot, patched.Id, patched.ETag, patched);
                 }
             }
-            catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed && patchedId is not null)
+            catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed && remoteId is not null)
             {
-                await ResolveConflictAsync(snapshot, patchedId, cancellationToken);
+                await ResolveConflictAsync(snapshot, remoteId, cancellationToken);
             }
             catch (GoogleApiException exception) when (exception.HttpStatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.NotFound or HttpStatusCode.Gone)
             {
@@ -270,18 +259,19 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 AcceptRemote(snapshot, cancelled, current, value.Status == "cancelled" || value.DeletedAt is not null ? null : "remote");
                 return;
             }
-            if (FieldMerge.Parse(snapshot.Base) is not { } baseline)
+            var baseline = FieldMerge.Parse(snapshot.Base);
+            if (value.DeletedAt is not null || value.Status == "cancelled")
+            {
+                await ResolveLocalDeleteAsync(snapshot, current, baseline, cancellationToken);
+                return;
+            }
+            if (baseline is null)
             {
                 await ResolveWithoutBaseAsync(snapshot, current, cancellationToken);
                 return;
             }
             var theirs = EventFields.Of(current);
             var mine = EventFields.Of(value);
-            if (value.Status == "cancelled" && current.Status != "cancelled" && FieldMerge.Changed(baseline, theirs, EventFields.Same))
-            {
-                Discard(snapshot, deleted: "local");
-                return;
-            }
             var merged = FieldMerge.Merge(baseline, mine, theirs, EventFields.Same);
             var remoteChecklist = Checklist.ReadProperties(current.ExtendedProperties?.Private__);
             var checklist = Checklist.Merge(value.Checklist, remoteChecklist);
@@ -318,7 +308,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         {
             Sql.Update(connection, transaction, "event", merged.EventId,
                 Values(merged with { GoogleEventId = response.Id, IsDirty = false, PushState = "synced", UpdatedAt = now },
-                    response.ETag, EventFields.Of(response).ToJsonString()));
+                    response.ETag, EventFields.Baseline(response).ToJsonString()));
             using var reset = Sql.Command(connection, transaction, "UPDATE event SET attempt_count=0, last_error=NULL WHERE event_id=$id;", ("$id", merged.EventId));
             reset.ExecuteNonQuery();
         }
@@ -334,6 +324,29 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         }
         if (result.Conflicts.Count > 0) InsertConflict(connection, transaction, snapshot.Record, FieldMerge.Detail(result.Conflicts), now);
         transaction.Commit();
+    }
+
+    private async Task ResolveLocalDeleteAsync(Stored snapshot, Event current, JsonObject? baseline, CancellationToken cancellationToken)
+    {
+        var latest = EventFields.Baseline(current);
+        if (baseline is null || FieldMerge.Changed(baseline, latest, EventFields.Same))
+        {
+            var kept = EventFields.Apply(snapshot.Record, latest, _time) with
+            {
+                DeletedAt = null, Checklist = Checklist.ReadProperties(current.ExtendedProperties?.Private__)
+            };
+            AcceptRemote(snapshot, kept, current, "local");
+        }
+        else if (snapshot.Record.ParentEventId is null)
+        {
+            await DeleteRemoteAsync(current.Id, current.ETag, cancellationToken);
+            Apply(snapshot, current.Id, null);
+        }
+        else
+        {
+            var cancelled = await remote.PatchAsync(current.Id, new Event { Status = "cancelled" }, current.ETag, cancellationToken);
+            Apply(snapshot, cancelled.Id, cancelled.ETag, cancelled);
+        }
     }
 
     // S4 이전에 동기화한 행(기준값 없음): 일정 내용은 원격 우선이지만 체크리스트는 항목 단위로 합쳐 올린 뒤 원격을 받는다.
@@ -361,7 +374,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         if (CurrentRevision(connection, transaction, accepted.EventId) != snapshot.Record.LocalRevision) return;
         var saved = accepted with { GoogleEventId = response.Id, IsDirty = false, PushState = "synced", UpdatedAt = now };
         Sql.Update(connection, transaction, "event", saved.EventId,
-            Values(saved, response.ETag, response.Status == "cancelled" ? null : EventFields.Of(response).ToJsonString()));
+            Values(saved, response.ETag, response.Status == "cancelled" ? null : EventFields.Baseline(response).ToJsonString()));
         using var reset = Sql.Command(connection, transaction, "UPDATE event SET attempt_count=0, last_error=NULL WHERE event_id=$id;", ("$id", saved.EventId));
         reset.ExecuteNonQuery();
         if (deleted is not null) InsertConflict(connection, transaction, snapshot.Record, FieldMerge.Detail([], deleted), now);
@@ -448,7 +461,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             "sync_base=COALESCE($base, sync_base)" +
             (same ? ", is_dirty=0, push_state='synced'" : "") + " WHERE event_id=$event;",
             ("$id", googleId), ("$etag", etag), ("$checklist", checklist), ("$event", snapshot.Record.EventId),
-            ("$base", response is null ? null : EventFields.Of(response).ToJsonString()));
+            ("$base", response is null ? null : EventFields.Baseline(response).ToJsonString()));
         command.ExecuteNonQuery();
         transaction.Commit();
     }
@@ -462,7 +475,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         var merged = Checklist.Merge(current.Checklist, Checklist.ReadProperties(existing.ExtendedProperties?.Private__));
         using var command = Sql.Command(connection, transaction, "UPDATE event SET google_etag=$etag, checklist=$checklist, sync_base=$base WHERE event_id=$event;",
             ("$etag", existing.ETag), ("$checklist", Checklist.Serialize(merged)), ("$event", snapshot.Record.EventId),
-            ("$base", EventFields.Of(existing).ToJsonString()));
+            ("$base", EventFields.Baseline(existing).ToJsonString()));
         command.ExecuteNonQuery();
         transaction.Commit();
     }
@@ -566,13 +579,13 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 if (local.Base is null)
                 {
                     using var baseline = Sql.Command(connection, transaction, "UPDATE event SET sync_base=$base WHERE event_id=$id;",
-                        ("$base", EventFields.Of(item).ToJsonString()), ("$id", local.Record.EventId));
+                        ("$base", EventFields.Baseline(item).ToJsonString()), ("$id", local.Record.EventId));
                     baseline.ExecuteNonQuery();
                 }
                 continue;
             }
             var value = FromRemote(item, local?.Record, byGoogleId, usedUids, now);
-            var synced = EventFields.Of(item).ToJsonString();
+            var synced = EventFields.Baseline(item).ToJsonString();
             if (local is null)
             {
                 var id = Sql.Insert(connection, transaction, "event", Values(value, item.ETag, synced));
