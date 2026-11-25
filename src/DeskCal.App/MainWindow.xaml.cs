@@ -252,10 +252,9 @@ public partial class MainWindow : Window
         OpenEditorAt(e);
     }
 
-    // 완료한 일정은 늘 미완료 아래에 있으므로 완료 상태가 같은 항목끼리만 순서를 바꾼다(DayEventOrder.Move와 같은 규칙).
-    private sealed record OrderItem(DateOnly Day, string Key, bool IsDone);
-    private OrderItem? _pressedEvent;
-    private OrderItem? _draggingEvent;
+    // 같은 날 일정 끌기(U6): 달력 칸·우측 목록·+N 목록. 받는 규칙은 DayOrderItem에 있다(완료 상태가 같은 단일 일정끼리).
+    private DayOrderItem? _pressedEvent;
+    private DayOrderItem? _draggingEvent;
     private Point _pressPoint;
 
     private void TrackOrderPress(MouseButtonEventArgs e, UIElement surface)
@@ -264,22 +263,13 @@ public partial class MainWindow : Window
         _pressPoint = e.GetPosition(surface);
     }
 
-    private static OrderItem? OrderItemAt(DependencyObject? node)
+    private static DayOrderItem? OrderItemAt(DependencyObject? node)
     {
         // 체크박스 내부 도형에도 행 DataContext가 상속된다. 전체 입력 경로에서 버튼을 먼저 제외한다.
         for (var part = node; part is not null; part = Parent(part))
             if (part is ButtonBase or TextBoxBase || part is FrameworkElement { DataContext: ChecklistItemViewModel }) return null;
         for (; node is not null; node = Parent(node))
-        {
-            if (node is not FrameworkElement element) continue;
-            switch (element.DataContext)
-            {
-                case ChipModel { OrderDate: { } day, EventId: { } id } chip:
-                    return new(day, chip.OccurrenceId ?? id, chip.IsDone);
-                case SidebarItemViewModel { OrderDate: { } day, EventId: { } id } row:
-                    return new(day, row.OccurrenceId ?? id, row.IsDone);
-            }
-        }
+            if (node is FrameworkElement element && DayOrderItem.From(element.DataContext) is { } item) return item;
         return null;
     }
 
@@ -289,7 +279,8 @@ public partial class MainWindow : Window
         StartOrderDrag(e, this);
     }
 
-    private void StartOrderDrag(MouseEventArgs e, UIElement surface)
+    // dragging·ended: 끌기가 실제로 시작될 때와 끝날 때 부른다(+N 목록은 끄는 동안 닫히지 않게 한다).
+    private void StartOrderDrag(MouseEventArgs e, UIElement surface, Action? dragging = null, Action? ended = null)
     {
         if (e.LeftButton != MouseButtonState.Pressed || _pressedEvent is null) return;
         var delta = e.GetPosition(surface) - _pressPoint;
@@ -297,8 +288,13 @@ public partial class MainWindow : Window
             Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance) return;
         _draggingEvent = _pressedEvent;
         _pressedEvent = null;
+        dragging?.Invoke();
         try { DragDrop.DoDragDrop(surface, new DataObject("DeskCal.DayOrder", _draggingEvent.Key), DragDropEffects.Move); }
-        finally { _draggingEvent = null; }
+        finally
+        {
+            _draggingEvent = null;
+            ended?.Invoke();
+        }
     }
 
     protected override void OnPreviewDragOver(DragEventArgs e)
@@ -307,13 +303,15 @@ public partial class MainWindow : Window
         ShowOrderDropEffect(e);
     }
 
-    private void ShowOrderDropEffect(DragEventArgs e)
+    // 받는 자리면 이동, 아니면 금지 커서를 보인다. 받는 대상을 돌려준다(+N 목록이 놓을 자리 선을 긋는다).
+    private DayOrderItem? ShowOrderDropEffect(DragEventArgs e)
     {
-        if (_draggingEvent is not { } source) return;
+        if (_draggingEvent is not { } source) return null;
         var target = OrderItemAt(e.OriginalSource as DependencyObject);
-        e.Effects = target is not null && source.Day == target.Day && source.IsDone == target.IsDone && source.Key != target.Key
-            ? DragDropEffects.Move : DragDropEffects.None;
+        var accepted = source.Accepts(target);
+        e.Effects = accepted ? DragDropEffects.Move : DragDropEffects.None;
         e.Handled = true;
+        return accepted ? target : null;
     }
 
     protected override void OnPreviewDrop(DragEventArgs e)
@@ -322,12 +320,13 @@ public partial class MainWindow : Window
         DropOrderItem(e);
     }
 
+    // 다시 그리면 열린 +N 목록도 같은 날짜의 새 순서로 바뀐다(RefreshOverflow).
     private void DropOrderItem(DragEventArgs e)
     {
         if (_draggingEvent is not { } source) return;
         e.Handled = true;
         var target = OrderItemAt(e.OriginalSource as DependencyObject);
-        if (target is not null && source.Day == target.Day && DayEventOrder.Move(_events, target.Day, source.Key, target.Key))
+        if (source.Accepts(target) && DayEventOrder.Move(_events, target!.Day, source.Key, target.Key))
             _viewModel.Refresh();
     }
 
@@ -683,6 +682,8 @@ public partial class MainWindow : Window
     {
         if (e.PropertyName == nameof(MainViewModel.IsMonthView)) UpdateViewToggle();
         if (e.PropertyName == nameof(MainViewModel.Week)) UpdateNowLine();
+        // 놓기 처리 중에는 그 목록의 항목을 바꾸지 않고, 이벤트가 끝난 뒤에 바꾼다.
+        if (e.PropertyName == nameof(MainViewModel.Month) && _overflow is not null) Dispatcher.BeginInvoke(RefreshOverflow);
     }
 
     private void UpdateViewToggle()
@@ -714,15 +715,31 @@ public partial class MainWindow : Window
 
     // +N 목록의 폭: 달력 칸보다 넓게(1.6배) 잡되 너무 작거나 크지 않게. 긴 제목은 줄바꿈한다(feedback 3-7).
     private const double OVERFLOW_MIN_WIDTH = 280, OVERFLOW_MAX_WIDTH = 420, OVERFLOW_WIDTH_RATIO = 1.6;
+    // 끄는 동안 목록의 위·아래 끝에서 이 거리 안에 있으면 그쪽으로 굴린다(목록이 길어 스크롤될 때).
+    private const double OVERFLOW_SCROLL_EDGE = 24;
+
+    // 열린 +N 목록. 열려 있는 동안 달력을 다시 그리면(끌어 놓기, Claude·다른 PC의 변경) 같은 날짜의 새 목록으로 바꾼다.
+    private sealed record OverflowList(Popup Popup, DateOnly Date, TextBlock Header, ItemsControl Items, ScrollViewer Scroll, Border DropLine);
+    private OverflowList? _overflow;
 
     // +N: 그날 항목 전체를 목록으로 보여준다(§6.3). 많으면 목록 안에서 스크롤한다.
+    // 같은 날 단일 일정끼리 끌어 순서를 바꾼다. 놓아도 목록은 열린 채 새 순서로 바뀌어 여러 개를 연달아 옮길 수 있다.
     private void OnOverflowClick(object sender, RoutedEventArgs e)
     {
-        var cell = (DayCellModel)((FrameworkElement)sender).DataContext;
-        var list = new ItemsControl { ItemsSource = cell.AllItems, ItemTemplate = (DataTemplate)FindResource("OverflowItemTemplate") };
+        var button = (FrameworkElement)sender;
+        var cell = (DayCellModel)button.DataContext;
+        if (_overflow is { } previous) previous.Popup.IsOpen = false;
+        var items = new ItemsControl { ItemTemplate = (DataTemplate)FindResource("OverflowItemTemplate") };
+        // 놓을 자리 표시선. 목록과 함께 굴러가도록 같은 칸에 겹쳐 둔다.
+        var dropLine = new Border { Height = 2, CornerRadius = new CornerRadius(1), Visibility = Visibility.Collapsed };
+        dropLine.SetResourceReference(Border.BackgroundProperty, "AccentBrush");
+        var scroll = new ScrollViewer
+        {
+            Content = new Grid { Children = { items, new Canvas { IsHitTestVisible = false, Children = { dropLine } } } },
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = Math.Max(240, CalendarCard.ActualHeight * 0.6)
+        };
         var header = new TextBlock
         {
-            Text = $"{cell.Date.ToString("M월 d일 dddd", System.Globalization.CultureInfo.GetCultureInfo("ko-KR"))} · {cell.AllItems.Count}개",
             Style = (Style)FindResource("BaseText"), FontWeight = FontWeights.Bold, FontSize = 15, Margin = new Thickness(2, 0, 0, 2)
         };
         var cellWidth = CalendarCard.ActualWidth / 7;
@@ -730,33 +747,25 @@ public partial class MainWindow : Window
         {
             Width = Math.Clamp(cellWidth * OVERFLOW_WIDTH_RATIO, OVERFLOW_MIN_WIDTH, OVERFLOW_MAX_WIDTH),
             Padding = new Thickness(12, 10, 12, 12), CornerRadius = new CornerRadius(12), BorderThickness = new Thickness(1),
-            Child = new DockPanel
-            {
-                Children =
-                {
-                    header,
-                    new ScrollViewer
-                    {
-                        Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                        MaxHeight = Math.Max(240, CalendarCard.ActualHeight * 0.6)
-                    }
-                }
-            }
+            Child = new DockPanel { Children = { header, scroll } }
         };
         DockPanel.SetDock(header, Dock.Top);
         card.SetResourceReference(LayoutTransformProperty, "TextLayoutScale");
         card.SetResourceReference(Border.BackgroundProperty, "PopupBrush");
         card.SetResourceReference(Border.BorderBrushProperty, "ControlBorderBrush");
-        var popup = new Popup { Child = card, PlacementTarget = (UIElement)sender, Placement = PlacementMode.Bottom, StaysOpen = false };
-        // 팝업은 창과 다른 시각 트리라 창의 더블클릭 처리가 닿지 않는다. 목록의 칩도 더블클릭으로 연다.
-        card.AllowDrop = true;
-        card.PreviewMouseMove += (_, args) => StartOrderDrag(args, card);
-        card.PreviewDragOver += (_, args) => ShowOrderDropEffect(args);
-        card.PreviewDrop += (_, args) =>
+        // 놓은 뒤 달력을 다시 그리면 +N 단추는 새로 만들어진다. 자리는 그대로 남는 달력 카드 위, 그 단추가 있던 곳을 기준으로 잡는다.
+        var popup = new Popup
         {
-            DropOrderItem(args);
-            if (args.Handled) popup.IsOpen = false;
+            Child = card, PlacementTarget = CalendarCard, Placement = PlacementMode.Bottom, StaysOpen = false,
+            PlacementRectangle = button.TransformToVisual(CalendarCard).TransformBounds(new Rect(button.RenderSize))
         };
+        var overflow = new OverflowList(popup, cell.Date, header, items, scroll, dropLine);
+        popup.Closed += (_, _) =>
+        {
+            if (_overflow == overflow) _overflow = null;
+        };
+        // 팝업은 창과 다른 시각 트리라 창의 더블클릭·끌기 처리가 닿지 않는다. 같은 처리를 붙인다.
+        card.AllowDrop = true;
         card.PreviewMouseLeftButtonDown += (_, args) =>
         {
             TrackOrderPress(args, card);
@@ -764,7 +773,76 @@ public partial class MainWindow : Window
             popup.IsOpen = false;
             OpenEditorAt(args);
         };
+        // 끄는 동안(DoDragDrop이 마우스를 쥔 동안)은 밖을 눌러 닫는 동작이 목록을 닫지 않게 하고, 끝나면 되살린다.
+        card.PreviewMouseMove += (_, args) => StartOrderDrag(args, card,
+            dragging: () => popup.StaysOpen = true,
+            ended: () =>
+            {
+                dropLine.Visibility = Visibility.Collapsed;
+                if (popup.IsOpen) popup.StaysOpen = false;
+            });
+        card.PreviewDragOver += (_, args) =>
+        {
+            ShowDropLine(overflow, args, ShowOrderDropEffect(args));
+            ScrollNearEdge(scroll, args);
+        };
+        card.PreviewDragLeave += (_, args) =>
+        {
+            if (!new Rect(card.RenderSize).Contains(args.GetPosition(card))) dropLine.Visibility = Visibility.Collapsed;
+        };
+        card.PreviewDrop += (_, args) =>
+        {
+            dropLine.Visibility = Visibility.Collapsed;
+            DropOrderItem(args);
+        };
+        _overflow = overflow;
+        ShowOverflowItems(overflow, cell);
         popup.IsOpen = true;
+    }
+
+    private static void ShowOverflowItems(OverflowList overflow, DayCellModel cell)
+    {
+        overflow.Items.ItemsSource = cell.AllItems;
+        overflow.Header.Text = $"{cell.Date.ToString("M월 d일 dddd", CultureInfo.GetCultureInfo("ko-KR"))} · {cell.AllItems.Count}개";
+    }
+
+    // 달력을 다시 그렸다. 열린 +N 목록을 같은 날짜의 새 항목으로 바꾼다. 그 날짜가 화면에서 빠졌거나 항목이 없으면 닫는다.
+    private void RefreshOverflow()
+    {
+        if (_overflow is not { } overflow || !overflow.Popup.IsOpen) return;
+        if (_viewModel.Month?.CellOn(overflow.Date) is { AllItems.Count: > 0 } cell) ShowOverflowItems(overflow, cell);
+        else overflow.Popup.IsOpen = false;
+    }
+
+    // 놓을 자리에 선을 긋는다. 위로 옮기면 대상 앞, 아래로 옮기면 대상 다음 자리다(DayEventOrder.Move와 같다).
+    // 받지 않는 자리(여러 날 일정·할 일·완료 상태가 다른 일정)면 선을 지우고 금지 커서만 보인다.
+    private void ShowDropLine(OverflowList overflow, DragEventArgs e, DayOrderItem? target)
+    {
+        var container = target is null ? null : ContainerOf(overflow.Items, e.OriginalSource as DependencyObject);
+        if (_draggingEvent is not { } source || target is null || container is null || overflow.DropLine.Parent is not Canvas layer)
+        {
+            overflow.DropLine.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var bounds = container.TransformToVisual(layer).TransformBounds(new Rect(container.RenderSize));
+        // 항목마다 위쪽 여백(6)이 있다. 선은 그 여백 가운데에 긋는다(아래로 옮기면 다음 항목의 여백).
+        Canvas.SetTop(overflow.DropLine, (source.LandsBelow(overflow.Items.Items.OfType<ChipModel>(), target) ? bounds.Bottom : bounds.Top) + 2);
+        overflow.DropLine.Width = bounds.Width;
+        overflow.DropLine.Visibility = Visibility.Visible;
+    }
+
+    private static FrameworkElement? ContainerOf(ItemsControl items, DependencyObject? node)
+    {
+        for (; node is not null; node = Parent(node))
+            if (node is FrameworkElement element && ItemsControl.ItemsControlFromItemContainer(element) == items) return element;
+        return null;
+    }
+
+    private static void ScrollNearEdge(ScrollViewer scroll, DragEventArgs e)
+    {
+        var y = e.GetPosition(scroll).Y;
+        if (y < OVERFLOW_SCROLL_EDGE) scroll.LineUp();
+        else if (y > scroll.ActualHeight - OVERFLOW_SCROLL_EDGE) scroll.LineDown();
     }
 
     private void OnMenuClick(object sender, RoutedEventArgs e)
