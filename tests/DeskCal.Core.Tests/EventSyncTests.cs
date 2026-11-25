@@ -373,11 +373,16 @@ public sealed class EventSyncTests
         Assert.Single(Checklist.Visible(events.Get(created.EventUid).Checklist));
     }
 
-    private sealed class FakeCalendar : ICalendarRemote
+    internal sealed class FakeCalendar : ICalendarRemote
     {
         private int _version;
         private readonly List<(int Version, string Id)> _changes = [];
         public Dictionary<string, Event> Items { get; } = [];
+        public List<string> InsertAttempts { get; } = [];
+        public List<(string Id, string? Status)> PatchAttempts { get; } = [];
+        public List<string> DeleteAttempts { get; } = [];
+        public HashSet<string> MissingInstances { get; } = [];
+        public string? OmitFromNextFullList { get; set; }
         public bool ExpireTokens { get; set; }
         public bool LoseInsertResponse { get; set; }
         public Action? BeforePatch { get; set; }
@@ -407,6 +412,11 @@ public sealed class EventSyncTests
             }
             var since = syncToken is null ? -1 : int.Parse(syncToken, CultureInfo.InvariantCulture);
             var ids = syncToken is null ? Items.Keys.ToList() : _changes.Where(c => c.Version > since).Select(c => c.Id).Distinct().ToList();
+            if (syncToken is null && OmitFromNextFullList is { } omittedId)
+            {
+                ids.Remove(omittedId);
+                OmitFromNextFullList = null;
+            }
             IReadOnlyList<Event> result = ids.Where(Items.ContainsKey).Select(id => Copy(Items[id])).ToList();
             return Task.FromResult((result, (string?)_version.ToString(CultureInfo.InvariantCulture)));
         }
@@ -418,7 +428,7 @@ public sealed class EventSyncTests
         private Event Instance(string eventId)
         {
             var split = eventId.LastIndexOf('_');
-            if (split < 0 || !Items.ContainsKey(eventId[..split])) throw NotFound();
+            if (split < 0 || !Items.ContainsKey(eventId[..split]) || MissingInstances.Contains(eventId)) throw NotFound();
             var suffix = eventId[(split + 1)..];
             return new Event
             {
@@ -431,6 +441,7 @@ public sealed class EventSyncTests
 
         public Task<Event> InsertAsync(Event value, CancellationToken cancellationToken)
         {
+            InsertAttempts.Add(value.Id);
             if (Items.ContainsKey(value.Id)) throw new GoogleApiException("calendar", "conflict") { HttpStatusCode = HttpStatusCode.Conflict };
             var stored = Copy(value);
             stored.Status ??= "confirmed";
@@ -441,6 +452,7 @@ public sealed class EventSyncTests
 
         public Task<Event> PatchAsync(string eventId, Event value, string? etag, CancellationToken cancellationToken)
         {
+            PatchAttempts.Add((eventId, value.Status));
             BeforePatch?.Invoke();
             if (!Items.TryGetValue(eventId, out var stored))
             {
@@ -468,6 +480,7 @@ public sealed class EventSyncTests
 
         public Task DeleteAsync(string eventId, string? etag, CancellationToken cancellationToken)
         {
+            DeleteAttempts.Add(eventId);
             if (!Items.TryGetValue(eventId, out var stored)) throw NotFound();
             if (etag is not null && etag != stored.ETag) throw new GoogleApiException("calendar", "precondition") { HttpStatusCode = HttpStatusCode.PreconditionFailed };
             Cancel(eventId);
