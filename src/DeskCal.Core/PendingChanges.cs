@@ -13,11 +13,13 @@ public static class PendingChanges
         _ => null
     };
 
+    // 동기화가 보낼 것이 있는지(앱이 꺼졌을 때 MCP가 2분마다 확인한다). 결과 불명(unknown) 할 일은 push가 보내지 않으므로 세지 않는다.
+    // 세면 확인이 필요한 할 일 하나 때문에 MCP마다 2분마다 전체 동기화를 끝없이 되풀이한다. 복구는 다른 이유로 도는 pull의 표식 연결이 맡는다.
     public static bool HasUnsent(Database database)
     {
         using var connection = database.OpenConnection();
         using var cmd = Sql.Command(connection, null,
-            "SELECT EXISTS(SELECT 1 FROM event WHERE is_dirty=1) OR EXISTS(SELECT 1 FROM todo WHERE is_dirty=1)");
+            "SELECT EXISTS(SELECT 1 FROM event WHERE is_dirty=1) OR EXISTS(SELECT 1 FROM todo WHERE is_dirty=1 AND push_state<>'unknown')");
         return (long)cmd.ExecuteScalar()! != 0;
     }
 
