@@ -327,6 +327,36 @@ public sealed class ConflictMergeTests
         Assert.Equal(sendMerge ? 2 : 1, attempts);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SparseCancelledOccurrencePreservesConflictAndDoesNotBlockNextEvent(bool legacy)
+    {
+        using var db = new TestDatabase();
+        var remote = new EventSyncTests.FakeCalendar();
+        var day = new DateOnly(2026, 11, 15);
+        var series = db.Events.Create([new EventInput("시리즈", "2026-11-08") { Repeat = new RecurrenceInput("weekly", Weekdays: [DayOfWeek.Sunday]) }]).Single();
+        await Sync(db, remote);
+        var occurrence = db.Events.List(day, day).Single().OccurrenceId!;
+        db.Events.AddChecklistItems(occurrence, true, ["처음"]);
+        await Sync(db, remote);
+        var id = remote.Items.Keys.Single(key => key.Contains('_'));
+        if (legacy) db.Execute("UPDATE event SET sync_base=NULL WHERE parent_event_id IS NOT NULL");
+        db.Events.AddChecklistItems(occurrence, true, ["오프라인 수정"]);
+        var next = db.Events.Create([new("다음 일정", "2026-11-25")]).Single();
+        remote.Put(new Event { Id = id, Status = "cancelled", RecurringEventId = series.EventUid, OriginalStartTime = remote.Items[id].OriginalStartTime });
+        var before = remote.PatchAttempts.Count;
+
+        await Sync(db, remote);
+        await Sync(db, remote);
+
+        Assert.Equal(before + 1, remote.PatchAttempts.Count);
+        Assert.Equal("cancelled", db.Events.GetRecords().Single(e => e.ParentEventId is not null).Status);
+        Assert.True(remote.Items.ContainsKey(next.EventUid));
+        Assert.Equal("remote", Assert.Single(ConflictLog.Unseen(db.Database)).Deleted);
+        Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM sync_conflict WHERE discarded_json LIKE '%오프라인 수정%'"));
+    }
+
     private static Task Sync(TestDatabase db, EventSyncTests.FakeCalendar remote) =>
         new EventSync(db.Database, remote, TestDatabase.Seoul, db.Clock).SyncAsync(CancellationToken.None);
 

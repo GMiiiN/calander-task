@@ -197,9 +197,9 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                         // 처음 고치는 회차라 비교할 etag가 없다. 마지막으로 받은 뒤 다른 곳에서 바뀐 회차면
                         // 받아 둔 옛 시각으로 덮지 않고 원격 우선으로 처리한다.
                         var current = await remote.GetAsync(instanceId, cancellationToken);
-                        if (current.UpdatedDateTimeOffset is { } updated && (LastSyncedAt(database) is not { } seen || updated > seen))
+                        if (current.Status == "cancelled" || current.UpdatedDateTimeOffset is { } updated && (LastSyncedAt(database) is not { } seen || updated > seen))
                         {
-                            await ResolveConflictAsync(snapshot, instanceId, cancellationToken);
+                            await ResolveConflictAsync(snapshot, instanceId, cancellationToken, current);
                             continue;
                         }
                         etag = current.ETag;
@@ -256,23 +256,26 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
     /// 같은 묶음을 둘 다 바꿨으면 Google 값을 남긴 채 이 PC 값을 충돌로 기록한다. 회차 삭제와 Google 수정이 겹치면 원격 우선(삭제 취소),
     /// Google에서 지웠으면 이 PC 변경은 원격 삭제에 밀린다. 체크리스트는 항목별로 합친다. 기준값이 없는 예전 행은 예전처럼 원격 우선이다.
     /// </summary>
-    private async Task ResolveConflictAsync(Stored snapshot, string remoteId, CancellationToken cancellationToken)
+    private async Task ResolveConflictAsync(Stored snapshot, string remoteId, CancellationToken cancellationToken, Event? fetched = null)
     {
         var value = snapshot.Record;
-        if (FieldMerge.Parse(snapshot.Base) is not { } baseline)
-        {
-            await ResolveWithoutBaseAsync(snapshot, remoteId, cancellationToken);
-            return;
-        }
         try
         {
-            var current = await remote.GetAsync(remoteId, cancellationToken);
-            var theirs = EventFields.Of(current);
-            if (current.Status == "cancelled" && value.ParentEventId is null)
+            var current = fetched ?? await remote.GetAsync(remoteId, cancellationToken);
+            if (current.Status == "cancelled")
             {
-                Discard(snapshot, deleted: "remote");
+                var cancelled = value.ParentEventId is null
+                    ? value with { DeletedAt = value.DeletedAt ?? Validation.Timestamp(_clock) }
+                    : value with { Status = "cancelled" };
+                AcceptRemote(snapshot, cancelled, current, value.Status == "cancelled" || value.DeletedAt is not null ? null : "remote");
                 return;
             }
+            if (FieldMerge.Parse(snapshot.Base) is not { } baseline)
+            {
+                await ResolveWithoutBaseAsync(snapshot, current, cancellationToken);
+                return;
+            }
+            var theirs = EventFields.Of(current);
             var mine = EventFields.Of(value);
             if (value.Status == "cancelled" && current.Status != "cancelled" && FieldMerge.Changed(baseline, theirs, EventFields.Same))
             {
@@ -334,7 +337,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
     }
 
     // S4 이전에 동기화한 행(기준값 없음): 일정 내용은 원격 우선이지만 체크리스트는 항목 단위로 합쳐 올린 뒤 원격을 받는다.
-    private async Task ResolveWithoutBaseAsync(Stored snapshot, string remoteId, CancellationToken cancellationToken)
+    private async Task ResolveWithoutBaseAsync(Stored snapshot, Event current, CancellationToken cancellationToken)
     {
         var value = snapshot.Record;
         if (value.Checklist.Count == 0 || value.DeletedAt is not null || value.Status == "cancelled")
@@ -342,27 +345,27 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             Discard(snapshot);
             return;
         }
-        try
-        {
-            var current = await remote.GetAsync(remoteId, cancellationToken);
-            var merged = Checklist.Merge(value.Checklist, Checklist.ReadProperties(current.ExtendedProperties?.Private__));
-            var properties = new Dictionary<string, string>();
-            Checklist.WriteProperties(merged, properties);
-            await remote.PatchAsync(remoteId, new Event { ExtendedProperties = new Event.ExtendedPropertiesData { Private__ = properties } }, current.ETag, cancellationToken);
-            Discard(snapshot, merged);
-        }
-        catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed)
-        {
-            // 합치는 사이에 또 바뀌었다. dirty로 남겨 다음 동기화에서 다시 합친다.
-        }
-        catch (GoogleApiException exception) when (exception.HttpStatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
-        {
-            Discard(snapshot);
-        }
-        catch (GoogleApiException exception)
-        {
-            MarkFailed(snapshot, exception.Message);
-        }
+        var merged = Checklist.Merge(value.Checklist, Checklist.ReadProperties(current.ExtendedProperties?.Private__));
+        var properties = new Dictionary<string, string>();
+        Checklist.WriteProperties(merged, properties);
+        await remote.PatchAsync(current.Id, new Event { ExtendedProperties = new Event.ExtendedPropertiesData { Private__ = properties } }, current.ETag, cancellationToken);
+        Discard(snapshot, merged);
+    }
+
+    // GET으로 확인한 원격 상태와 버려진 로컬 원본을 함께 저장한다. 응답을 기다리던 중 편집된 행은 다음 차례에 다시 판단한다.
+    private void AcceptRemote(Stored snapshot, EventRecord accepted, Event response, string? deleted)
+    {
+        var now = Validation.Timestamp(_clock);
+        using var connection = database.OpenConnection();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        if (CurrentRevision(connection, transaction, accepted.EventId) != snapshot.Record.LocalRevision) return;
+        var saved = accepted with { GoogleEventId = response.Id, IsDirty = false, PushState = "synced", UpdatedAt = now };
+        Sql.Update(connection, transaction, "event", saved.EventId,
+            Values(saved, response.ETag, response.Status == "cancelled" ? null : EventFields.Of(response).ToJsonString()));
+        using var reset = Sql.Command(connection, transaction, "UPDATE event SET attempt_count=0, last_error=NULL WHERE event_id=$id;", ("$id", saved.EventId));
+        reset.ExecuteNonQuery();
+        if (deleted is not null) InsertConflict(connection, transaction, snapshot.Record, FieldMerge.Detail([], deleted), now);
+        transaction.Commit();
     }
 
     // ID를 미리 정해 두었으므로(§5.3) 응답을 못 받고 다시 보내도 409가 나서 중복이 생기지 않는다.
