@@ -274,15 +274,17 @@ public sealed class McpToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DiscoversExactlyEighteenToolsWithAnnotationsAndEnums()
+    public async Task DiscoversToolsWithAnnotationsAndEnums()
     {
         var tools = await _client.ListToolsAsync(cancellationToken: _timeout.Token);
-        Assert.Equal(18, tools.Count);
+        Assert.Equal(19, tools.Count);
+        var rename = tools.Single(t => t.Name == "rename_category").ProtocolTool.InputSchema;
+        Assert.Equal(new[] { "color_id", "name" }, rename.GetProperty("required").EnumerateArray().Select(p => p.GetString()));
         var reads = new[] { "get_agenda", "list_events", "get_event", "find_free_time", "list_todos", "list_categories" };
         foreach (var tool in tools)
         {
             Assert.Equal(reads.Contains(tool.Name), tool.ProtocolTool.Annotations!.ReadOnlyHint);
-            Assert.Equal(tool.Name.StartsWith("update_"), tool.ProtocolTool.Annotations.IdempotentHint);
+            Assert.Equal(tool.Name.StartsWith("update_") || tool.Name == "rename_category", tool.ProtocolTool.Annotations.IdempotentHint);
             Assert.Equal(tool.Name.StartsWith("delete_"), tool.ProtocolTool.Annotations.DestructiveHint);
         }
         var schema = tools.Single(t => t.Name == "create_events").ProtocolTool.InputSchema;
@@ -292,6 +294,21 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Contains("transparent", tools.Single(t => t.Name == "find_free_time").Description);
         Assert.Contains("get_agenda", tools.Single(t => t.Name == "create_events").Description);
         Assert.Contains("entire series", tools.Single(t => t.Name == "delete_event").Description);
+    }
+
+    [Fact]
+    public async Task RenameCategoryReturnsNewAliasAndPreservesExistingColor()
+    {
+        var existing = Events.Create([new("기존", "2026-11-03") { ColorId = "1" }]).Single();
+        var changed = await Call("rename_category", new { color_id = "1", name = " 수업 " });
+        Assert.Equal("수업", changed.GetProperty("category").GetProperty("name").GetString());
+        Assert.Equal("#123456", changed.GetProperty("category").GetProperty("color_hex").GetString());
+        var result = await Call("list_events", new { start_date = "2026-11-03", category = "수업" });
+        Assert.Equal(existing.EventUid, Id(result.GetProperty("events")[0]));
+        var created = await Call("create_events", new { events = new[] { new { title = "새 수업", start_date = "2026-11-03", category = "수업" } } });
+        Assert.Equal("1", Events.Get(Id(created.GetProperty("events")[0])).ColorId);
+        foreach (var bad in new[] { "", "업무", "2" }) await Call("rename_category", new { color_id = "1", name = bad }, error: true);
+        await Call("rename_category", new { color_id = "99", name = "없음" }, error: true);
     }
 
     [Fact]

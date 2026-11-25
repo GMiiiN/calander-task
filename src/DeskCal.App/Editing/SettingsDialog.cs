@@ -14,6 +14,7 @@ public partial class SettingsDialog : Window
 {
     private readonly CategoryRepository _categories;
     private readonly SettingStore _settings;
+    private readonly Dictionary<string, string> _originalNames = [];
     private readonly Dictionary<string, TextBox> _nameBoxes = [];
 
     public SettingsDialog(CategoryRepository categories, SettingStore settings)
@@ -48,6 +49,7 @@ public partial class SettingsDialog : Window
         row.Children.Add(dot);
         row.Children.Add(box);
         CategoryRows.Children.Add(row);
+        _originalNames[category.ColorId] = category.Name;
         _nameBoxes[category.ColorId] = box;
     }
 
@@ -62,7 +64,8 @@ public partial class SettingsDialog : Window
                     throw new ArgumentException("개강일과 1 이상의 총 주차를 입력해 주세요.");
                 semester = new(true, DateOnly.FromDateTime(date), weeks);
             }
-            _categories.Rename(_nameBoxes.ToDictionary(pair => pair.Key, pair => pair.Value.Text));
+            _categories.Rename(_nameBoxes.Where(pair => pair.Value.Text.Trim() != _originalNames[pair.Key])
+                .ToDictionary(pair => pair.Key, pair => pair.Value.Text));
             _settings.Semester = semester;
             _settings.DetailedBars = DetailedBarsCheck.IsChecked == true;
             _settings.TextSizePercent = int.Parse((string)TextSizeBox.SelectedValue, System.Globalization.CultureInfo.InvariantCulture);

@@ -24,6 +24,8 @@ internal static class ToolCatalog
         yield return Define("list_todos", "List todos, defaulting to open items. Deleted items are excluded unless requested.",
             Object(new() { ["status"] = Enum("open", "done", "all"), ["keyword"] = String(), ["include_deleted"] = Boolean() }), true);
         yield return Define("list_categories", "List category color IDs, names and colors.", Object(new()), true);
+        yield return Define("rename_category", "Rename a DeskCal category on this device. Its color ID and existing event assignments stay the same.",
+            Object(new() { ["color_id"] = String(), ["name"] = String() }, "color_id", "name"), idempotent: true);
         yield return Define("create_events", "Create 1–50 events atomically in the local database. Dates and HH:mm times are local. A missing end_time defaults to one hour after start, including midnight rollover; multi-day timed events require end_time. Sync is reported per item." + RELATIVE_DATES,
             Object(new() { ["events"] = Batch(Object(EventFields(false), "title", "start_date")) }, "events"));
         var eventPatch = EventFields(true);
