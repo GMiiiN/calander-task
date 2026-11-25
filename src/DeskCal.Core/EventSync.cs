@@ -4,7 +4,9 @@ using System.Text.Json;
 using Google;
 using Google.Apis.Calendar.v3;
 using Google.Apis.Calendar.v3.Data;
+using Google.Apis.Json;
 using Microsoft.Data.Sqlite;
+using Newtonsoft.Json.Linq;
 
 namespace DeskCal.Core;
 
@@ -50,9 +52,39 @@ public sealed class GoogleCalendarRemote(CalendarService service) : ICalendarRem
 
     public Task<Event> PatchAsync(string eventId, Event value, string? etag, CancellationToken cancellationToken)
     {
-        var request = service.Events.Patch(value, PRIMARY, eventId);
+        // 체크리스트 충돌 병합은 extendedProperties만 보낸다. 이때는 시간과 색을 건드리지 않는다.
+        var request = value.Start is not null && value.End is not null
+            ? new EventDetailsPatchRequest(service, value, eventId)
+            : service.Events.Patch(value, PRIMARY, eventId);
         if (etag is not null) request.ModifyRequest = message => message.Headers.TryAddWithoutValidation("If-Match", etag);
         return request.ExecuteAsync(cancellationToken);
+    }
+
+    private sealed class EventDetailsPatchRequest(CalendarService service, Event value, string eventId)
+        : EventsResource.PatchRequest(service, value, PRIMARY, eventId)
+    {
+        protected override object GetBody()
+        {
+            var details = (Event)base.GetBody();
+            // SDK DTO는 null을 생략하지만 Google PATCH는 생략된 하위 필드를 보존한다.
+            var serializer = Newtonsoft.Json.JsonSerializer.Create(NewtonsoftJsonSerializer.CreateDefaultSettings());
+            var body = JObject.FromObject(details, serializer);
+            body["colorId"] = details.ColorId;
+            foreach (var field in new[] { "start", "end" })
+            {
+                var time = (JObject)body[field]!;
+                if (time.ContainsKey("date"))
+                {
+                    time["dateTime"] = null;
+                    time["timeZone"] = null;
+                }
+                else
+                {
+                    time["date"] = null;
+                }
+            }
+            return body;
+        }
     }
 
     public Task DeleteAsync(string eventId, string? etag, CancellationToken cancellationToken)
