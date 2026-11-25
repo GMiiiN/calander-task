@@ -2,6 +2,14 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- 설계 §6.1 토큰 (Figma 기준). 색은 Colors.Light.xaml / Colors.Dark.xaml에 있다. -->
+    <!-- Keep font, row/chip height and timetable coordinates in the same layout units. -->
+    <ScaleTransform x:Key="TextLayoutScale" ScaleX="1" ScaleY="1" />
+    <Style TargetType="ToolTip">
+        <Setter Property="LayoutTransform" Value="{DynamicResource TextLayoutScale}" />
+    </Style>
+    <Style TargetType="ContextMenu">
+        <Setter Property="LayoutTransform" Value="{DynamicResource TextLayoutScale}" />
+    </Style>
     <FontFamily x:Key="AppFont">Noto Sans KR, Malgun Gothic</FontFamily>
 
     <DropShadowEffect x:Key="CardShadow" Color="#263359" Opacity="0.12" BlurRadius="24" ShadowDepth="4" Direction="270" />

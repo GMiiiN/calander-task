@@ -38,13 +38,7 @@ public partial class SearchDialog : Window
     public SearchHit? SelectedHit { get; private set; }
 
     // 달력 창 위쪽 가운데에 띄운다.
-    public void PlaceOver(Window owner)
-    {
-        WindowStartupLocation = WindowStartupLocation.Manual;
-        var workArea = SystemParameters.WorkArea;
-        Left = Math.Clamp(owner.Left + (owner.ActualWidth - Width) / 2, workArea.Left, Math.Max(workArea.Left, workArea.Right - Width));
-        Top = Math.Clamp(owner.Top + 60, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - 420));
-    }
+    public void PlaceOver(Window owner) => TextSize.PlaceDialog(this, owner, 60, 420);
 
     private void OnQueryChanged(object sender, TextChangedEventArgs e)
     {

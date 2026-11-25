@@ -69,100 +69,102 @@
     <!-- 24px 바깥 여백은 그림자 자리 -->
     <Border Margin="24" CornerRadius="16" Background="{DynamicResource PopupBrush}" BorderThickness="1"
             BorderBrush="{DynamicResource ControlBorderBrush}" Effect="{StaticResource CardShadow}">
-        <StackPanel>
-            <!-- 머리줄: 끌어서 옮긴다 -->
-            <DockPanel x:Name="Header" Margin="20,16,16,10" Background="Transparent" MouseLeftButtonDown="OnHeaderMouseDown">
-                <Button DockPanel.Dock="Right" Style="{StaticResource BareButton}" Click="OnCancel" ToolTip="닫기 (Esc)">
-                    <Path Data="M4 4L12 12M12 4L4 12" Width="16" Height="16" Stroke="{DynamicResource SubtleBrush}" StrokeThickness="1.5"
-                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-                </Button>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock x:Name="DialogTitle" Style="{StaticResource BaseText}" FontSize="16" FontWeight="Bold" />
-                    <Border x:Name="ClaudeBadge" CornerRadius="99" Padding="7,2" Margin="8,0,0,0" VerticalAlignment="Center"
-                            Background="{DynamicResource DdayChipBrush}" Visibility="Collapsed">
-                        <TextBlock Text="Claude가 추가함" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Medium"
-                                   Foreground="{DynamicResource AccentBrush}" />
-                    </Border>
-                </StackPanel>
-            </DockPanel>
-
-            <StackPanel Margin="20,0,20,0">
-                <StackPanel x:Name="KindRow" Orientation="Horizontal" Margin="0,0,0,10">
-                    <RadioButton x:Name="KindEvent" Content="일정" GroupName="Kind" Style="{StaticResource Pill}" Checked="OnKindChanged" />
-                    <RadioButton x:Name="KindTodo" Content="할 일" GroupName="Kind" Style="{StaticResource Pill}" Checked="OnKindChanged" />
-                </StackPanel>
-
-                <Grid Margin="0,0,0,12">
-                    <TextBox x:Name="TitleBox" Style="{StaticResource Field}" FontSize="16" FontWeight="Bold" TextChanged="OnTextChanged" />
-                    <TextBlock x:Name="TitleHint" Text="제목" Style="{StaticResource BaseText}" FontSize="16" Margin="11,0,0,0"
-                               VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" IsHitTestVisible="False" />
-                </Grid>
-
-                <DockPanel Margin="0,0,0,8">
-                    <TextBlock x:Name="DateLabel" Text="날짜" Style="{StaticResource RowLabel}" />
-                    <TextBox x:Name="DateBox" Style="{StaticResource Field}" Width="120" ToolTip="예: 2026-11-03" />
-                    <CheckBox x:Name="AllDayCheck" Style="{StaticResource RoundCheck}" Margin="12,0,6,0" VerticalAlignment="Center"
-                              Checked="OnAllDayChanged" Unchecked="OnAllDayChanged" />
-                    <TextBlock x:Name="AllDayLabel" Text="종일" Style="{StaticResource BaseText}" FontSize="13" VerticalAlignment="Center" />
+        <ScrollViewer LayoutTransform="{DynamicResource TextLayoutScale}" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel>
+                <!-- 머리줄: 끌어서 옮긴다 -->
+                <DockPanel x:Name="Header" Margin="20,16,16,10" Background="Transparent" MouseLeftButtonDown="OnHeaderMouseDown">
+                    <Button DockPanel.Dock="Right" Style="{StaticResource BareButton}" Click="OnCancel" ToolTip="닫기 (Esc)">
+                        <Path Data="M4 4L12 12M12 4L4 12" Width="16" Height="16" Stroke="{DynamicResource SubtleBrush}" StrokeThickness="1.5"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                    </Button>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock x:Name="DialogTitle" Style="{StaticResource BaseText}" FontSize="16" FontWeight="Bold" />
+                        <Border x:Name="ClaudeBadge" CornerRadius="99" Padding="7,2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                Background="{DynamicResource DdayChipBrush}" Visibility="Collapsed">
+                            <TextBlock Text="Claude가 추가함" Style="{StaticResource BaseText}" FontSize="11" FontWeight="Medium"
+                                       Foreground="{DynamicResource AccentBrush}" />
+                        </Border>
+                    </StackPanel>
                 </DockPanel>
 
-                <DockPanel x:Name="TimeRow" Margin="0,0,0,8">
-                    <TextBlock Text="시간" Style="{StaticResource RowLabel}" />
-                    <TextBox x:Name="StartBox" Style="{StaticResource Field}" Width="80" ToolTip="예: 09:30" />
-                    <TextBlock Text="–" Style="{StaticResource BaseText}" FontSize="14" Margin="8,0" VerticalAlignment="Center" />
-                    <TextBox x:Name="EndBox" Style="{StaticResource Field}" Width="80" HorizontalAlignment="Left" />
-                </DockPanel>
+                <StackPanel Margin="20,0,20,0">
+                    <StackPanel x:Name="KindRow" Orientation="Horizontal" Margin="0,0,0,10">
+                        <RadioButton x:Name="KindEvent" Content="일정" GroupName="Kind" Style="{StaticResource Pill}" Checked="OnKindChanged" />
+                        <RadioButton x:Name="KindTodo" Content="할 일" GroupName="Kind" Style="{StaticResource Pill}" Checked="OnKindChanged" />
+                    </StackPanel>
 
-                <!-- 자주 안 쓰는 설정은 접어 둔다(feedback 3-8). 접혀 있어도 정해 둔 값은 한 줄로 요약해 보인다. -->
-                <Button x:Name="MoreToggle" Style="{StaticResource BareButton}" HorizontalAlignment="Stretch" Click="OnMoreToggle"
-                        Margin="0,2,0,6" AutomationProperties.Name="옵션">
-                    <DockPanel>
-                        <TextBlock x:Name="MoreChevron" Text="▸" Style="{StaticResource BaseText}" FontSize="12" Width="14"
-                                   Foreground="{DynamicResource SubtleBrush}" VerticalAlignment="Center" />
-                        <TextBlock Text="옵션" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Medium"
-                                   Foreground="{DynamicResource SubtleBrush}" VerticalAlignment="Center" />
-                        <TextBlock x:Name="MoreSummary" Style="{StaticResource BaseText}" FontSize="13" Margin="10,0,0,0"
-                                   Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                    </DockPanel>
-                </Button>
-
-                <StackPanel x:Name="MoreOptions" Visibility="Collapsed">
-                    <DockPanel x:Name="RepeatRow" Margin="0,0,0,8">
-                        <TextBlock Text="반복" Style="{StaticResource RowLabel}" />
-                        <WrapPanel x:Name="RepeatChoices" VerticalAlignment="Center" />
-                    </DockPanel>
-
-                    <DockPanel x:Name="CategoryRow" Margin="0,0,0,8">
-                        <TextBlock Text="색" Style="{StaticResource RowLabel}" />
-                        <WrapPanel x:Name="ColorChoices" VerticalAlignment="Center" />
-                    </DockPanel>
-
-                    <DockPanel x:Name="DdayRow" Margin="56,0,0,10">
-                        <CheckBox x:Name="DdayCheck" Style="{StaticResource RoundCheck}" VerticalAlignment="Center" Margin="0,0,6,0" />
-                        <TextBlock Text="D-day로 표시" Style="{StaticResource BaseText}" FontSize="13" VerticalAlignment="Center" />
-                    </DockPanel>
-
-                    <Grid>
-                        <TextBox x:Name="MemoBox" Style="{StaticResource Field}" Height="64" AcceptsReturn="True" TextWrapping="Wrap"
-                                 VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" TextChanged="OnTextChanged" />
-                        <TextBlock x:Name="MemoHint" Text="메모" Style="{StaticResource BaseText}" FontSize="13" Margin="11,8,0,0"
-                                   VerticalAlignment="Top" Foreground="{DynamicResource MutedBrush}" IsHitTestVisible="False" />
+                    <Grid Margin="0,0,0,12">
+                        <TextBox x:Name="TitleBox" Style="{StaticResource Field}" FontSize="16" FontWeight="Bold" TextChanged="OnTextChanged" />
+                        <TextBlock x:Name="TitleHint" Text="제목" Style="{StaticResource BaseText}" FontSize="16" Margin="11,0,0,0"
+                                   VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" IsHitTestVisible="False" />
                     </Grid>
+
+                    <DockPanel Margin="0,0,0,8">
+                        <TextBlock x:Name="DateLabel" Text="날짜" Style="{StaticResource RowLabel}" />
+                        <TextBox x:Name="DateBox" Style="{StaticResource Field}" Width="120" ToolTip="예: 2026-11-03" />
+                        <CheckBox x:Name="AllDayCheck" Style="{StaticResource RoundCheck}" Margin="12,0,6,0" VerticalAlignment="Center"
+                                  Checked="OnAllDayChanged" Unchecked="OnAllDayChanged" />
+                        <TextBlock x:Name="AllDayLabel" Text="종일" Style="{StaticResource BaseText}" FontSize="13" VerticalAlignment="Center" />
+                    </DockPanel>
+
+                    <DockPanel x:Name="TimeRow" Margin="0,0,0,8">
+                        <TextBlock Text="시간" Style="{StaticResource RowLabel}" />
+                        <TextBox x:Name="StartBox" Style="{StaticResource Field}" Width="80" ToolTip="예: 09:30" />
+                        <TextBlock Text="–" Style="{StaticResource BaseText}" FontSize="14" Margin="8,0" VerticalAlignment="Center" />
+                        <TextBox x:Name="EndBox" Style="{StaticResource Field}" Width="80" HorizontalAlignment="Left" />
+                    </DockPanel>
+
+                    <!-- 자주 안 쓰는 설정은 접어 둔다(feedback 3-8). 접혀 있어도 정해 둔 값은 한 줄로 요약해 보인다. -->
+                    <Button x:Name="MoreToggle" Style="{StaticResource BareButton}" HorizontalAlignment="Stretch" Click="OnMoreToggle"
+                            Margin="0,2,0,6" AutomationProperties.Name="옵션">
+                        <DockPanel>
+                            <TextBlock x:Name="MoreChevron" Text="▸" Style="{StaticResource BaseText}" FontSize="12" Width="14"
+                                       Foreground="{DynamicResource SubtleBrush}" VerticalAlignment="Center" />
+                            <TextBlock Text="옵션" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Medium"
+                                       Foreground="{DynamicResource SubtleBrush}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="MoreSummary" Style="{StaticResource BaseText}" FontSize="13" Margin="10,0,0,0"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                        </DockPanel>
+                    </Button>
+
+                    <StackPanel x:Name="MoreOptions" Visibility="Collapsed">
+                        <DockPanel x:Name="RepeatRow" Margin="0,0,0,8">
+                            <TextBlock Text="반복" Style="{StaticResource RowLabel}" />
+                            <WrapPanel x:Name="RepeatChoices" VerticalAlignment="Center" />
+                        </DockPanel>
+
+                        <DockPanel x:Name="CategoryRow" Margin="0,0,0,8">
+                            <TextBlock Text="색" Style="{StaticResource RowLabel}" />
+                            <WrapPanel x:Name="ColorChoices" VerticalAlignment="Center" />
+                        </DockPanel>
+
+                        <DockPanel x:Name="DdayRow" Margin="56,0,0,10">
+                            <CheckBox x:Name="DdayCheck" Style="{StaticResource RoundCheck}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBlock Text="D-day로 표시" Style="{StaticResource BaseText}" FontSize="13" VerticalAlignment="Center" />
+                        </DockPanel>
+
+                        <Grid>
+                            <TextBox x:Name="MemoBox" Style="{StaticResource Field}" Height="64" AcceptsReturn="True" TextWrapping="Wrap"
+                                     VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" TextChanged="OnTextChanged" />
+                            <TextBlock x:Name="MemoHint" Text="메모" Style="{StaticResource BaseText}" FontSize="13" Margin="11,8,0,0"
+                                       VerticalAlignment="Top" Foreground="{DynamicResource MutedBrush}" IsHitTestVisible="False" />
+                        </Grid>
+                    </StackPanel>
+
+                    <TextBlock x:Name="ErrorText" Style="{StaticResource BaseText}" FontSize="13" Margin="0,8,0,0" TextWrapping="Wrap"
+                               Foreground="{DynamicResource SundayBrush}" Visibility="Collapsed" />
                 </StackPanel>
 
-                <TextBlock x:Name="ErrorText" Style="{StaticResource BaseText}" FontSize="13" Margin="0,8,0,0" TextWrapping="Wrap"
-                           Foreground="{DynamicResource SundayBrush}" Visibility="Collapsed" />
+                <DockPanel Margin="20,14,20,18">
+                    <Button x:Name="DeleteButton" Content="삭제" Style="{StaticResource FooterButton}" Click="OnDelete"
+                            Foreground="{DynamicResource SundayBrush}" BorderBrush="Transparent" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="취소" Style="{StaticResource FooterButton}" Click="OnCancel" Margin="0,0,6,0" />
+                        <Button Content="저장" Style="{StaticResource FooterButton}" Click="OnSave" Foreground="White"
+                                Background="{DynamicResource AccentBrush}" BorderBrush="Transparent" />
+                    </StackPanel>
+                </DockPanel>
             </StackPanel>
-
-            <DockPanel Margin="20,14,20,18">
-                <Button x:Name="DeleteButton" Content="삭제" Style="{StaticResource FooterButton}" Click="OnDelete"
-                        Foreground="{DynamicResource SundayBrush}" BorderBrush="Transparent" />
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                    <Button Content="취소" Style="{StaticResource FooterButton}" Click="OnCancel" Margin="0,0,6,0" />
-                    <Button Content="저장" Style="{StaticResource FooterButton}" Click="OnSave" Foreground="White"
-                            Background="{DynamicResource AccentBrush}" BorderBrush="Transparent" />
-                </StackPanel>
-            </DockPanel>
-        </StackPanel>
+        </ScrollViewer>
     </Border>
 </Window>

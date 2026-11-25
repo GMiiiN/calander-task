@@ -5,6 +5,16 @@ namespace DeskCal.App;
 // 이 PC 전용 설정(§4.2 setting 테이블). 보던 보기·날짜, 창 위치, 투명도처럼 동기화하지 않는 값.
 public sealed class SettingStore(Database database)
 {
+    public int TextSizePercent
+    {
+        get => Get("text_size_percent") switch { "115" => 115, "130" => 130, _ => 100 };
+        set
+        {
+            if (value is not (100 or 115 or 130)) throw new ArgumentOutOfRangeException(nameof(value));
+            Set("text_size_percent", value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+    }
+
     public string? Get(string key)
     {
         using var connection = database.OpenConnection();
