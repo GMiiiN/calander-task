@@ -22,6 +22,14 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
     public static readonly string[] Scopes =
         ["openid", "email", CalendarService.Scope.CalendarEvents, TasksService.Scope.Tasks, DriveService.Scope.DriveAppdata];
 
+    // 앱과 MCP는 같은 DB(같은 토큰)를 쓰므로 OAuth 클라이언트 파일도 DB 옆의 같은 파일을 쓴다.
+    // 토큰은 발급한 클라이언트로만 갱신할 수 있어서, 한쪽만 다른 파일을 쓰면 그쪽 갱신이 4xx로 실패한다.
+    public static string ClientSecretPathFor(string databasePath) =>
+        Path.Combine(Path.GetDirectoryName(Path.GetFullPath(databasePath))!, "client_secret.json");
+
+    // 테스트에서만 바꾼다. 토큰 갱신과 Google API 호출이 이 HTTP 처리기를 쓴다.
+    internal Google.Apis.Http.IHttpClientFactory? HttpClientFactory { get; init; }
+
     public bool HasClientSecret => File.Exists(clientSecretPath);
 
     // 다른 PC에서 가져온 클라이언트 파일을 제자리에 복사한다. 클라이언트 ID가 없는 파일은 거부한다.
@@ -62,7 +70,7 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
     };
 
     // 쓸 수 없는 토큰만 지운다. 그래야 "연결됨"으로 남지 않고 트레이에서 다시 연결할 수 있다.
-    // 계정 결합 정보는 남겨 같은 계정으로만 다시 연결하게 한다.
+    // 계정 결합 정보는 남겨 같은 계정으로만 다시 연결하게 한다. 앱의 동기화(invalid_grant)만 부른다(SyncCoordinator).
     public Task ForgetTokenAsync() => new ProtectedTokenStore(database).ClearAsync();
 
     // 브라우저로 로그인한다. 처음 연결한 계정과 다른 계정이면 토큰을 저장하지 않고 거부한다(계정 결합).
@@ -100,11 +108,12 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
         var store = new ProtectedTokenStore(database);
         var token = await store.GetAsync<TokenResponse>(User);
         if (token is null) return null;
-        var flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
+        var initializer = new GoogleAuthorizationCodeFlow.Initializer
         {
             ClientSecrets = GoogleClientSecrets.FromFile(clientSecretPath).Secrets, Scopes = Scopes, DataStore = store
-        });
-        return new UserCredential(flow, User, token);
+        };
+        if (HttpClientFactory is not null) initializer.HttpClientFactory = HttpClientFactory;
+        return new UserCredential(new GoogleAuthorizationCodeFlow(initializer), User, token);
     }
 
     private string? ReadSetting(string key)

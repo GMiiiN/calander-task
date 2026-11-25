@@ -30,9 +30,9 @@ Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
 var database = new Database(path, Console.Error.WriteLine);
 Console.Error.WriteLine($"MCP {database.DiagnosticIdentity}");
 database.Initialize();
-var secret = Environment.GetEnvironmentVariable("DESKCAL_CLIENT_SECRET") ??
-    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskCal", "client_secret.json");
-var coordinator = new SyncCoordinator(database, new GoogleAccount(database, secret), Console.Error.WriteLine);
+// 앱과 같은 규칙으로 DB 옆의 OAuth 클라이언트 파일을 쓴다(다른 클라이언트로 갱신하면 공유 로그인이 실패한다).
+// MCP는 갱신이 어떻게 실패해도 공유 토큰을 지우지 않는다(forgetRevokedToken 기본값 false).
+var coordinator = new SyncCoordinator(database, new GoogleAccount(database, GoogleAccount.ClientSecretPathFor(path)), Console.Error.WriteLine);
 // 쓰기 직후 전송은 MCP가 끝날 때만 멈춘다. 영수증의 5초 마감은 기다림에만 쓴다(ToolOutput.SendAndVerifyAsync).
 using var stopping = new CancellationTokenSource();
 var tools = new CalendarTools(database, () => coordinator.RunAsync(false, stopping.Token));

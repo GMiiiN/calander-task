@@ -3,7 +3,9 @@ using Google.Apis.Services;
 
 namespace DeskCal.Core;
 
-public sealed class SyncCoordinator(Database database, GoogleAccount google, Action<string> log)
+// forgetRevokedToken: invalid_grant(만료·취소)일 때 공유 토큰 행을 지울지. 앱만 켠다(지운 뒤 트레이로 다시 연결을 알린다).
+// MCP는 어떤 갱신 실패에도 로그인을 지우지 않는다. 죽은 토큰이면 다음에 앱이 같은 오류를 받아 지운다.
+public sealed class SyncCoordinator(Database database, GoogleAccount google, Action<string> log, bool forgetRevokedToken = false)
 {
     public Task<bool> RunAsync(bool includeHolidays, CancellationToken token) =>
         WithSenderAsync(database, () => RunServicesAsync(includeHolidays, token), token);
@@ -26,9 +28,10 @@ public sealed class SyncCoordinator(Database database, GoogleAccount google, Act
         {
             if (await google.LoadAsync() is not { } credential) return false;
             var init = new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "DeskCal" };
+            var tasksInit = new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "DeskCal" };
+            if (google.HttpClientFactory is { } factory) init.HttpClientFactory = tasksInit.HttpClientFactory = factory;
             using var calendar = new CalendarService(init);
-            using var tasks = GoogleTasksRemote.CreateService(new BaseClientService.Initializer
-                { HttpClientInitializer = credential, ApplicationName = "DeskCal" });
+            using var tasks = GoogleTasksRemote.CreateService(tasksInit);
             await SyncDataAsync(new GoogleCalendarRemote(calendar), new GoogleTasksRemote(tasks), token);
             if (includeHolidays)
             {
@@ -38,7 +41,7 @@ public sealed class SyncCoordinator(Database database, GoogleAccount google, Act
             }
             return true;
         }
-        catch (Exception ex) when (GoogleAccount.IsRevoked(ex))
+        catch (Exception ex) when (forgetRevokedToken && GoogleAccount.IsRevoked(ex))
         {
             await google.ForgetTokenAsync();
             throw;

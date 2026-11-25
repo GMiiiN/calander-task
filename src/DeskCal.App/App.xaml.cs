@@ -51,9 +51,8 @@ public partial class App : Application
         AppendLog("app.log", $"App {database.DiagnosticIdentity}");
         database.Initialize();
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
-        // OAuth 클라이언트 파일은 설치마다 하나, 토큰은 계정 결합 정보와 함께 DB 안에(§5.1).
-        var google = new GoogleAccount(database,
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskCal", "client_secret.json"));
+        // OAuth 클라이언트 파일은 DB 옆에 하나(MCP와 같은 파일), 토큰은 계정 결합 정보와 함께 DB 안에(§5.1).
+        var google = new GoogleAccount(database, GoogleAccount.ClientSecretPathFor(path));
         // 창이 다시 만들어지는 사이(3초)에는 _calendar가 비어 있으므로 메뉴는 아무것도 하지 않거나 바로 끝낸다.
         _tray = new TrayIcon(google, () => _calendar?.IsAdjusting == true, () => _calendar?.ToggleAdjust(), () => _calendar?.ShowSettings(),
             () => { if (_calendar is null) Shutdown(); else _calendar.Exit(); });
@@ -92,7 +91,7 @@ public partial class App : Application
         _lastSyncStartedAt = DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
         try
         {
-            if (await new SyncCoordinator(database, google, LogSync).RunAsync(true, _closing.Token))
+            if (await new SyncCoordinator(database, google, LogSync, forgetRevokedToken: true).RunAsync(true, _closing.Token))
                 ChangeSignal.Notify();
         }
         catch (OperationCanceledException) when (_closing.IsCancellationRequested) { }

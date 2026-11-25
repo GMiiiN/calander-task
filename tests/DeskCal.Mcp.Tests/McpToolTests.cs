@@ -32,7 +32,8 @@ public sealed class McpToolTests : IAsyncLifetime
     private Task<McpClient> StartServer(string path) => McpClient.CreateAsync(new StdioClientTransport(new()
     {
         Command = "dotnet", Arguments = [typeof(CalendarTools).Assembly.Location],
-        EnvironmentVariables = new Dictionary<string, string?> { ["DESKCAL_DB"] = path, ["DESKCAL_CLIENT_SECRET"] = Path.Combine(_directory, "offline-secret.json") }
+        // 클라이언트 파일은 DB 옆에서 찾는다. 임시 폴더에는 없으므로 서버는 Google에 연결하지 않는다.
+        EnvironmentVariables = new Dictionary<string, string?> { ["DESKCAL_DB"] = path }
     }), cancellationToken: _timeout.Token);
 
     public async Task DisposeAsync()
