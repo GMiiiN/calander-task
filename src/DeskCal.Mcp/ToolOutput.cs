@@ -6,12 +6,31 @@ namespace DeskCal.Mcp;
 
 internal sealed record Category(string ColorId, string Name, string ColorHex);
 
-internal sealed class ToolOutput(Database database, EventRepository events)
+internal sealed class ToolOutput(Database database, EventRepository events, bool isWrite)
 {
     internal static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
     private readonly IReadOnlyList<Category> _categories = database.Measure("categories", () => ReadCategories(database));
     private readonly bool _signedIn = database.Measure("account", () => ReadSignedIn(database));
+    // Capture the optional receipt metadata before mutating. A failed metadata read must never
+    // turn a committed create into an error response that the caller could retry.
+    private readonly bool? _appRunning = isWrite ? AppPresence.IsRunning(database) : null;
+    private readonly DateTimeOffset? _lastCalendarSync = isWrite ? LastCalendarSync(database) : null;
     private Dictionary<string, EventRecord>? _parents;
+
+    private static DateTimeOffset? LastCalendarSync(Database database)
+    {
+        try { return EventSync.LastSyncedAt(database); }
+        catch (FormatException) { return null; }
+    }
+
+    public void AddReceipt(JsonObject body)
+    {
+        body["saved_locally"] = true;
+        body["app_running"] = _appRunning;
+        if (_appRunning == false) body["app_reason"] = "app_not_running";
+        body["last_verified_sync"] = new JsonObject { ["calendar"] = _lastCalendarSync?.UtcDateTime, ["tasks"] = null };
+    }
+
 
     public IReadOnlyList<Category> Categories => _categories;
     public string? ResolveCategory(string? value)
@@ -69,6 +88,7 @@ internal sealed class ToolOutput(Database database, EventRepository events)
             "unknown" => "needs_review",
             _ when !_signedIn => "not_signed_in",
             "failed" => "push_failed",
+            _ when _appRunning == false => "app_not_running",
             _ => null
         };
         if (reason is not null) item["reason"] = reason;
