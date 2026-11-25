@@ -19,8 +19,23 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
     private const string User = "user";
 
     // openid·email은 계정 결합(sub)과 트레이 표시(email)에만 쓴다.
+    // drive.appdata는 기기 사이에 맞추는 설정(카테고리 별칭 등, S6)을 앱 전용 숨김 폴더에 둘 때 쓴다. 처음 연결(M4)부터 요청해 왔다.
     public static readonly string[] Scopes =
         ["openid", "email", CalendarService.Scope.CalendarEvents, TasksService.Scope.Tasks, DriveService.Scope.DriveAppdata];
+
+    /// <summary>
+    /// 저장된 토큰이 그 권한을 받았는지. Google은 동의 화면에서 일부 권한을 빼고 승인할 수 있다.
+    /// 토큰에 받은 권한 목록이 없으면(알 수 없음) null이다. 그때는 호출해 보고 403이면 그때 안다.
+    /// </summary>
+    public async Task<bool?> HasScopeAsync(string scope)
+    {
+        var token = await new ProtectedTokenStore(database).GetAsync<TokenResponse>(User);
+        if (token?.Scope is not { Length: > 0 } granted) return null;
+        return granted.Split(' ', StringSplitOptions.RemoveEmptyEntries).Contains(scope);
+    }
+
+    // 연결은 됐지만 Drive 앱 전용 공간 권한만 빠졌다. 트레이에서 같은 계정으로 다시 연결해 권한을 더한다.
+    public bool MissingDriveScope => IsSignedIn && HasScopeAsync(DriveService.Scope.DriveAppdata).GetAwaiter().GetResult() == false;
 
     // 앱과 MCP는 같은 DB(같은 토큰)를 쓰므로 OAuth 클라이언트 파일도 DB 옆의 같은 파일을 쓴다.
     // 토큰은 발급한 클라이언트로만 갱신할 수 있어서, 한쪽만 다른 파일을 쓰면 그쪽 갱신이 4xx로 실패한다.

@@ -34,7 +34,7 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
                 "get_event" => GetEvent(input, output),
                 "find_free_time" => FindFreeTime(input),
                 "list_todos" => ListTodos(input, output),
-                "rename_category" => RenameCategory(input),
+                "rename_category" => RenameCategory(input, output),
                 "list_categories" => ListCategories(input, output),
                 "create_events" => CreateEvents(input, output),
                 "update_event" => UpdateEvent(input, output),
@@ -54,7 +54,8 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
             {
                 ChangeSignal.Notify();
                 output.AddReceipt(body);
-                if (send is not null && output.ShouldSend && name != "rename_category")
+                // 카테고리 별칭도 앱이 꺼져 있으면 MCP가 Drive 앱 전용 공간으로 올린다(S6).
+                if (send is not null && output.ShouldSend)
                     body = await output.SendAndVerifyAsync(body, send, cancellationToken);
             }
         }
@@ -100,11 +101,11 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
         };
     }
 
-    private JsonObject RenameCategory(ToolInput input)
+    private JsonObject RenameCategory(ToolInput input, ToolOutput output)
     {
         input.Only("color_id", "name");
         var category = new CategoryRepository(database).Rename(input.Required("color_id"), input.Required("name"));
-        return ToolOutput.Object(new { Category = category });
+        return new JsonObject { ["category"] = output.CategoryOutput(category) };
     }
 
     private JsonObject GetAgenda(ToolInput input, ToolOutput output)

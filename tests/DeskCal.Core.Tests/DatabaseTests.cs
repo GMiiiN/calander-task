@@ -48,12 +48,12 @@ public sealed class DatabaseTests
         Assert.Equal(1, db.Scalar("PRAGMA foreign_keys"));
         Assert.Equal(1, db.Scalar("PRAGMA synchronous"));
         Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
-        Assert.Equal(9, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
+        Assert.Equal(10, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA journal_mode";
         Assert.Equal("wal", command.ExecuteScalar());
         db.Database.Initialize();
-        Assert.Equal(9, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
+        Assert.Equal(10, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class DatabaseTests
             using var connection = new Database(path).OpenConnection();
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table'";
-            Assert.Equal(9L, command.ExecuteScalar());
+            Assert.Equal(10L, command.ExecuteScalar());
             command.CommandText = "PRAGMA user_version";
             Assert.Equal((long)Database.LatestVersion, command.ExecuteScalar());
         }
@@ -107,7 +107,7 @@ public sealed class DatabaseTests
     {
         using var db = new TestDatabase();
         var created = db.Events.Create([new EventInput("기존 일정", "2026-11-02")])[0];
-        db.Execute("DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist");
+        db.Execute(DropVersionFive + "DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist");
         db.Execute("PRAGMA user_version=1");
 
         db.Database.Initialize();
@@ -132,7 +132,7 @@ public sealed class DatabaseTests
     {
         using var db = new TestDatabase();
         var ev = db.Events.Create([new("이전 일정", "2026-11-02")]).Single();
-        db.Execute("DROP TABLE task_attempt; DROP TABLE day_event_order; PRAGMA user_version=2;");
+        db.Execute(DropVersionFive + "DROP TABLE task_attempt; DROP TABLE day_event_order; PRAGMA user_version=2;");
         db.Database.Initialize();
         var path = Assert.Single(Directory.GetFiles(db.Path + ".backups", "v2-*.db"));
         using var old = new Database(path).OpenConnection();
@@ -152,11 +152,41 @@ public sealed class DatabaseTests
     {
         using var db = new TestDatabase();
         var original = db.Todos.Create([new("이전 버전")]).Single();
-        db.Execute("UPDATE todo SET push_state='unknown'; DROP TABLE task_attempt; PRAGMA user_version=3");
+        db.Execute(DropVersionFive + "UPDATE todo SET push_state='unknown'; DROP TABLE task_attempt; PRAGMA user_version=3");
         db.Database.Initialize();
         Assert.Equal("unknown", db.Todos.Get(original.TodoUid).PushState);
         Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM task_attempt"));
         Assert.Single(Directory.GetFiles(db.Path + ".backups", "v3-*.db"));
+    }
+
+    // v5(S6)가 더한 것을 지워 이전 버전 DB를 흉내 낸다.
+    private const string DropVersionFive = "DROP TABLE shared_entry; ALTER TABLE sync_state DROP COLUMN last_error; ";
+
+    // S6: v4 DB를 올릴 때 D4 백업을 먼저 만들고, 이 PC에서 바꿔 둔 카테고리 이름은 그대로 둔다(공유는 첫 동기화에서 시작).
+    [Fact]
+    public void SharedSettingsUpgradeBacksUpVersionFourAndKeepsCategoryNames()
+    {
+        using var db = new TestDatabase();
+        db.Execute(DropVersionFive + "UPDATE category SET name='업무' WHERE color_id='1'; PRAGMA user_version=4;");
+        db.Database.Initialize();
+        var path = Assert.Single(Directory.GetFiles(db.Path + ".backups", "v4-*.db"));
+        using (var old = new Database(path).OpenConnection())
+        using (var sql = old.CreateCommand())
+        {
+            sql.CommandText = "PRAGMA integrity_check";
+            Assert.Equal("ok", sql.ExecuteScalar());
+            sql.CommandText = "PRAGMA user_version";
+            Assert.Equal(4L, sql.ExecuteScalar());
+            sql.CommandText = "SELECT count(*) FROM sqlite_master WHERE name='shared_entry'";
+            Assert.Equal(0L, sql.ExecuteScalar());
+            sql.CommandText = "SELECT name FROM category WHERE color_id='1'";
+            Assert.Equal("업무", sql.ExecuteScalar());
+        }
+        Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
+        Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM shared_entry"));
+        Assert.Equal("업무", new CategoryRepository(db.Database).List().Single(c => c.ColorId == "1").Name);
+        db.Database.Initialize();
+        Assert.Single(Directory.GetFiles(db.Path + ".backups", "*.db"));
     }
 
     private static SqliteConnection BackupDestination(string path)

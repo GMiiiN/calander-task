@@ -1,4 +1,5 @@
 using Google.Apis.Calendar.v3;
+using Google.Apis.Drive.v3;
 using Google.Apis.Services;
 
 namespace DeskCal.Core;
@@ -27,12 +28,17 @@ public sealed class SyncCoordinator(Database database, GoogleAccount google, Act
         try
         {
             if (await google.LoadAsync() is not { } credential) return false;
-            var init = new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "DeskCal" };
-            var tasksInit = new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "DeskCal" };
-            if (google.HttpClientFactory is { } factory) init.HttpClientFactory = tasksInit.HttpClientFactory = factory;
-            using var calendar = new CalendarService(init);
-            using var tasks = GoogleTasksRemote.CreateService(tasksInit);
+            BaseClientService.Initializer Initializer()
+            {
+                var init = new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "DeskCal" };
+                if (google.HttpClientFactory is { } factory) init.HttpClientFactory = factory;
+                return init;
+            }
+            using var calendar = new CalendarService(Initializer());
+            using var tasks = GoogleTasksRemote.CreateService(Initializer());
+            using var drive = GoogleAppDataStore.CreateService(Initializer());
             await SyncDataAsync(new GoogleCalendarRemote(calendar), new GoogleTasksRemote(tasks), token);
+            await SyncSettingsAsync(new GoogleAppDataStore(drive), token);
             if (includeHolidays)
             {
                 var holidays = new HolidayRepository(database);
@@ -54,6 +60,17 @@ public sealed class SyncCoordinator(Database database, GoogleAccount google, Act
         await RunService("events", () => new EventSync(database, events).SyncAsync(token), token);
         await RunService("todos", () => new TaskSync(database, tasks, log: log).SyncAsync(token), token);
     }
+
+    // 공유 설정(카테고리 별칭 등, S6). 저장된 토큰이 Drive 앱 전용 공간 권한을 받지 않았으면(동의 화면에서 뺀 경우) 부르지 않고 이유만 남긴다.
+    internal Task SyncSettingsAsync(IAppDataStore store, CancellationToken token) => RunService("settings", async () =>
+    {
+        if (await google.HasScopeAsync(DriveService.Scope.DriveAppdata) == false)
+        {
+            SharedSettingsSync.RecordError(database, SharedSettingsSync.ScopeMissing);
+            return;
+        }
+        await new SharedSettingsSync(database, store, log: log).SyncAsync(token);
+    }, token);
 
     private async Task RunService(string name, Func<Task> work, CancellationToken token)
     {

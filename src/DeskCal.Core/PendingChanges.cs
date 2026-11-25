@@ -19,7 +19,8 @@ public static class PendingChanges
     {
         using var connection = database.OpenConnection();
         using var cmd = Sql.Command(connection, null,
-            "SELECT EXISTS(SELECT 1 FROM event WHERE is_dirty=1) OR EXISTS(SELECT 1 FROM todo WHERE is_dirty=1 AND push_state<>'unknown')");
+            "SELECT EXISTS(SELECT 1 FROM event WHERE is_dirty=1) OR EXISTS(SELECT 1 FROM todo WHERE is_dirty=1 AND push_state<>'unknown') " +
+            "OR EXISTS(SELECT 1 FROM shared_entry WHERE is_dirty=1)");
         return (long)cmd.ExecuteScalar()! != 0;
     }
 
@@ -42,10 +43,14 @@ public static class PendingChanges
             UNION ALL SELECT '할 일', todo_uid, title, push_state FROM todo WHERE push_state <> 'synced'
             ORDER BY kind, title, uid;
             """);
-        using var reader = command.ExecuteReader();
         var rows = new List<Entry>();
-        while (reader.Read())
-            rows.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), Reason(reader.GetString(3), signedIn)));
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                rows.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), Reason(reader.GetString(3), signedIn)));
+        // 기기 사이에 맞추는 설정(S6). Drive 권한이 없거나 Drive API가 꺼져 있으면 그 이유를 보인다.
+        var drive = SharedSettingsSync.UnavailableReason(database);
+        foreach (var row in SharedSettings.ReadAll(connection, null, "WHERE is_dirty=1"))
+            rows.Add(new("설정", row.Key, SharedSettings.Describe(row.Key, row.ValueJson), signedIn ? drive : "not_signed_in"));
         return rows;
     }
 
@@ -58,7 +63,8 @@ public static class PendingChanges
         using var connection = database.OpenConnection();
         using var command = Sql.Command(connection, null,
             "SELECT EXISTS(SELECT 1 FROM event WHERE is_dirty=1 AND updated_at>$since) " +
-            "OR EXISTS(SELECT 1 FROM todo WHERE is_dirty=1 AND push_state<>'unknown' AND updated_at>$since);",
+            "OR EXISTS(SELECT 1 FROM todo WHERE is_dirty=1 AND push_state<>'unknown' AND updated_at>$since) " +
+            "OR EXISTS(SELECT 1 FROM shared_entry WHERE is_dirty=1 AND written_at>$since);",
             ("$since", since));
         return (long)command.ExecuteScalar()! != 0;
     }
