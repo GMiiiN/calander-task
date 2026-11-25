@@ -316,33 +316,30 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         }
     }
 
-    // 병합 결과를 반영한다. 보내는 사이 이 PC에서 또 고쳤으면, Google 쪽 값을 받은 묶음 중 다시 고치지 않은 것만 넣고 dirty로 둔다
-    // (다음 push가 옛 etag로 412를 받아 새 값으로 다시 합친다). 충돌은 한 번만 기록한다.
-    private void ApplyMerged(Stored snapshot, EventRecord merged, Event response, FieldMerge.Result result)
+    // 전송 스냅샷 이후 바뀐 로컬 필드와 체크만 응답 위에 얹는다. 다음 전송은 이 응답의 ETag와 기준값에서 시작한다.
+    private void ApplyMerged(Stored snapshot, EventRecord merged, Event response, FieldMerge.Result? result)
     {
         var now = Validation.Timestamp(_clock);
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
-        var current = ReadStored(connection, transaction, "WHERE event_id=$id", ("$id", snapshot.Record.EventId)).Single();
-        if (current.Record.LocalRevision == snapshot.Record.LocalRevision)
-        {
-            Sql.Update(connection, transaction, "event", merged.EventId,
-                Values(merged with { GoogleEventId = response.Id, IsDirty = false, PushState = "synced", UpdatedAt = now },
-                    response.ETag, EventFields.Baseline(response).ToJsonString()));
-            using var reset = Sql.Command(connection, transaction, "UPDATE event SET attempt_count=0, last_error=NULL WHERE event_id=$id;", ("$id", merged.EventId));
-            reset.ExecuteNonQuery();
-        }
-        else
+        var current = ReadStored(connection, transaction, "WHERE event_id=$id", ("$id", snapshot.Record.EventId)).Single().Record;
+        var pending = current.LocalRevision != snapshot.Record.LocalRevision;
+        var saved = merged;
+        if (pending)
         {
             var before = EventFields.Of(snapshot.Record);
-            var latest = EventFields.Of(current.Record);
-            var adopted = (JsonObject)latest.DeepClone();
-            foreach (var field in result.FromTheirs.Where(f => EventFields.Same(f, latest[f], before[f])))
-                adopted[field] = result.Values[field]?.DeepClone();
-            var pending = EventFields.Apply(current.Record, adopted, _time) with { GoogleEventId = response.Id };
-            Sql.Update(connection, transaction, "event", pending.EventId, Values(pending, current.Etag, current.Base));
+            var fields = EventFields.Of(merged);
+            foreach (var (key, value) in EventFields.Of(current))
+                if (!EventFields.Same(key, value, before[key])) fields[key] = value?.DeepClone();
+            var laterChecks = current.Checklist.Except(snapshot.Record.Checklist).ToArray();
+            saved = EventFields.Apply(current, fields, _time) with { Checklist = Checklist.Merge(laterChecks, merged.Checklist) };
         }
-        if (result.Conflicts.Count > 0) InsertConflict(connection, transaction, snapshot.Record, FieldMerge.Detail(result.Conflicts), now);
+        saved = saved with { GoogleEventId = response.Id, IsDirty = pending, PushState = pending ? "pending" : "synced", UpdatedAt = now };
+        Sql.Update(connection, transaction, "event", saved.EventId, Values(saved, response.ETag, EventFields.Baseline(response).ToJsonString()));
+        using var reset = Sql.Command(connection, transaction, "UPDATE event SET attempt_count=0, last_error=NULL WHERE event_id=$id;", ("$id", saved.EventId));
+        reset.ExecuteNonQuery();
+        if (result is null && !pending) InsertConflict(connection, transaction, snapshot.Record, null, now);
+        else if (result is { Conflicts.Count: > 0 }) InsertConflict(connection, transaction, snapshot.Record, FieldMerge.Detail(result.Conflicts), now);
         transaction.Commit();
     }
 
@@ -386,7 +383,11 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         Checklist.WriteProperties(merged, properties);
         var response = await remote.PatchAsync(current.Id, new Event { ExtendedProperties = new Event.ExtendedPropertiesData { Private__ = properties } },
             current.ETag, cancellationToken);
-        Discard(snapshot, merged, responseId: response.Id);
+        var accepted = EventFields.Apply(value, EventFields.Of(response), _time) with
+        {
+            Checklist = Checklist.Merge(merged, Checklist.ReadProperties(response.ExtendedProperties?.Private__))
+        };
+        ApplyMerged(snapshot, accepted, response, null);
     }
 
     // GET으로 확인한 원격 상태와 버려진 로컬 원본을 함께 저장한다. 응답을 기다리던 중 편집된 행은 다음 차례에 다시 판단한다.
@@ -505,7 +506,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
     }
 
     // deleted: local(이 PC 삭제가 Google 수정에 밀림) | remote(이 PC 변경이 Google 삭제에 밀림). 둘 다 아니면 예전 원격 우선(기준값 없음).
-    private void Discard(Stored snapshot, IReadOnlyList<ChecklistItem>? merged = null, string? deleted = null, string? responseId = null)
+    private void Discard(Stored snapshot, string? deleted = null, string? responseId = null)
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
@@ -523,12 +524,6 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         {
             transaction.Commit();
             return;
-        }
-        if (merged is not null)
-        {
-            using var save = Sql.Command(connection, transaction, "UPDATE event SET checklist=$checklist WHERE event_id=$event;",
-                ("$checklist", Checklist.Serialize(merged)), ("$event", snapshot.Record.EventId));
-            save.ExecuteNonQuery();
         }
         InsertConflict(connection, transaction, discarded, deleted is null ? null : FieldMerge.Detail([], deleted), Validation.Timestamp(_clock));
         // etag를 비워 다음 pull이 원격 값을 덮게 한다. 증분 조회에 안 올 수 있으므로 토큰도 지워 전체 대조를 한 번 한다.

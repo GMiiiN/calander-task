@@ -447,6 +447,51 @@ public sealed class ConflictMergeTests
         await Sync(db, remote);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FirstOccurrenceChecklistMergeKeepsRemoteFieldsAndLaterLocalChecks(bool editDuringPatch)
+    {
+        using var db = new TestDatabase();
+        var remote = new EventSyncTests.FakeCalendar();
+        var day = new DateOnly(2026, 11, 15);
+        var series = db.Events.Create([new EventInput("수업", "2026-11-08") { StartTime = "09:00", EndTime = "10:00",
+            Repeat = new RecurrenceInput("weekly", Weekdays: [DayOfWeek.Sunday]) }]).Single();
+        await Sync(db, remote);
+        var occurrence = db.Events.List(day, day).Single().OccurrenceId!;
+        var id = series.EventUid + "_20261115T000000Z";
+        var instance = await remote.GetAsync(id, default);
+        remote.Put(instance);
+        instance.UpdatedDateTimeOffset = db.Clock.Now.AddMinutes(-1);
+        db.Events.AddChecklistItems(occurrence, true, ["첫 항목"]);
+        var patches = 0;
+        remote.BeforePatch = () =>
+        {
+            if (++patches == 1) remote.Edit(id, e =>
+            {
+                e.Summary = "변경된 수업";
+                e.Description = "원격 메모";
+                e.Start = new() { DateTimeRaw = "2026-11-15T15:00:00+09:00", TimeZone = "Asia/Seoul" };
+                e.End = new() { DateTimeRaw = "2026-11-15T16:00:00+09:00", TimeZone = "Asia/Seoul" };
+            });
+            if (patches == 2 && editDuringPatch) db.Events.AddChecklistItems(occurrence, true, ["두 번째"]);
+        };
+        remote.BeforeListReturns = () =>
+        {
+            var saved = db.Events.GetRecords().Single(e => e.ParentEventId is not null);
+            Assert.Equal((id, "변경된 수업", "원격 메모", "15:00", editDuringPatch),
+                (saved.GoogleEventId, saved.Title, saved.Memo, saved.StartTime, saved.IsDirty));
+            Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM event WHERE parent_event_id IS NOT NULL AND sync_base IS NOT NULL AND google_etag IS NOT NULL"));
+        };
+        await Sync(db, remote);
+        remote.BeforeListReturns = null;
+        await Sync(db, remote);
+        await Sync(db, remote);
+        var final = remote.Items[id];
+        Assert.Equal(("변경된 수업", "원격 메모", "2026-11-15T15:00:00+09:00"), (final.Summary, final.Description, final.Start.DateTimeRaw));
+        Assert.Equal(editDuringPatch ? 2 : 1, Checklist.Visible(Checklist.ReadProperties(final.ExtendedProperties.Private__)).Count);
+    }
+
     private static Task Sync(TestDatabase db, EventSyncTests.FakeCalendar remote) =>
         new EventSync(db.Database, remote, TestDatabase.Seoul, db.Clock).SyncAsync(CancellationToken.None);
 
