@@ -310,26 +310,77 @@ public sealed class TaskSyncTests
         Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", item.Completed);
     }
 
-    [Fact]
-    public async Task CompletePullLinksLostCreateByMarkerAndKeepsConcurrentEdit()
+    // 리뷰 A-2: 표식으로 연결하면서 보낸 뒤의 로컬 편집을 지금 목록의 etag로 올리면, 그사이 폰에서 바꾼 마감·완료가 기록 없이 덮였다.
+    // 연결은 원격 우선이다. Google 값을 받고, 보낸 뒤 이 PC에서 고친 내용만 sync_conflict에 남긴다.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompletePullLinksLostCreateByMarkerAndKeepsPhoneChanges(bool editedHere)
     {
         using var db = new TestDatabase();
-        var original = db.Todos.Create([new("같은 제목", Memo: "메모\n")]).Single();
+        var original = db.Todos.Create([new("같은 제목", "2026-11-30", Memo: "메모\n")]).Single();
         var remote = new FakeTasks { LoseInsertResponse = true, HideAll = true };
         await new TaskSync(db.Database, remote).SyncAsync(default);
         Assert.Equal("unknown", db.Todos.Get(original.TodoUid).PushState);
-        db.Todos.Update(original.TodoUid, new() { Memo = "수정한 메모\n" });
+        var created = remote.Items.Single();
+        remote.Edit(created.Id, t => { t.Due = "2026-12-24T00:00:00.000Z"; t.Status = "completed"; t.Completed = "2026-11-20T01:02:03.000Z"; });
+        if (editedHere) db.Todos.Update(original.TodoUid, new() { Memo = "수정한 메모\n" });
         remote.Add(new() { Id = "other", Title = original.Title, Notes = "별개" });
         remote.HideAll = false;
         var restarted = new TaskSync(new Database(db.Path), remote);
         await restarted.SyncAsync(default);
-        Assert.Equal("pending", db.Todos.Get(original.TodoUid).PushState);
         await restarted.SyncAsync(default);
-        Assert.Equal("synced", db.Todos.Get(original.TodoUid).PushState);
-        Assert.Equal(2, db.Todos.List().Count);
+
+        var linked = db.Todos.Get(original.TodoUid);
+        Assert.Equal(("synced", false), (linked.PushState, linked.IsDirty));
+        Assert.Equal(("2026-12-24", true, "메모\n"), (linked.DueDate, linked.IsDone, linked.Memo));
+        var phone = remote.Items.Single(i => i.Id == created.Id);
+        Assert.Equal(("2026-12-24T00:00:00.000Z", "completed"), (phone.Due, phone.Status));
+        Assert.Equal("메모\n", TaskMarker.Read(phone.Notes).Memo);
+        Assert.Equal(editedHere ? 1 : 0, db.Scalar("SELECT COUNT(*) FROM sync_conflict"));
+        Assert.Equal(editedHere, Conflicts(db).Contains("수정한 메모"));
+        Assert.Equal(2, db.Todos.List("all").Count);
         Assert.Equal(1, remote.InsertCalls);
-        Assert.Equal("수정한 메모\n", TaskMarker.Read(remote.Items.Single(i => i.Id != "other").Notes).Memo);
         Assert.Equal("별개", remote.Items.Single(i => i.Id == "other").Notes);
+    }
+
+    // 수동 복구도 같은 규칙: 고른 Google 사본의 값을 받고, 이 PC 내용이 다르면 충돌 기록에 남긴다. 다음 동기화가 Google을 덮지 않는다.
+    [Fact]
+    public async Task ManualLinkTakesGoogleValuesAndKeepsTheLocalEditAsConflict()
+    {
+        using var db = new TestDatabase();
+        var original = db.Todos.Create([new("수동 연결", "2026-11-30")]).Single();
+        var remote = new FakeTasks { HideAll = true, LoseInsertResponse = true };
+        var sync = new TaskSync(db.Database, remote);
+        await sync.SyncAsync(default);
+        // 폰에서 메모를 통째로 바꿔 표식이 사라졌고 마감도 바꿨다. 자동으로는 연결할 수 없다.
+        remote.Edit(remote.Items.Single().Id, t => { t.Notes = "폰에서 쓴 메모"; t.Due = "2026-12-24T00:00:00.000Z"; });
+        db.Todos.Update(original.TodoUid, new() { Title = "이 PC에서 고친 제목" });
+        remote.HideAll = false;
+        await sync.SyncAsync(default);
+        Assert.Equal("unknown", db.Todos.Get(original.TodoUid).PushState);
+
+        var recovery = new TaskRecovery(db.Database);
+        var candidate = Assert.Single(recovery.Candidates());
+        Assert.True(await recovery.ResolveAsync(original.TodoUid, candidate));
+        var linked = db.Todos.Get(original.TodoUid);
+        Assert.Equal(("수동 연결", "폰에서 쓴 메모", "2026-12-24"), (linked.Title, linked.Memo, linked.DueDate));
+        Assert.Equal(("synced", false), (linked.PushState, linked.IsDirty));
+        Assert.Contains("이 PC에서 고친 제목", Conflicts(db));
+
+        await sync.SyncAsync(default);
+        var item = remote.Items.Single();
+        Assert.Equal(("수동 연결", "폰에서 쓴 메모"), (item.Title, item.Notes));
+        Assert.Equal(1, remote.InsertCalls);
+        Assert.Equal(original.TodoUid, Assert.Single(db.Todos.List()).TodoUid);
+    }
+
+    private static string Conflicts(TestDatabase db)
+    {
+        using var connection = db.Database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COALESCE(group_concat(discarded_json, char(10)), '') FROM sync_conflict;";
+        return (string)command.ExecuteScalar()!;
     }
 
     [Fact]
@@ -392,6 +443,8 @@ public sealed class TaskSyncTests
         Assert.Equal(1, remote.InsertCalls);
         Assert.Equal("synced", db.Todos.Get(original.TodoUid).PushState);
         Assert.Equal(remote.Items.Count, db.Todos.List().Count);
+        // 훼손된 메모만 이 PC 내용(빈 메모)과 달라 충돌 기록이 남는다.
+        Assert.Equal(scenario == "damaged" ? 1 : 0, db.Scalar("SELECT COUNT(*) FROM sync_conflict"));
     }
 
     [Fact]

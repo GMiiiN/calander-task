@@ -247,16 +247,25 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
         // 보내는 사이에 또 고쳤으면 그 최신 내용을 남긴다(버리는 것은 지금 행이다).
         var discarded = CurrentRevision(connection, transaction, snapshot.TodoId) == snapshot.LocalRevision
             ? snapshot : ReadSnapshots(connection, transaction, "todo_id=$id", ("$id", snapshot.TodoId)).Single();
-        using (var conflict = Sql.Command(connection, transaction,
-            "INSERT INTO sync_conflict(item_kind, item_uid, discarded_json, occurred_at) VALUES ('todo', $uid, $json, $at);",
-            ("$uid", snapshot.TodoUid), ("$json", JsonSerializer.Serialize(discarded, ConflictJson)), ("$at", Validation.Timestamp(_clock))))
-            conflict.ExecuteNonQuery();
+        InsertConflict(connection, transaction, discarded, Validation.Timestamp(_clock));
         // etag를 비워 다음 pull이 원격 값을 그대로 덮게 한다. 원격에서 지워졌으면 pull의 전체 대조가 로컬도 지운다.
         using var command = Sql.Command(connection, transaction,
             "UPDATE todo SET is_dirty=0, push_state='synced', google_etag=NULL, attempt_count=0, last_error=NULL WHERE todo_id=$todo;",
             ("$todo", snapshot.TodoId));
         command.ExecuteNonQuery();
         transaction.Commit();
+    }
+
+    // 원격 우선으로 버리는 지금 로컬 내용을 사람이 읽을 수 있게 남긴다. 결과 불명 할 일을 Google 사본에 연결할 때도 쓴다.
+    internal static void RecordDiscarded(SqliteConnection connection, SqliteTransaction transaction, long todoId, string at) =>
+        InsertConflict(connection, transaction, ReadSnapshots(connection, transaction, "todo_id=$id", ("$id", todoId)).Single(), at);
+
+    private static void InsertConflict(SqliteConnection connection, SqliteTransaction transaction, Snapshot discarded, string at)
+    {
+        using var conflict = Sql.Command(connection, transaction,
+            "INSERT INTO sync_conflict(item_kind, item_uid, discarded_json, occurred_at) VALUES ('todo', $uid, $json, $at);",
+            ("$uid", discarded.TodoUid), ("$json", JsonSerializer.Serialize(discarded, ConflictJson)), ("$at", at));
+        conflict.ExecuteNonQuery();
     }
 
     private bool BeginAttempt(Snapshot snapshot, string marker)
@@ -299,7 +308,7 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
         var now = Validation.Timestamp(_clock);
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
-        TaskRecovery.Match(connection, transaction, listed);
+        TaskRecovery.Match(connection, transaction, listed, now);
         var locals = new Dictionary<string, (long Id, bool Pending, string? Etag, string? DeletedAt)>();
         using (var command = Sql.Command(connection, transaction,
             "SELECT todo_id, google_task_id, google_etag, deleted_at, is_dirty, push_state FROM todo WHERE google_task_id IS NOT NULL;"))

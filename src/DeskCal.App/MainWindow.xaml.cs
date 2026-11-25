@@ -219,7 +219,7 @@ public partial class MainWindow : Window
             {
                 var message = candidate is null
                     ? $"Google Tasks에 이미 ‘{original.Title}’이 있으면 중복됩니다. 새 할 일로 다시 전송할까요?"
-                    : $"‘{original.Title}’을 Google의 ‘{candidate.Title}’과 연결하고 이 PC의 내용으로 갱신할까요?\n\nGoogle 메모\n{candidate.Memo}";
+                    : $"‘{original.Title}’을 Google의 ‘{candidate.Title}’과 연결할까요?\n\nGoogle의 제목·마감·완료·메모를 받습니다. 이 PC의 내용이 다르면 충돌 기록에 보관합니다.\n\nGoogle 메모\n{candidate.Memo}";
                 if (MessageBox.Show(this, message, "할 일 복구", MessageBoxButton.YesNo, MessageBoxImage.Question,
                         MessageBoxResult.No) != MessageBoxResult.Yes) return;
                 if (await recovery.ResolveAsync(item.Uid, candidate))
