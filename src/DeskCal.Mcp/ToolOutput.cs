@@ -61,7 +61,7 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
             _ = sending.ContinueWith(static t => t.Exception, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             var reason = ex is TimeoutException or OperationCanceledException ? "sync_timeout" : "sync_unavailable";
-            foreach (var item in ReceiptItems(receipt))
+            foreach (var item in ReceiptItems(receipt).Append(receipt))
                 if ((string?)item["reason"] == "app_not_running") item["reason"] = reason;
             return receipt;
         }
@@ -89,30 +89,54 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
             if (reason is null && state == "synced") { item["sync"] = "synced"; item.Remove("reason"); }
             else { item["sync"] = "pending"; item["reason"] = reason ?? (sent ? "retry_pending" : "sync_deferred"); }
         }
-        // 카테고리 별칭(S6): Drive 앱 전용 공간에 올렸는지 다시 읽는다.
+        // 공유 설정(S6 카테고리 별칭, S8 하루 순서): Drive 앱 전용 공간에 올렸는지 다시 읽는다.
         if (result["category"] is JsonObject category && (string?)category["color_id"] is { } colorId)
-        {
-            if (SharedState(database, colorId) == "synced") { category["sync"] = "synced"; category.Remove("reason"); }
-            else
-            {
-                category["sync"] = "pending";
-                category["reason"] = PendingChanges.Reason("pending", signedIn)
-                    ?? SharedSettingsSync.UnavailableReason(database) ?? (sent ? "retry_pending" : "sync_deferred");
-            }
-        }
+            VerifyShared(category, SharedSettings.CategoryPrefix + colorId, signedIn, sent);
+        if (_orderDate is { } day) VerifyShared(result, OrderKey(day), signedIn, sent);
         return result;
+    }
+
+    private void VerifyShared(JsonObject item, string key, bool signedIn, bool sent)
+    {
+        if (SharedState(database, key) == "synced")
+        {
+            item["sync"] = "synced";
+            item.Remove("reason");
+            return;
+        }
+        item["sync"] = "pending";
+        item["reason"] = PendingChanges.Reason("pending", signedIn) ?? SharedSettingsSync.UnavailableReason(database) ?? (sent ? "retry_pending" : "sync_deferred");
     }
 
     // 카테고리 별칭. 이 PC에서 바꾸고 아직 다른 기기용으로 올리지 않았으면 pending이다.
     public JsonObject CategoryOutput(CategoryRecord value) =>
-        AddSync(Object(new { value.ColorId, value.Name, value.ColorHex }), SharedState(database, value.ColorId));
+        AddSync(Object(new { value.ColorId, value.Name, value.ColorHex }), SharedState(database, SharedSettings.CategoryPrefix + value.ColorId));
 
-    private static string SharedState(Database database, string colorId)
+    // reorder_events 결과. 그날 순서는 공유 항목 하나라 sync도 위에 한 번만 둔다. 일정 자체는 바뀌지 않았다.
+    private DateOnly? _orderDate;
+    public JsonObject OrderOutput(DateOnly date, IReadOnlyList<EventOccurrence> ordered)
+    {
+        _orderDate = date;
+        var result = new JsonObject
+        {
+            ["date"] = date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            ["events"] = new JsonArray(ordered.Select(o => (JsonNode)Object(new
+            {
+                EventId = o.OccurrenceId is { } id ? OccurrenceId.Parse(id).EventUid : o.Event.EventUid, o.OccurrenceId, o.Event.Title,
+                o.Event.StartTime, o.Event.IsDone
+            })).ToArray())
+        };
+        return AddSync(result, SharedState(database, OrderKey(date)));
+    }
+
+    private static string OrderKey(DateOnly date) => DayEventOrder.Prefix + date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string SharedState(Database database, string key)
     {
         using var connection = database.OpenConnection();
         using var cmd = connection.CreateCommand();
         cmd.CommandText = "SELECT is_dirty FROM shared_entry WHERE entry_key=$key";
-        cmd.Parameters.AddWithValue("$key", SharedSettings.CategoryPrefix + colorId);
+        cmd.Parameters.AddWithValue("$key", key);
         return cmd.ExecuteScalar() is long dirty && dirty != 0 ? "pending" : "synced";
     }
 
