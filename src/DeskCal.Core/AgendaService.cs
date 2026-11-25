@@ -17,6 +17,7 @@ public sealed class AgendaService(EventRepository events, TodoRepository todos, 
         var end = endDate ?? start.AddDays(13);
         Validation.Range(start, end, 366);
         var occurrences = events.List(start, end);
+        var order = DayEventOrder.Read(events.Database, start, laterEventsUntil ?? end);
         var visibleTodos = todos.List("all").Where(t => !t.IsDone || CompletedToday(t, current)).ToArray();
         var groups = new List<AgendaGroup>
         {
@@ -29,12 +30,12 @@ public sealed class AgendaService(EventRepository events, TodoRepository todos, 
             var lower = day.ToDateTime(TimeOnly.MinValue);
             var upper = lower.AddDays(1);
             groups.Add(new("date", day,
-                occurrences.Where(o => o.Start < upper && o.End > lower && placed.Add(o.OccurrenceId ?? o.Event.EventUid)).ToArray(),
+                order.Sort(day, occurrences.Where(o => o.Start < upper && o.End > lower && placed.Add(DayEventOrder.Key(o)))).ToArray(),
                 visibleTodos.Where(t => t.IsDone ? day == current : t.DueDate == day.ToString("yyyy-MM-dd")).ToArray()));
         }
         // 기간에 이미 나온 여러 날 일정(placed)은 다시 넣지 않는다.
         var laterEvents = laterEventsUntil is { } until && until > end
-            ? events.List(end.AddDays(1), until).Where(o => placed.Add(o.OccurrenceId ?? o.Event.EventUid)).OrderBy(o => o.Start).ToArray()
+            ? events.List(end.AddDays(1), until).Where(o => placed.Add(o.OccurrenceId ?? o.Event.EventUid)).GroupBy(o => DateOnly.FromDateTime(o.Start)).OrderBy(g => g.Key).SelectMany(g => order.Sort(g.Key, g)).ToArray()
             : [];
         groups.Add(new("later", null, laterEvents, visibleTodos.Where(t => !t.IsDone && t.DueDate is not null && Validation.Date(t.DueDate) > end).ToArray()));
         groups.Add(new("anytime", null, [], visibleTodos.Where(t => !t.IsDone && t.DueDate is null).ToArray()));

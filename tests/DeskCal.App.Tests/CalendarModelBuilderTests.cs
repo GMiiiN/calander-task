@@ -81,7 +81,7 @@ public sealed class CalendarModelBuilderTests : IDisposable
     [InlineData(100)]
     [InlineData(115)]
     [InlineData(130)]
-    public void MonthLimitsChipsAndOrdersGroupsWithCompletedItemsLast(int textSize)
+    public void MonthLimitsChipsAndOrdersEventsByCreationThenTodosByCompletion(int textSize)
     {
         var settings = new SettingStore(database);
         Assert.Equal(100, settings.TextSizePercent); // an existing DB has no text-size setting
@@ -100,11 +100,12 @@ public sealed class CalendarModelBuilderTests : IDisposable
         var tasks = todos.Create([new("done todo", "2026-10-30"), new("todo", "2026-10-30"), new("undated")]);
         todos.Update(tasks[0].TodoUid, new() { IsDone = true });
         var cell = Cell(Builder().BuildMonth(2026, 10, TODAY), TODAY);
-        Assert.Equal(new[] { "all day", "done all day", "early", "late", "done early", "todo", "done todo" }, cell.AllItems.Select(c => c.Title));
+        Assert.Equal(created.OrderBy(e => e.CreatedAt, StringComparer.Ordinal).ThenBy(e => e.EventUid, StringComparer.Ordinal).Select(e => e.Title)
+            .Concat(["todo", "done todo"]), cell.AllItems.Select(c => c.Title));
         Assert.Equal(cell.AllItems.Take(2), cell.Chips);
         Assert.Equal(5, cell.OverflowCount);
         Assert.True(cell.IsToday);
-        Assert.Equal("09:00", cell.AllItems[2].TimeText);
+        Assert.Equal("09:00", cell.AllItems.Single(c => c.Title == "early").TimeText);
         Assert.Null(cell.AllItems[0].TimeText);
         Assert.Null(cell.AllItems[5].TimeText);
         reopened.TextSizePercent = 100;
@@ -204,7 +205,7 @@ public sealed class CalendarModelBuilderTests : IDisposable
     }
 
     [Fact]
-    public void BarsKeepTheirLaneAcrossDaysAndSingleDayItemsFillFreeLanes()
+    public void BarsKeepTheirLaneAndSinglesStayBelowOverlappingPeriods()
     {
         events.Create([
             new("A", "2026-11-02") { EndDate = "2026-11-04" },
@@ -220,8 +221,9 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.Equal(new[] { "", "B" }, Titles(3));
         Assert.Equal(1, Cell(model, new(2026, 11, 3)).OverflowCount); // solo는 세 번째 줄 → +1
         Assert.Equal(new[] { "", "" }, Titles(4)); // 같은 주에 끝나므로 마감 표시 없음
-        Assert.Equal(new[] { "C", "" }, Titles(5)); // A가 끝난 0번 줄을 C가 쓴다
+        Assert.Equal(new[] { "", "C" }, Titles(5)); // B보다 늦게 시작한 C는 B 아래에 둔다
         Assert.Equal(new[] { "", "late" }, Titles(6));
+        Assert.Equal(new[] { "C", "late" }, Cell(model, new(2026, 11, 6)).AllItems.Select(i => i.Title));
     }
 
     [Fact]
@@ -415,6 +417,35 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.Equal(new DateOnly(2026, 11, 4), vm.Week!.WeekStart);
         vm.ShowMonthCommand.Execute(null);
         Assert.Equal(DayOfWeek.Monday, vm.Month!.Weeks[0][0].DayOfWeek);
+    }
+
+    [Fact]
+    public void DayOrderSurvivesRestartAndIsSharedByCalendarAndAgenda()
+    {
+        var values = events.Create([new("기간", "2026-10-29") { EndDate = "2026-10-31" },
+            new("단일", "2026-10-30"), new("반복", "2026-10-30") { Repeat = new("daily", Count: 2) }]);
+        Execute("UPDATE event SET created_at='2026-10-01T00:00:00Z'");
+        var before = Cell(Builder().BuildMonth(2026, 10, TODAY), TODAY).AllItems;
+        string Key(ChipModel c) => c.OccurrenceId ?? c.EventId!;
+        Assert.Equal(before.Skip(1).Select(Key).Order(StringComparer.Ordinal), before.Skip(1).Select(Key));
+        var next = events.List(TODAY.AddDays(1), TODAY.AddDays(1)).Single(o => o.OccurrenceId != null);
+        Assert.False(DayEventOrder.Move(events, TODAY, next.OccurrenceId!, Key(before[1])));
+        Assert.False(DayEventOrder.Move(events, TODAY, Key(before[1]), values[0].EventUid));
+        Assert.True(DayEventOrder.Move(events, TODAY, Key(before[2]), Key(before[1])));
+        var db = new Database(databasePath);
+        db.Initialize();
+        var ev = new EventRepository(db);
+        var builder = new CalendarModelBuilder(ev, new TodoRepository(db), db);
+        var cell = Cell(builder.BuildMonth(2026, 10, TODAY), TODAY);
+        var expected = new[] { Key(before[0]), Key(before[2]), Key(before[1]) };
+        Assert.Equal(expected, cell.AllItems.Select(Key));
+        Assert.Equal(expected.Take(2), cell.Chips.Select(Key));
+        Assert.Equal(expected, builder.BuildWeek(TODAY, TODAY).Days[4].AllDay.Select(Key));
+        var agenda = new AgendaService(ev, todos).GetAgenda(TODAY, TODAY);
+        Assert.Equal(expected, agenda.Groups.Single(g => g.Date == TODAY).Events.Select(DayEventOrder.Key));
+        ev.Delete(values[1].EventUid);
+        var added = ev.Create([new("추가", "2026-10-30")]).Single();
+        Assert.Equal(added.EventUid, Key(Cell(builder.BuildMonth(2026, 10, TODAY), TODAY).AllItems.Last()));
     }
 
     private static DayCellModel Cell(MonthModel model, DateOnly date) => model.Weeks.SelectMany(w => w).Single(d => d.Date == date);

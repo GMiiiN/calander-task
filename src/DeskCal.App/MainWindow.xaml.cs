@@ -215,8 +215,89 @@ public partial class MainWindow : Window
     protected override void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseLeftButtonDown(e);
+        TrackOrderPress(e, this);
         OpenEditorAt(e);
     }
+
+    private sealed record OrderItem(DateOnly Day, string Key);
+    private OrderItem? _pressedEvent;
+    private OrderItem? _draggingEvent;
+    private Point _pressPoint;
+
+    private void TrackOrderPress(MouseButtonEventArgs e, UIElement surface)
+    {
+        _pressedEvent = e.ClickCount == 1 ? OrderItemAt(e.OriginalSource as DependencyObject) : null;
+        _pressPoint = e.GetPosition(surface);
+    }
+
+    private static OrderItem? OrderItemAt(DependencyObject? node)
+    {
+        // 체크박스 내부 도형에도 행 DataContext가 상속된다. 전체 입력 경로에서 버튼을 먼저 제외한다.
+        for (var part = node; part is not null; part = Parent(part))
+            if (part is ButtonBase or TextBoxBase || part is FrameworkElement { DataContext: ChecklistItemViewModel }) return null;
+        for (; node is not null; node = Parent(node))
+        {
+            if (node is not FrameworkElement element) continue;
+            switch (element.DataContext)
+            {
+                case ChipModel { OrderDate: { } day, EventId: { } id } chip:
+                    return new(day, chip.OccurrenceId ?? id);
+                case SidebarItemViewModel { OrderDate: { } day, EventId: { } id } row:
+                    return new(day, row.OccurrenceId ?? id);
+            }
+        }
+        return null;
+    }
+
+    protected override void OnPreviewMouseMove(MouseEventArgs e)
+    {
+        base.OnPreviewMouseMove(e);
+        StartOrderDrag(e, this);
+    }
+
+    private void StartOrderDrag(MouseEventArgs e, UIElement surface)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || _pressedEvent is null) return;
+        var delta = e.GetPosition(surface) - _pressPoint;
+        if (Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        _draggingEvent = _pressedEvent;
+        _pressedEvent = null;
+        try { DragDrop.DoDragDrop(surface, new DataObject("DeskCal.DayOrder", _draggingEvent.Key), DragDropEffects.Move); }
+        finally { _draggingEvent = null; }
+    }
+
+    protected override void OnPreviewDragOver(DragEventArgs e)
+    {
+        base.OnPreviewDragOver(e);
+        ShowOrderDropEffect(e);
+    }
+
+    private void ShowOrderDropEffect(DragEventArgs e)
+    {
+        if (_draggingEvent is not { } source) return;
+        var target = OrderItemAt(e.OriginalSource as DependencyObject);
+        e.Effects = source.Day == target?.Day && source != target ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    protected override void OnPreviewDrop(DragEventArgs e)
+    {
+        base.OnPreviewDrop(e);
+        DropOrderItem(e);
+    }
+
+    private void DropOrderItem(DragEventArgs e)
+    {
+        if (_draggingEvent is not { } source) return;
+        e.Handled = true;
+        var target = OrderItemAt(e.OriginalSource as DependencyObject);
+        if (target is not null && source.Day == target.Day && DayEventOrder.Move(_events, target.Day, source.Key, target.Key))
+            _viewModel.Refresh();
+    }
+
+    private static DependencyObject? Parent(DependencyObject node) =>
+        node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node);
 
     private void OpenEditorAt(MouseButtonEventArgs e)
     {
@@ -250,8 +331,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        static DependencyObject? Parent(DependencyObject node) =>
-            node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node);
         static bool IsInside(DependencyObject node, DependencyObject ancestor) =>
             node is Visual visual && ancestor is Visual target && visual.IsDescendantOf(target);
         static TimeOnly SlotAt(double y)
@@ -635,8 +714,17 @@ public partial class MainWindow : Window
         card.SetResourceReference(Border.BorderBrushProperty, "ControlBorderBrush");
         var popup = new Popup { Child = card, PlacementTarget = (UIElement)sender, Placement = PlacementMode.Bottom, StaysOpen = false };
         // 팝업은 창과 다른 시각 트리라 창의 더블클릭 처리가 닿지 않는다. 목록의 칩도 더블클릭으로 연다.
+        card.AllowDrop = true;
+        card.PreviewMouseMove += (_, args) => StartOrderDrag(args, card);
+        card.PreviewDragOver += (_, args) => ShowOrderDropEffect(args);
+        card.PreviewDrop += (_, args) =>
+        {
+            DropOrderItem(args);
+            if (args.Handled) popup.IsOpen = false;
+        };
         card.PreviewMouseLeftButtonDown += (_, args) =>
         {
+            TrackOrderPress(args, card);
             if (args.ClickCount != 2) return;
             popup.IsOpen = false;
             OpenEditorAt(args);

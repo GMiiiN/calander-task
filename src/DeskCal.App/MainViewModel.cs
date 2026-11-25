@@ -36,6 +36,7 @@ public sealed record ChecklistItemViewModel(string ItemId, string Text, bool IsD
 public sealed record SidebarItemViewModel(string Title, string Meta, bool IsDone, string? DotColorHex,
     string? TodoId, string? EventId, string? OccurrenceId, IReadOnlyList<ChecklistItemViewModel>? Checklist = null, bool IsExpanded = false)
 {
+    public DateOnly? OrderDate { get; init; }
     public bool HasChecklist => Checklist is { Count: > 0 };
 }
 
@@ -195,7 +196,7 @@ public sealed class MainViewModel : ObservableObject
         var checklist = Checklist.Visible(value.Checklist)
             .Select(i => new ChecklistItemViewModel(i.ItemId, i.Text, i.IsDone, i.ItemId == _editingChecklistItemId, eventId, occurrence.OccurrenceId)).ToArray();
         return new(value.Title, $"{time} · {category.Item1}", value.IsDone, category.Item2, null, value.EventUid, occurrence.OccurrenceId,
-            checklist, _expandedChecklists.Contains(occurrence.OccurrenceId ?? eventId));
+            checklist, _expandedChecklists.Contains(occurrence.OccurrenceId ?? eventId)) { OrderDate = firstDay == lastDay ? firstDay : null };
     }
 
     private SidebarItemViewModel TodoItem(TodoRecord todo)

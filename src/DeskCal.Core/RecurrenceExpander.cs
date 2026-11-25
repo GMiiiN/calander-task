@@ -26,7 +26,7 @@ public sealed class RecurrenceExpander(TimeZoneInfo? localTimeZone = null)
         var result = Originals(parent, from).TakeWhile(o => o.Start < upper)
             .Where(o => !overrides.ContainsKey(o.Event.OriginalStartKey!) && Overlaps(o, lower, upper)).ToList();
         result.AddRange(overrides.Values.Where(e => includeDeleted || Visible(e))
-            .Select(e => _time.ToOccurrence(e with { EventUid = parent.EventUid }, OccurrenceId.Create(parent.EventUid, e.OriginalStartKey!)))
+            .Select(e => _time.ToOccurrence(e with { EventUid = parent.EventUid, CreatedAt = parent.CreatedAt }, OccurrenceId.Create(parent.EventUid, e.OriginalStartKey!)))
             .Where(o => Overlaps(o, lower, upper)));
         return result.OrderBy(o => o.Start).ThenBy(o => o.OccurrenceId).ToArray();
     }
@@ -43,7 +43,7 @@ public sealed class RecurrenceExpander(TimeZoneInfo? localTimeZone = null)
         var overrides = exceptions.ToDictionary(e => e.OriginalStartKey!);
         var nextOriginal = Originals(parent, lower).FirstOrDefault(o => o.Start >= lower && !overrides.ContainsKey(o.Event.OriginalStartKey!));
         var nextException = overrides.Values.Where(Visible)
-            .Select(e => _time.ToOccurrence(e with { EventUid = parent.EventUid }, OccurrenceId.Create(parent.EventUid, e.OriginalStartKey!)))
+            .Select(e => _time.ToOccurrence(e with { EventUid = parent.EventUid, CreatedAt = parent.CreatedAt }, OccurrenceId.Create(parent.EventUid, e.OriginalStartKey!)))
             .Where(o => o.Start >= lower).OrderBy(o => o.Start).FirstOrDefault();
         if (nextOriginal is null) return nextException;
         return nextException is not null && nextException.Start < nextOriginal.Start ? nextException : nextOriginal;

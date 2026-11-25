@@ -8,6 +8,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
     // 주간 시간표에서 짧은 일정도 이 길이만큼은 그려진다. 겹침 판단도 이 길이로 해야 화면에서 서로 가리지 않는다.
     public const int MIN_BLOCK_MINUTES = 30;
 
+    private DayEventOrder _order = new();
     private readonly Dictionary<string, string> _colors = ReadColors(database);
 
     public MonthModel BuildMonth(int year, int month, DateOnly today)
@@ -15,6 +16,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         var first = new DateOnly(year, month, 1);
         var start = WeekStartOf(first);
         var dayCount = (DaysFromMonday(first) + DateTime.DaysInMonth(year, month) + 6) / 7 * 7;
+        _order = DayEventOrder.Read(database, start, start.AddDays(dayCount - 1));
         var occurrences = events.List(start, start.AddDays(dayCount - 1));
         var dueTodos = todos.List("all");
         var holidays = new HolidayRepository(database).List(start, start.AddDays(dayCount - 1));
@@ -28,6 +30,9 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
                 var date = start.AddDays(offset + day);
                 var items = ItemsForDay(date, occurrences, dueTodos);
                 var chips = row[day].Take(2).ToList();
+                // 고정 막대의 빈 레인 때문에 실제로 보여 줄 수 있는 두 칩이 모두 밀리는 경우만 압축한다.
+                if (chips.Count(c => !c.IsPlaceholder) < Math.Min(2, items.Count))
+                    chips = row[day].Where(c => !c.IsPlaceholder).Take(2).ToList();
                 while (chips.Count > 0 && chips[^1].IsPlaceholder) chips.RemoveAt(chips.Count - 1);
                 week.Add(new(date, date.Month == month && date.Year == year, date == today,
                     date.DayOfWeek, chips, items.Count - chips.Count(c => !c.IsPlaceholder), items, holidays.GetValueOrDefault(date)));
@@ -40,6 +45,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
     public WeekModel BuildWeek(DateOnly anyDay, DateOnly today, DayOfWeek firstDay = DayOfWeek.Monday)
     {
         var start = WeekStartOf(anyDay, firstDay);
+        _order = DayEventOrder.Read(database, start, start.AddDays(6));
         var occurrences = events.List(start, start.AddDays(6));
         var dueTodos = todos.List("all");
         var holidays = new HolidayRepository(database).List(start, start.AddDays(6));
@@ -70,29 +76,26 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
     {
         var lower = date.ToDateTime(TimeOnly.MinValue);
         var upper = lower.AddDays(1);
-        return occurrences.Where(o => o.Start < upper && o.End > lower).Select(o => ToChip(o) with { DetailText = DetailText(o) })
+        return _order.Sort(date, occurrences.Where(o => o.Start < upper && o.End > lower)).Select(o => ToChip(o) with { DetailText = DetailText(o) })
             .Concat(dueTodos.Where(t => t.DueDate == date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))
-                .Select(t => new ChipModel(t.Title, null, "#B0BACB", t.IsDone, true, false, null, null, t.TodoUid, t.CreatedBy) { DetailText = "할 일 · 이날 마감" }))
-            .OrderBy(c => c.IsTodo ? 2 : c.TimeText is null ? 0 : 1)
-            .ThenBy(c => c.IsDone).ThenBy(c => c.TimeText, StringComparer.Ordinal).ToArray();
+                .OrderBy(t => t.IsDone).Select(t => new ChipModel(t.Title, null, "#B0BACB", t.IsDone, true, false, null, null, t.TodoUid, t.CreatedBy) { DetailText = "할 일 · 이날 마감" }))
+            .ToArray();
     }
 
     // 한 줄(월~일)의 칸별 칩. 여러 날 일정은 줄 안에서 같은 높이(lane)를 지켜 막대로 이어지고,
-    // 하루짜리 항목은 남은 빈 자리를 위에서부터 채운다. 막대 사이의 빈 자리는 자리 표시로 남긴다.
+    // 하루짜리 항목은 그날의 마지막 막대 아래에 둔다. 막대 사이의 빈 자리는 자리 표시로 남긴다.
     private IReadOnlyList<ChipModel>[] LayOutRow(DateOnly rowStart, IReadOnlyList<EventOccurrence> occurrences, IReadOnlyList<TodoRecord> dueTodos)
     {
         var rowEnd = rowStart.AddDays(6);
-        var spans = occurrences.Where(o => LastDate(o) > FirstDate(o) && FirstDate(o) <= rowEnd && LastDate(o) >= rowStart)
-            .OrderBy(FirstDate).ThenByDescending(LastDate).ToArray();
+        var spans = _order.Sort(rowStart, occurrences.Where(o => LastDate(o) > FirstDate(o) && FirstDate(o) <= rowEnd && LastDate(o) >= rowStart)).ToArray();
         var lanes = new List<ChipModel?[]>();
         foreach (var occurrence in spans)
         {
             var from = Math.Max(0, FirstDate(occurrence).DayNumber - rowStart.DayNumber);
             var to = Math.Min(6, LastDate(occurrence).DayNumber - rowStart.DayNumber);
-            var lane = lanes.FindIndex(l => l.Skip(from).Take(to - from + 1).All(c => c is null));
-            if (lane < 0)
+            var lane = lanes.FindLastIndex(l => l.Skip(from).Take(to - from + 1).Any(c => c is not null)) + 1;
+            if (lane == lanes.Count)
             {
-                lane = lanes.Count;
                 lanes.Add(new ChipModel?[7]);
             }
             for (var day = from; day <= to; day++) lanes[lane][day] = BarChip(occurrence, rowStart.AddDays(day), rowStart);
@@ -102,13 +105,8 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         for (var day = 0; day < 7; day++)
         {
             var slots = lanes.Select(l => l[day]).ToList();
-            foreach (var chip in ItemsForDay(rowStart.AddDays(day), singles, dueTodos))
-            {
-                var free = slots.IndexOf(null);
-                if (free < 0) slots.Add(chip);
-                else slots[free] = chip;
-            }
             while (slots.Count > 0 && slots[^1] is null) slots.RemoveAt(slots.Count - 1);
+            slots.AddRange(ItemsForDay(rowStart.AddDays(day), singles, dueTodos));
             result[day] = slots.Select(c => c ?? ChipModel.Placeholder).ToArray();
         }
         return result;
@@ -156,7 +154,8 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         var value = occurrence.Event;
         return new(value.Title, occurrence.IsAllDay ? null : occurrence.Start.ToString("HH:mm", CultureInfo.InvariantCulture),
             value.ColorId is not null && _colors.TryGetValue(value.ColorId, out var color) ? color : "#246BDE",
-            value.IsDone, false, value.IsDday, value.EventUid, occurrence.OccurrenceId, null, value.CreatedBy);
+            value.IsDone, false, value.IsDday, value.EventUid, occurrence.OccurrenceId, null, value.CreatedBy)
+        { OrderDate = DayEventOrder.IsPeriod(occurrence) ? null : FirstDate(occurrence) };
     }
 
     private static IReadOnlyList<WeekBlockModel> AssignColumns(WeekBlockModel[] blocks)

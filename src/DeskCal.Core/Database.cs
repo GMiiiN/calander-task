@@ -7,8 +7,8 @@ namespace DeskCal.Core;
 
 public sealed class Database
 {
-    private static readonly Action<SqliteCommand>[] Migrations = [MigrateToV1, MigrateToV2];
-    public const int LatestVersion = 2;
+    private static readonly Action<SqliteCommand>[] Migrations = [MigrateToV1, MigrateToV2, MigrateToV3];
+    public const int LatestVersion = 3;
     private readonly string _connectionString;
 
     private readonly Action<string>? _trace;
@@ -166,6 +166,17 @@ public sealed class Database
         using var stream = typeof(Database).Assembly.GetManifestResourceStream("DeskCal.Core.SchemaV1.sql")!;
         using var reader = new StreamReader(stream);
         command.CommandText = reader.ReadToEnd();
+        command.ExecuteNonQuery();
+    }
+
+    private static void MigrateToV3(SqliteCommand command)
+    {
+        command.CommandText = """
+            CREATE TABLE day_event_order (
+                day TEXT NOT NULL, event_key TEXT NOT NULL, position INTEGER NOT NULL,
+                revision INTEGER NOT NULL, PRIMARY KEY(day,event_key), UNIQUE(day,position)
+            );
+            """;
         command.ExecuteNonQuery();
     }
 
