@@ -224,6 +224,74 @@ public sealed class SharedSettingsTests
         Assert.Equal("산책", (string)republished["entries"]!["category_name:7"]!["value"]!);
     }
 
+    [Theory]
+    [InlineData("truncated", false)]
+    [InlineData("truncated", true)]
+    [InlineData("missing", false)]
+    [InlineData("missing", true)]
+    [InlineData("transport", false)]
+    [InlineData("future", false)]
+    [InlineData("account", true)]
+    [InlineData("entry", true)]
+    public async Task UnreadableOwnFilePreservesBothCopiesAndRetries(string damage, bool duplicate)
+    {
+        using var db = new TestDatabase();
+        var drive = new FakeAppData();
+        Categories(db).Rename("1", "보낼 별칭");
+        var me = Device(db);
+        var good = Document(me);
+        var root = JsonNode.Parse(good)!.AsObject();
+        if (damage == "future") root["format"] = 2;
+        if (damage == "account") root["account"] = "다른 계정";
+        if (damage == "entry") root["entries"]!["unknown"] = new JsonObject { ["rev"] = 1 };
+        var damaged = damage == "truncated" ? "{broken" : root.ToJsonString();
+        var name = $"deskcal-shared-{me}.json";
+        var first = drive.Put(name, duplicate ? good : damaged);
+        var second = drive.Put(name, duplicate ? damaged : good);
+        var id = duplicate ? second : first;
+        if (damage == "missing") drive.Unreadable.Add(id);
+        if (damage == "transport") drive.FailedRead = id;
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            if (damage == "transport") await Assert.ThrowsAsync<HttpRequestException>(() => Sync(db, drive));
+            else await Sync(db, drive);
+            Assert.Equal(duplicate ? good : damaged, drive.Files[first].Content);
+            Assert.Equal(duplicate ? damaged : good, drive.Files[second].Content);
+            Assert.Equal(0, drive.Updates);
+            Assert.True(PendingChanges.HasUnsent(db.Database));
+            var error = damage == "transport" ? nameof(HttpRequestException) : "unreadable_device_file";
+            Assert.Equal(error, SharedSettingsSync.LastError(db.Database));
+        }
+        drive.Unreadable.Clear();
+        drive.FailedRead = null;
+        drive.Replace(id, good);
+        await Sync(db, drive);
+        Assert.Equal(first, Assert.Single(drive.Files).Key);
+        Assert.Contains("보낼 별칭", drive.Files[first].Content);
+        Assert.False(PendingChanges.HasUnsent(db.Database));
+        Assert.Null(SharedSettingsSync.LastError(db.Database));
+    }
+
+    [Fact]
+    public async Task CachedOwnFileMustBeReadableBeforeUpdating()
+    {
+        using var db = new TestDatabase();
+        var drive = new FakeAppData();
+        await Sync(db, drive);
+        var original = Assert.Single(drive.Files);
+        Categories(db).Rename("1", "보낼 별칭");
+        drive.Unreadable.Add(original.Key);
+        await Sync(db, drive);
+        Assert.Equal(original.Value.Content, drive.Files[original.Key].Content);
+        Assert.Equal(0, drive.Updates);
+        Assert.True(PendingChanges.HasUnsent(db.Database));
+        drive.Unreadable.Clear();
+        await Sync(db, drive);
+        Assert.Equal(1, drive.Updates);
+        Assert.False(PendingChanges.HasUnsent(db.Database));
+    }
+
     // 색 ID 계약: 별칭이 바뀌어도 일정의 color_id와 Google에 보내는 colorId는 그대로이고 일정이 다시 올라가지 않는다.
     [Fact]
     public async Task AliasChangeKeepsEventColorIdsAndTheGoogleContract()
@@ -340,6 +408,8 @@ public sealed class SharedSettingsTests
         private int _next;
         private int _tick;
         public Dictionary<string, (string Name, string Content, DateTimeOffset Created, DateTimeOffset Modified)> Files { get; } = [];
+        public string? FailedRead { get; set; }
+        public HashSet<string> Unreadable { get; } = [];
         public HashSet<string> Hidden { get; } = [];
         public int Creates { get; private set; }
         public int Updates { get; private set; }
@@ -369,7 +439,8 @@ public sealed class SharedSettingsTests
         {
             Call();
             Reads++;
-            return Task.FromResult(Files.TryGetValue(fileId, out var file) ? file.Content : null);
+            if (fileId == FailedRead) throw new HttpRequestException("download failed");
+            return Task.FromResult(!Unreadable.Contains(fileId) && Files.TryGetValue(fileId, out var file) ? file.Content : null);
         }
 
         public Task<AppDataFile> CreateAsync(string name, string content, CancellationToken cancellationToken)

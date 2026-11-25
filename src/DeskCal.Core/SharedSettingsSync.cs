@@ -115,6 +115,7 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
     internal const int Format = 1;
     public const string ScopeMissing = "drive_scope_missing";
     public const string ApiDisabled = "drive_api_disabled";
+    public const string UnreadableDeviceFile = "unreadable_device_file";
 
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
 
@@ -167,13 +168,22 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             .OrderBy(f => f.CreatedTime ?? DateTimeOffset.MaxValue).ThenBy(f => f.Id, StringComparer.Ordinal).ToList();
         var cache = ReadCache();
         var read = new Dictionary<string, Document?>();
+        var ownName = FileName(me);
+        var holdWrites = false;
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
             // 지난번 이후 바뀌지 않은 파일은 이미 합쳤다(합치기는 여러 번 해도 같다).
-            if (cache.TryGetValue(file.Id, out var seen) && seen == Token(file)) continue;
-            if (await store.ReadAsync(file.Id, cancellationToken) is not { } text) continue;
-            var document = Document.Parse(text);
+            var isOwn = file.Name == ownName;
+            if ((!isOwn || own.Count == 1) && (file.Md5Checksum is not null || file.ModifiedTime is not null)
+                && cache.TryGetValue(file.Id, out var seen) && seen == Token(file, isOwn)) continue;
+            var text = await store.ReadAsync(file.Id, cancellationToken);
+            var document = text is null ? null : Document.Parse(text);
+            if (isOwn && (document?.CanRewrite(me, account) != true || file != own[0] && document.Extra.Count > 0))
+            {
+                holdWrites = true;
+                continue;
+            }
             if (document is null) log?.Invoke($"settings: 읽을 수 없는 공유 설정 파일을 건너뛴다 ({file.Name})");
             else if (document.Account is { } other && account.Length > 0 && other != account)
             {
@@ -193,7 +203,8 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             SharedSettings.Merge(connection, transaction, read.Values.OfType<Document>().SelectMany(d => d.Entries), now);
             SharedSettings.ApplyCategoryNames(connection, transaction);
             SemesterSettings.Apply(connection, transaction);
-            foreach (var file in files.Where(f => read.ContainsKey(f.Id))) WriteCache(connection, transaction, file);
+            foreach (var file in files.Where(f => f.Name != ownName && read.GetValueOrDefault(f.Id) is not null))
+                WriteCache(connection, transaction, file);
             var listed = files.Select(f => CachePrefix + f.Id).ToHashSet();
             foreach (var stale in cache.Keys.Select(id => CachePrefix + id).Where(key => !listed.Contains(key)))
             {
@@ -203,6 +214,11 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             transaction.Commit();
         }
 
+        if (holdWrites)
+        {
+            HoldDeviceFile();
+            return;
+        }
         await PublishAsync(me, account, own, read, cancellationToken);
     }
 
@@ -231,8 +247,20 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         if (canonical is null || remoteHash != hash)
         {
             // 새 버전이 넣은 모르는 최상위 필드는 그대로 둔다. 이번에 읽지 않았으면 덮어쓰기 전에 한 번 읽는다.
-            if (canonical is not null && !wasRead && await store.ReadAsync(canonical.Id, cancellationToken) is { } existing)
-                current = Document.Parse(existing);
+            if (canonical is not null && !wasRead)
+            {
+                var existing = await store.ReadAsync(canonical.Id, cancellationToken);
+                current = existing is null ? null : Document.Parse(existing);
+                if (current?.CanRewrite(me, account) != true || Hash(current.Raw) != remoteHash)
+                {
+                    // 목록의 버전과 실제 다운로드가 엇갈렸다. 다음 차례에 원문을 다시 합치도록 캐시를 비운다.
+                    using var connection = database.OpenConnection();
+                    using var forget = Sql.Command(connection, null, "DELETE FROM sync_state WHERE sync_key=$key", ("$key", CachePrefix + canonical.Id));
+                    forget.ExecuteNonQuery();
+                    HoldDeviceFile();
+                    return;
+                }
+            }
             foreach (var (name, value) in current?.Extra ?? []) content[name] = value?.DeepClone();
             var text = content.ToJsonString(new JsonSerializerOptions { Encoder = TaskSync.ConflictJson.Encoder });
             uploaded = canonical is null
@@ -243,7 +271,7 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         using (var transaction = connection.BeginTransaction(deferred: false))
         {
             SharedSettings.MarkPublished(connection, transaction, rows);
-            if (uploaded is not null) WriteCache(connection, transaction, uploaded);
+            if ((uploaded ?? canonical) is { } verified) WriteCache(connection, transaction, verified, own: true);
             using var save = Sql.Command(connection, transaction, """
                 INSERT INTO sync_state(sync_key, remote_id, sync_token, last_synced_at, last_error) VALUES ($key, $file, $hash, $now, NULL)
                 ON CONFLICT(sync_key) DO UPDATE SET remote_id=excluded.remote_id, sync_token=excluded.sync_token,
@@ -271,7 +299,14 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToJsonString())));
     }
 
-    private static string Token(AppDataFile file) => $"{file.Md5Checksum}|{file.ModifiedTime?.UtcDateTime:O}";
+    private void HoldDeviceFile()
+    {
+        RecordError(database, UnreadableDeviceFile);
+        log?.Invoke("settings: 이 기기의 공유 파일을 확인할 수 없어 업로드와 중복 파일 정리를 보류합니다.");
+    }
+
+    // 예전 버전은 읽지 못한 파일도 캐시했다. 자기 파일은 검증을 거친 토큰만 재사용한다.
+    private static string Token(AppDataFile file, bool own) => $"{(own ? "verified:" : "")}{file.Md5Checksum}|{file.ModifiedTime?.UtcDateTime:O}";
 
     private Dictionary<string, string> ReadCache()
     {
@@ -283,12 +318,12 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         return cache;
     }
 
-    private static void WriteCache(SqliteConnection connection, SqliteTransaction transaction, AppDataFile file)
+    private static void WriteCache(SqliteConnection connection, SqliteTransaction transaction, AppDataFile file, bool own = false)
     {
         using var command = Sql.Command(connection, transaction, """
             INSERT INTO sync_state(sync_key, sync_token, remote_id) VALUES ($key, $token, $id)
             ON CONFLICT(sync_key) DO UPDATE SET sync_token=excluded.sync_token, remote_id=excluded.remote_id
-            """, ("$key", CachePrefix + file.Id), ("$token", Token(file)), ("$id", file.Id));
+            """, ("$key", CachePrefix + file.Id), ("$token", Token(file, own)), ("$id", file.Id));
         command.ExecuteNonQuery();
     }
 
@@ -317,14 +352,22 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         return command.ExecuteScalar() as string;
     }
 
-    // 사용자가 고쳐야 하는 이유(Drive 권한 없음·Drive API 꺼짐)만. 일시 오류는 다음 동기화가 다시 하므로 null이다.
+    // 상태줄과 미전송 상세에 표시할 이유.
     public static string? UnavailableReason(Database database) =>
-        LastError(database) is (ScopeMissing or ApiDisabled) and var reason ? reason : null;
+        LastError(database) is (ScopeMissing or ApiDisabled or UnreadableDeviceFile) and var reason ? reason : null;
 
     // 기기 파일. 항목: { "<키>": { "value": …, "rev": n, "by": "<기기>", "at": "<UTC 시각>" } }
     internal sealed record Document(string? Device, string? Account, IReadOnlyList<SharedSettings.Entry> Entries, JsonObject Extra, JsonObject Raw)
     {
         private static readonly HashSet<string> Known = ["format", "app", "device", "account", "entries"];
+
+        public bool CanRewrite(string device, string account) =>
+            Device == device && Account == account && Text(Raw["app"]) == "DeskCal"
+            && Raw["format"] is JsonValue format && format.TryGetValue<int>(out var version) && version == Format
+            && Raw["entries"] is JsonObject entries && entries.Count == Entries.Count
+            && entries.All(pair => pair.Value is JsonObject item && item.ContainsKey("value")
+                && item.All(p => p.Key is "value" or "rev" or "by" or "at")
+                && (!item.ContainsKey("at") || Text(item["at"]) is not null));
 
         public JsonObject ToContent() => (JsonObject)Raw.DeepClone();
 

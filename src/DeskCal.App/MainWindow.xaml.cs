@@ -197,6 +197,7 @@ public partial class MainWindow : Window
         text = SharedSettingsSync.UnavailableReason(_database) switch
         {
             SharedSettingsSync.ScopeMissing => text + " · 설정 공유에 Drive 권한 필요",
+            SharedSettingsSync.UnreadableDeviceFile => text + " · 기기 공유 파일 확인 필요",
             SharedSettingsSync.ApiDisabled => text + " · 설정 공유에 Drive API 필요",
             _ => text
         };
@@ -218,6 +219,7 @@ public partial class MainWindow : Window
                 "not_signed_in" => "Google 로그인 대기",
                 "push_failed" => "전송 실패 · 재시도 대기",
                 SharedSettingsSync.ScopeMissing => "Drive 권한 없음 · 알림 영역 메뉴에서 Google 다시 연결",
+                SharedSettingsSync.UnreadableDeviceFile => "기기 공유 파일을 확인할 수 없어 전송 보류",
                 SharedSettingsSync.ApiDisabled => "Google Cloud 프로젝트에서 Drive API를 켜야 함",
                 _ => "전송 대기"
             };
