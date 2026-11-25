@@ -2,9 +2,6 @@
 using System.Windows;
 using System.Windows.Threading;
 using DeskCal.Core;
-using Google.Apis.Calendar.v3;
-using Google.Apis.Services;
-using Google.Apis.Tasks.v1;
 
 namespace DeskCal.App;
 
@@ -13,6 +10,7 @@ public partial class App : Application
     private readonly DispatcherTimer _syncTimer = new() { Interval = TimeSpan.FromMinutes(2) };
     // MCP가 연달아 여러 번 쓸 수 있으므로 신호가 3초 동안 조용해지면 한 번만 동기화한다.
     private readonly DispatcherTimer _quickSyncTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    private readonly CancellationTokenSource _closing = new();
     private Mutex? _singleInstance;
     private IDisposable? _appPresence;
     private TrayIcon? _tray;
@@ -65,7 +63,7 @@ public partial class App : Application
         _quickSyncTimer.Tick += async (_, _) =>
         {
             _quickSyncTimer.Stop();
-            if (PendingChanges.ExistSince(database, _lastSyncStartedAt)) await SyncAsync(database, google);
+            if (await Task.Run(() => PendingChanges.ExistSince(database, _lastSyncStartedAt)) && !_closing.IsCancellationRequested) await SyncAsync(database, google);
         };
         _ = SyncAsync(database, google);
         _appPresence = AppPresence.Register(database);
@@ -94,23 +92,16 @@ public partial class App : Application
         _lastSyncStartedAt = DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
         try
         {
-            if (await google.LoadAsync() is not { } credential) return;
-            var initializer = new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "DeskCal" };
-            using var calendar = new CalendarService(initializer);
-            using var tasks = new TasksService(initializer);
-            await RunAsync("events", () => new EventSync(database, new GoogleCalendarRemote(calendar)).SyncAsync(CancellationToken.None));
-            await RunAsync("todos", () => new TaskSync(database, new GoogleTasksRemote(tasks)).SyncAsync(CancellationToken.None));
-            var holidays = new HolidayRepository(database);
-            if (HolidaySync.IsDue(holidays.LastSyncedAt(), DateTimeOffset.Now))
-                await RunAsync("holidays", () => HolidaySync.SyncAsync(calendar, holidays, DateTimeOffset.Now, CancellationToken.None));
-            ChangeSignal.Notify();
+            if (await new SyncCoordinator(database, google, LogSync).RunAsync(true, _closing.Token))
+                ChangeSignal.Notify();
         }
+        catch (OperationCanceledException) when (_closing.IsCancellationRequested) { }
         catch (Exception exception) when (GoogleAccount.IsRevoked(exception))
         {
             // 토큰이 만료·취소됐다. 지우지 않으면 계속 "연결됨"으로 보이고 다시 연결할 수도 없다.
             LogSync($"token revoked, sign in again: {exception.GetType().Name}: {exception.Message}");
-            await google.ForgetTokenAsync();
-            _tray?.ShowDisconnected(google.Email);
+            var email = await Task.Run(() => google.Email);
+            _tray?.ShowDisconnected(email);
         }
         catch (Exception exception)
         {
@@ -122,17 +113,6 @@ public partial class App : Application
             if (_syncAgain) OnExternalChange();
         }
 
-        static async Task RunAsync(string name, Func<Task> work)
-        {
-            try
-            {
-                await work();
-            }
-            catch (Exception exception) when (!GoogleAccount.IsRevoked(exception))
-            {
-                LogSync($"{name} failed: {exception.GetType().Name}: {exception.Message}");
-            }
-        }
     }
 
     private static void LogSync(string message) => AppendLog("sync.log", message);
@@ -172,6 +152,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _closing.Cancel();
         _appPresence?.Dispose();
         _tray?.Dispose();
         _singleInstance?.Dispose();

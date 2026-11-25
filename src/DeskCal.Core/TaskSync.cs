@@ -74,7 +74,7 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
     public async Task SyncAsync(CancellationToken cancellationToken)
     {
         var pushed = await PushAsync(cancellationToken);
-        Pull(await remote.ListAllAsync(cancellationToken), pushed);
+        Pull(await remote.ListAllAsync(cancellationToken), pushed, cancellationToken);
     }
 
     // 보낸 결과를 받은 Google ID를 돌려준다. 방금 올린 항목은 바로 이은 목록 조회에 아직 없을 수 있다.
@@ -233,8 +233,9 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
     }
 
     // 원격 전체를 로컬에 반영한다. 보낼 것이 남은 행(dirty·failed·unknown)은 덮지 않는다.
-    private void Pull(IReadOnlyList<GoogleTask> items, IReadOnlySet<string> justPushed)
+    private void Pull(IReadOnlyList<GoogleTask> items, IReadOnlySet<string> justPushed, CancellationToken cancellationToken)
     {
+        var seen = items.Where(i => i.Id is not null && i.Deleted != true).Select(i => i.Id!).ToHashSet();
         var now = Validation.Timestamp(_clock);
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
@@ -248,18 +249,18 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                     Sql.Number(reader, "is_dirty") != 0 || Sql.Text(reader, "push_state") != "synced", Sql.Text(reader, "google_etag"), Sql.Text(reader, "deleted_at"));
         }
 
-        var seen = new HashSet<string>();
         foreach (var item in items)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (item.Id is null) continue;
             var found = locals.TryGetValue(item.Id, out var local);
-            if (item.Deleted != true) seen.Add(item.Id);
             if (found && local.Pending) continue;
             if (item.Deleted == true)
             {
                 if (found && local.DeletedAt is null) MarkDeleted(connection, transaction, local.Id, now);
                 continue;
             }
+            if (found && local.Etag == item.ETag && local.DeletedAt is null) continue;
             var values = new Dictionary<string, object?>
             {
                 ["google_task_id"] = item.Id, ["google_etag"] = item.ETag, ["title"] = item.Title ?? "", ["memo"] = item.Notes ?? "",
@@ -284,6 +285,7 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
         foreach (var (googleId, local) in locals)
             if (!seen.Contains(googleId) && !justPushed.Contains(googleId) && !local.Pending && local.DeletedAt is null)
                 MarkDeleted(connection, transaction, local.Id, now);
+        cancellationToken.ThrowIfCancellationRequested();
         transaction.Commit();
     }
 

@@ -121,13 +121,13 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         try
         {
             var (items, next) = await remote.ListAsync(token, cancellationToken);
-            Pull(items, next, fullList: token is null);
+            Pull(items, next, fullList: token is null, cancellationToken);
         }
         catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.Gone && token is not null)
         {
             // 토큰이 만료됐다. 전체를 다시 받아 대조한다.
             var (items, next) = await remote.ListAsync(null, cancellationToken);
-            Pull(items, next, fullList: true);
+            Pull(items, next, fullList: true, cancellationToken);
         }
     }
 
@@ -135,7 +135,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
 
     private async Task PushAsync(CancellationToken cancellationToken)
     {
-        var records = ReadAll();
+        var records = ReadPushRecords();
         foreach (var snapshot in records.Where(r => r.Record.IsDirty).ToList())
         {
             var value = snapshot.Record;
@@ -316,7 +316,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
-        var current = ReadAll(connection, transaction).Single(s => s.Record.EventId == snapshot.Record.EventId).Record;
+        var current = ReadStored(connection, transaction, "WHERE event_id=$id", ("$id", snapshot.Record.EventId)).Single().Record;
         // 생성 응답을 못 받은 사이 다른 PC가 고쳤을 수 있다. 다음 patch가 그 값을 되돌리지 않게 먼저 합친다.
         var merged = Checklist.Merge(current.Checklist, Checklist.ReadProperties(existing.ExtendedProperties?.Private__));
         using var command = Sql.Command(connection, transaction, "UPDATE event SET google_etag=$etag, checklist=$checklist WHERE event_id=$event;",
@@ -331,7 +331,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         using var transaction = connection.BeginTransaction(deferred: false);
         // 보내는 사이에 또 고쳤으면 그 최신 내용을 남긴다(버리는 것은 지금 행이다).
         var isCurrent = CurrentRevision(connection, transaction, snapshot.Record.EventId) == snapshot.Record.LocalRevision;
-        var discarded = isCurrent ? snapshot.Record : ReadAll(connection, transaction).Single(s => s.Record.EventId == snapshot.Record.EventId).Record;
+        var discarded = isCurrent ? snapshot.Record : ReadStored(connection, transaction, "WHERE event_id=$id", ("$id", snapshot.Record.EventId)).Single().Record;
         // 체크리스트를 또 고쳤으면 dirty로 남겨 다음 동기화에서 합친다. 여기서 풀면 이어지는 pull이 그 변경을 덮는다.
         if (!isCurrent && discarded.Checklist.Count > 0) return;
         if (merged is not null)
@@ -364,19 +364,29 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
 
     // ---- pull ----
 
-    private void Pull(IReadOnlyList<Event> items, string? nextSyncToken, bool fullList)
+    private void Pull(IReadOnlyList<Event> items, string? nextSyncToken, bool fullList, CancellationToken cancellationToken)
     {
         var now = Validation.Timestamp(_clock);
         using var connection = database.OpenConnection();
+        var sorted = items.OrderBy(i => i.RecurringEventId is null ? 0 : 1).ToArray();
+        var remoteIds = fullList ? items.Where(i => i.Id is not null).Select(i => i.Id!).ToHashSet() : null;
+        using var version = Sql.Command(connection, null, "PRAGMA data_version;");
+        var before = (long)version.ExecuteScalar()!;
+        var records = !fullList && sorted.Length == 0 ? [] : ReadStored(connection, null);
+        cancellationToken.ThrowIfCancellationRequested();
         using var transaction = connection.BeginTransaction(deferred: false);
-        var byGoogleId = new Dictionary<string, Stored>();
-        foreach (var stored in ReadAll(connection, transaction))
-            if (stored.Record.GoogleEventId is { } id) byGoogleId[id] = stored;
-        var usedUids = new HashSet<string>(ReadAll(connection, transaction).Select(s => s.Record.EventUid));
+        version.Transaction = transaction;
+        // WAL 읽기 동안 MCP가 썼으면 최신 revision으로 다시 판단한다.
+        if ((fullList || sorted.Length != 0) && (long)version.ExecuteScalar()! != before) records = ReadStored(connection, transaction);
+        var byGoogleId = records.Where(s => s.Record.GoogleEventId != null).ToDictionary(s => s.Record.GoogleEventId!);
+        var localInstances = records.Where(s => s.Record.ParentEventId != null)
+            .ToDictionary(s => (s.Record.ParentEventId!.Value, s.Record.OriginalStartKey!));
+        var usedUids = records.Select(s => s.Record.EventUid).ToHashSet();
 
         // 예외는 부모보다 먼저 올 수 있으므로 시리즈 본체를 먼저 적용한다.
-        foreach (var item in items.OrderBy(i => i.RecurringEventId is null ? 0 : 1))
+        foreach (var item in sorted)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (item.Id is null) continue;
             byGoogleId.TryGetValue(item.Id, out var local);
             // 이 PC에서 만든 예외 회차는 올리기 전까지 Google ID가 없다. 시리즈와 회차 키로 찾는다.
@@ -384,8 +394,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 && byGoogleId.TryGetValue(item.RecurringEventId, out var series))
             {
                 var key = OriginalKey(item.OriginalStartTime);
-                local = byGoogleId.Values.Concat(ReadAll(connection, transaction))
-                    .FirstOrDefault(s => s.Record.ParentEventId == series.Record.EventId && s.Record.OriginalStartKey == key);
+                localInstances.TryGetValue((series.Record.EventId, key), out local);
             }
             if (local is not null && (local.Record.IsDirty || local.Record.PushState != "synced")) continue;
             if (item.Status == "cancelled")
@@ -393,6 +402,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 ApplyCancelled(connection, transaction, item, local, byGoogleId, now);
                 continue;
             }
+            if (local is not null && local.Etag == item.ETag && local.Record.DeletedAt is null) continue;
             var value = FromRemote(item, local?.Record, byGoogleId, usedUids, now);
             if (local is null)
             {
@@ -416,17 +426,17 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         {
             // 전체 대조: 보낼 것이 없는 동기화된 행 중 원격에 없는 것은 다른 곳에서 지운 것이다.
             // 아직 안 올라간 행은 dirty라서 빠진다. 충돌 처리로 etag를 비운 행(404·410)도 여기서 지운다.
-            var remoteIds = items.Where(i => i.Id is not null).Select(i => i.Id!).ToHashSet();
             foreach (var stored in byGoogleId.Values)
             {
                 var record = stored.Record;
-                if (remoteIds.Contains(record.GoogleEventId!) || record.IsDirty || record.PushState != "synced" || record.DeletedAt is not null) continue;
+                if (remoteIds!.Contains(record.GoogleEventId!) || record.IsDirty || record.PushState != "synced" || record.DeletedAt is not null) continue;
                 using var command = Sql.Command(connection, transaction, "UPDATE event SET deleted_at=$now, updated_at=$now WHERE event_id=$id;",
                     ("$now", now), ("$id", record.EventId));
                 command.ExecuteNonQuery();
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         using (var command = Sql.Command(connection, transaction,
             "INSERT INTO sync_state(sync_key, sync_token, last_synced_at) VALUES ($key, $token, $at) " +
             "ON CONFLICT(sync_key) DO UPDATE SET sync_token=excluded.sync_token, last_synced_at=excluded.last_synced_at;",
@@ -513,15 +523,16 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         return command.ExecuteScalar() as string;
     }
 
-    private List<Stored> ReadAll()
+    private List<Stored> ReadPushRecords()
     {
         using var connection = database.OpenConnection();
-        return ReadAll(connection, null);
+        return ReadStored(connection, null, "WHERE is_dirty=1 OR event_id IN (SELECT parent_event_id FROM event WHERE is_dirty=1 AND parent_event_id IS NOT NULL)");
     }
 
-    private static List<Stored> ReadAll(SqliteConnection connection, SqliteTransaction? transaction)
+    private static List<Stored> ReadStored(SqliteConnection connection, SqliteTransaction? transaction,
+        string filter = "", params (string Name, object? Value)[] parameters)
     {
-        using var command = Sql.Command(connection, transaction, "SELECT * FROM event ORDER BY event_id;");
+        using var command = Sql.Command(connection, transaction, $"SELECT * FROM event {filter} ORDER BY event_id;", parameters);
         using var reader = command.ExecuteReader();
         var result = new List<Stored>();
         while (reader.Read())
