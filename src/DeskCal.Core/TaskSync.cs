@@ -78,7 +78,7 @@ public sealed class GoogleTasksRemote(TasksService service) : ITasksRemote
 /// 충돌(412)은 원격 우선: 로컬 변경을 sync_conflict에 남기고 원격 값을 받는다.
 /// 생성 응답을 못 받으면(결과 불명) 중복을 막으려고 자동으로 다시 보내지 않는다(push_state='unknown').
 /// </summary>
-public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvider? clock = null)
+public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvider? clock = null, Action<string>? log = null)
 {
     // 충돌 기록은 사람이 읽는다. 한글을 \uXXXX로 바꾸지 않는다.
     internal static readonly JsonSerializerOptions ConflictJson = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -101,13 +101,24 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                 if (!seen.Contains(reader.GetString(0)) && !pushed.Contains(reader.GetString(0))) missing.Add(reader.GetString(0));
 
         var verified = new List<GoogleTask>();
+        var held = new List<string>();
         foreach (var id in missing)
         {
-            var result = await remote.GetAsync(id, cancellationToken);
-            if (result is not null && result.Id != id) throw new InvalidDataException("할 일 단건 조회의 ID가 다릅니다.");
-            verified.Add(result ?? new GoogleTask { Id = id, Deleted = true });
+            try
+            {
+                var result = await remote.GetAsync(id, cancellationToken);
+                if (result is not null && result.Id != id) throw new InvalidDataException("할 일 단건 조회의 ID가 다릅니다.");
+                verified.Add(result ?? new GoogleTask { Id = id, Deleted = true });
+            }
+            catch (Exception exception) when (exception is not TokenResponseException && !cancellationToken.IsCancellationRequested)
+            {
+                // 한 ID의 조회 실패(503·403 rateLimit·ID 불일치 등)로 이번 pull 전체를 버리지 않는다.
+                // 그 ID만 이번 차례에 보류하고(지우지 않음) 다음 차례에 다시 확인한다.
+                held.Add(exception.GetType().Name);
+            }
         }
         Pull(listed, verified, cancellationToken);
+        if (held.Count > 0) log?.Invoke($"todos: 단건 조회 {held.Count}건 보류 ({string.Join(", ", held.Distinct())})");
     }
 
     // 보낸 결과를 받은 Google ID를 돌려준다. 방금 올린 항목은 바로 이은 목록 조회에 아직 없을 수 있다.

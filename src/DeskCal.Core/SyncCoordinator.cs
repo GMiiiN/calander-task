@@ -49,7 +49,7 @@ public sealed class SyncCoordinator(Database database, GoogleAccount google, Act
     internal async Task SyncDataAsync(ICalendarRemote events, ITasksRemote tasks, CancellationToken token)
     {
         await RunService("events", () => new EventSync(database, events).SyncAsync(token), token);
-        await RunService("todos", () => new TaskSync(database, tasks).SyncAsync(token), token);
+        await RunService("todos", () => new TaskSync(database, tasks, log: log).SyncAsync(token), token);
     }
 
     private async Task RunService(string name, Func<Task> work, CancellationToken token)

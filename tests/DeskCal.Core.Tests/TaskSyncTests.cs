@@ -418,6 +418,51 @@ public sealed class TaskSyncTests
         Assert.Equal(1, remote.InsertCalls);
     }
 
+    // 리뷰 A-3: 단건 조회 하나가 실패하면 할 일 pull 전체(폰 변경 반영·표식 연결·tasks 시각)가 그 차례에 버려졌다.
+    // 실패한 ID만 보류하고(지우지 않음) 나머지는 반영한다.
+    [Fact]
+    public async Task FailedSingleLookupHoldsOnlyThatId()
+    {
+        using var db = new TestDatabase();
+        var created = db.Todos.Create([new("조회 실패"), new("원격 삭제"), new("폰에서 고칠 일")]);
+        var remote = new FakeTasks();
+        var logged = new List<string>();
+        var sync = new TaskSync(db.Database, remote, log: logged.Add);
+        await sync.SyncAsync(default);
+        string RemoteId(int index) => remote.Items.Single(t => t.Title == created[index].Title).Id;
+        var (failing, deleted, edited) = (RemoteId(0), RemoteId(1), RemoteId(2));
+        var lost = db.Todos.Create([new("응답 유실")]).Single();
+        remote.LoseInsertResponse = true;
+        remote.HideNewlyInsertedFromList = true;
+        await sync.SyncAsync(default);
+        Assert.Equal("unknown", db.Todos.Get(lost.TodoUid).PushState);
+
+        remote.LoseInsertResponse = false;
+        remote.Hidden.Add(failing);
+        remote.FailGet[failing] = new GoogleApiException("tasks", "backend error") { HttpStatusCode = HttpStatusCode.ServiceUnavailable };
+        remote.Hidden.Add(deleted);
+        remote.Items.RemoveAll(t => t.Id == deleted);
+        remote.Edit(edited, t => t.Title = "폰에서 고친 제목");
+        db.Execute("DELETE FROM sync_state WHERE sync_key='tasks_default'");
+        await sync.SyncAsync(default);
+
+        Assert.Equal(2, remote.GetCalls);
+        Assert.Null(db.Todos.Get(created[0].TodoUid).DeletedAt);
+        Assert.Equal("synced", db.Todos.Get(created[0].TodoUid).PushState);
+        Assert.NotNull(db.Todos.Get(created[1].TodoUid).DeletedAt);
+        Assert.Equal("폰에서 고친 제목", db.Todos.Get(created[2].TodoUid).Title);
+        Assert.Equal("synced", db.Todos.Get(lost.TodoUid).PushState);
+        Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM sync_state WHERE sync_key='tasks_default'"));
+        Assert.Contains(logged, line => line.Contains("1건 보류") && line.Contains(nameof(GoogleApiException)));
+
+        // 다음 차례에 다시 확인한다. 조회가 되면 목록에 없어도 남는다.
+        remote.FailGet.Clear();
+        await sync.SyncAsync(default);
+        Assert.Equal(3, remote.GetCalls);
+        Assert.Null(db.Todos.Get(created[0].TodoUid).DeletedAt);
+        Assert.Equal(4, remote.InsertCalls);
+    }
+
     [Theory]
     [InlineData("legacy")]
     [InlineData("damaged")]
@@ -490,12 +535,14 @@ public sealed class TaskSyncTests
         public bool HideAll { get; set; }
         public bool LoseInsertResponse { get; set; }
         public bool HideNewlyInsertedFromList { get; set; }
+        public HashSet<string> Hidden { get; } = [];
+        public Dictionary<string, Exception> FailGet { get; } = [];
         private readonly HashSet<string> _insertedSinceList = [];
 
         public Task<IReadOnlyList<GoogleTask>> ListAllAsync(CancellationToken cancellationToken)
         {
             if (FailList) throw new HttpRequestException("다음 페이지 조회 실패");
-            var visible = Items.Where(t => !HideAll && (!HideNewlyInsertedFromList || !_insertedSinceList.Contains(t.Id))).Select(Copy).ToList();
+            var visible = Items.Where(t => !HideAll && !Hidden.Contains(t.Id) && (!HideNewlyInsertedFromList || !_insertedSinceList.Contains(t.Id))).Select(Copy).ToList();
             _insertedSinceList.Clear();
             return Task.FromResult<IReadOnlyList<GoogleTask>>(visible);
         }
@@ -504,6 +551,7 @@ public sealed class TaskSyncTests
         public Task<GoogleTask?> GetAsync(string id, CancellationToken ct)
         {
             GetCalls++;
+            if (FailGet.TryGetValue(id, out var failure)) throw failure;
             return Task.FromResult(Items.Where(t => t.Id == id).Select(Copy).SingleOrDefault());
         }
 
