@@ -127,6 +127,9 @@ public sealed class CalendarTools(Database database, Func<Task<SyncOutcome>>? se
         }
         var result = ToolOutput.Object(new { Ddays = agenda.Ddays.Select(d => new { Event = output.Occurrence(d.Occurrence), d.DaysRemaining }) });
         result["groups"] = groups;
+        // S7: 학생 모드가 켜져 있고 오늘이 학기 안이면 앱 상태줄과 같은 현지 오늘의 주차. 조회 구간과 상관없다. 아니면 필드를 생략한다.
+        if (SemesterSettings.WeekOf(database, agenda.Today) is var (week, weeks))
+            result["semester_week"] = new JsonObject { ["current"] = week, ["total"] = weeks };
         return result;
     }
 

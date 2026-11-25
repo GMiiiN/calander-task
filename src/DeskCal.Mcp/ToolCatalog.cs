@@ -14,7 +14,7 @@ internal static class ToolCatalog
 
     public static IEnumerable<McpServerTool> Create(CalendarTools service)
     {
-        yield return Define("get_agenda", "Use get_agenda for briefings and summaries. Returns sidebar groups and D-days. Events within each date are in start-time order; each date group's day_order lists that date's single-day events in the order the user sees in the DeskCal app (use it with reorder_events)." + RELATIVE_DATES,
+        yield return Define("get_agenda", "Use get_agenda for briefings and summaries. Returns sidebar groups and D-days. Events within each date are in start-time order; each date group's day_order lists that date's single-day events in the order the user sees in the DeskCal app (use it with reorder_events). When the user's student mode is on and today is within the semester, semester_week gives today's week number (current) and the semester length (total), based on today rather than the requested range." + RELATIVE_DATES,
             Object(new() { ["start_date"] = Date(), ["end_date"] = Date() }), true);
         yield return Define("list_events", "List expanded events, including overlaps. Defaults to today through +30 days; at most 366 days. Pages contain at most 200 events. Pass cursor with the same filters; restart if results change." + RELATIVE_DATES,
             Object(new() { ["start_date"] = Date(), ["end_date"] = Date(), ["keyword"] = String(), ["category"] = Category(), ["include_deleted"] = Boolean(), ["cursor"] = String() }), true);
