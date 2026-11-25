@@ -182,8 +182,26 @@ public partial class MainWindow : Window
     private void UpdateSyncStatus() => SyncStatusText.Text = _settings.Get(ProtectedTokenStore.SettingKey) is null
         ? _settings.Get("google_account_id") is null ? "Google 연결 전 · 이 PC에만 저장" : "Google 연결 끊김 · 알림 영역 메뉴에서 다시 연결"
         : EventSync.LastSyncedAt(_database) is { } last
-            ? $"Google 동기화됨 · {last.ToLocalTime():HH:mm}"
+            ? $"Calendar 동기화 · {last.ToLocalTime():HH:mm}"
             : "Google 연결됨 · 동기화 준비 중";
+
+    private void OnSyncDetails(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = PlacementMode.Top };
+        foreach (var item in PendingChanges.List(_database))
+        {
+            var reason = item.Reason switch
+            {
+                "needs_review" => "전송 결과 확인 필요",
+                "not_signed_in" => "Google 로그인 대기",
+                "push_failed" => "전송 실패 · 재시도 대기",
+                _ => "전송 대기"
+            };
+            menu.Items.Add(new MenuItem { Header = $"{item.Kind} · {item.Title} · {reason}", IsEnabled = false });
+        }
+        if (menu.Items.Count == 0) menu.Items.Add(new MenuItem { Header = "전송 대기 항목이 없습니다.", IsEnabled = false });
+        menu.IsOpen = true;
+    }
 
     private void RefreshFromOutside()
     {

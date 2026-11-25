@@ -22,6 +22,26 @@ public sealed class PendingChangesTests
         Assert.True(PendingChanges.ExistSince(db.Database, At(syncStarted)));
     }
 
+    [Theory]
+    [InlineData(true, "synced", null)]
+    [InlineData(false, "synced", null)]
+    [InlineData(true, "pending", null)]
+    [InlineData(false, "pending", "not_signed_in")]
+    [InlineData(true, "failed", "push_failed")]
+    [InlineData(false, "failed", "not_signed_in")]
+    [InlineData(true, "unknown", "needs_review")]
+    [InlineData(false, "unknown", "needs_review")]
+    public void DetailsUseTheStoredRowAndAccountState(bool signedIn, string state, string? reason)
+    {
+        using var db = new TestDatabase();
+        if (signedIn) db.Execute("INSERT INTO setting VALUES ($key,'test');", ("$key", ProtectedTokenStore.SettingKey));
+        db.Todos.Create([new("과제")]);
+        db.Execute("UPDATE todo SET push_state=$state", ("$state", state));
+        var rows = PendingChanges.List(db.Database);
+        if (state == "synced") Assert.Empty(rows);
+        else Assert.Equal(reason, Assert.Single(rows).Reason);
+    }
+
     [Fact]
     public void EventChangesCountToo()
     {

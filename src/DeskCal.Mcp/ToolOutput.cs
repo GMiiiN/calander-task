@@ -10,7 +10,7 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
 {
     internal static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
     private readonly IReadOnlyList<Category> _categories = database.Measure("categories", () => ReadCategories(database));
-    private readonly bool _signedIn = database.Measure("account", () => ReadSignedIn(database));
+    private readonly bool _signedIn = database.Measure("account", () => PendingChanges.HasToken(database));
     // Capture the optional receipt metadata before mutating. A failed metadata read must never
     // turn a committed create into an error response that the caller could retry.
     private readonly bool? _appRunning = isWrite ? AppPresence.IsRunning(database) : null;
@@ -81,28 +81,11 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
     private JsonObject AddSync(JsonObject item, string pushState)
     {
         item["sync"] = pushState == "synced" ? "synced" : "pending";
-        var reason = pushState switch
-        {
-            "synced" => null,
-            // unknown은 다시 로그인해도 자동 전송되지 않아 사람이 골라야 하므로 로그인 여부보다 먼저 알린다.
-            "unknown" => "needs_review",
-            _ when !_signedIn => "not_signed_in",
-            "failed" => "push_failed",
-            _ when _appRunning == false => "app_not_running",
-            _ => null
-        };
+        var reason = PendingChanges.Reason(pushState, _signedIn, _appRunning);
         if (reason is not null) item["reason"] = reason;
         return item;
     }
 
-    private static bool ReadSignedIn(Database database)
-    {
-        using var connection = database.OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT 1 FROM setting WHERE setting_key = $key;";
-        command.Parameters.AddWithValue("$key", ProtectedTokenStore.SettingKey);
-        return command.ExecuteScalar() is not null;
-    }
     public static JsonObject Object(object value) => JsonSerializer.SerializeToNode(value, JsonOptions)!.AsObject();
 
     private static IReadOnlyList<Category> ReadCategories(Database database)
