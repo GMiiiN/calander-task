@@ -119,6 +119,45 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
         }
         Pull(listed, verified, cancellationToken);
         if (held.Count > 0) log?.Invoke($"todos: 단건 조회 {held.Count}건 보류 ({string.Join(", ", held.Distinct())})");
+        await RemoveSentMarkersAsync(cancellationToken);
+    }
+
+    // 이 PC가 보낸 생성이 Google 항목과 연결됐으면(응답 수신·표식 연결·수동 연결) 메모에서 시도 표식을 지운다.
+    // 폰·Gmail의 Tasks 화면에 [DeskCal:…]이 계속 보이지 않게 한다. 다른 PC가 만든 표식은 그 PC의 복구에 필요하므로 건드리지 않는다.
+    // 마지막으로 받은 etag로만 바꾼다. 그사이 다른 곳에서 고쳤으면(412) 다음 pull이 원격 값을 받은 뒤 다시 한다.
+    private async Task RemoveSentMarkersAsync(CancellationToken cancellationToken)
+    {
+        List<Snapshot> linked;
+        using (var connection = database.OpenConnection())
+            linked = ReadSnapshots(connection, null, """
+                google_task_id IS NOT NULL AND google_etag IS NOT NULL AND is_dirty=0 AND push_state='synced' AND deleted_at IS NULL
+                AND EXISTS (SELECT 1 FROM task_attempt a WHERE a.todo_id=todo.todo_id AND a.sent_revision IS NOT NULL)
+                """);
+        var held = new List<string>();
+        foreach (var snapshot in linked)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var updated = await remote.UpdateAsync(ToRemote(snapshot with { Marker = null }), cancellationToken);
+                Apply(snapshot, updated.Id, updated.ETag);
+                ForgetMarker(snapshot);
+            }
+            catch (Exception exception) when (exception is not TokenResponseException && !cancellationToken.IsCancellationRequested)
+            {
+                // 412(그사이 변경)·404(삭제)·일시 오류. 로컬 내용은 바꾸지 않았으므로 버릴 것도 없다. 다음 차례에 다시 한다.
+                held.Add(exception.GetType().Name);
+            }
+        }
+        if (held.Count > 0) log?.Invoke($"todos: 표식 정리 {held.Count}건 보류 ({string.Join(", ", held.Distinct())})");
+    }
+
+    private void ForgetMarker(Snapshot snapshot)
+    {
+        using var connection = database.OpenConnection();
+        using var command = Sql.Command(connection, null, "DELETE FROM task_attempt WHERE todo_id=$id AND marker=$marker;",
+            ("$id", snapshot.TodoId), ("$marker", snapshot.Marker));
+        command.ExecuteNonQuery();
     }
 
     // 보낸 결과를 받은 Google ID를 돌려준다. 방금 올린 항목은 바로 이은 목록 조회에 아직 없을 수 있다.
@@ -174,8 +213,11 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                 }
                 else
                 {
-                    var updated = await remote.UpdateAsync(ToRemote(snapshot), cancellationToken);
+                    // 이 PC가 보낸 표식은 연결이 확인됐으므로 싣지 않는다(이번 갱신으로 Google 메모에서 지워진다).
+                    // 다른 PC의 표식(보낸 revision 없음)은 그 PC가 아직 연결하지 못했을 수 있어 그대로 돌려준다.
+                    var updated = await remote.UpdateAsync(ToRemote(snapshot with { Marker = snapshot.MarkerRevision is null ? snapshot.Marker : null }), cancellationToken);
                     Apply(snapshot, updated.Id, updated.ETag);
+                    if (snapshot.MarkerRevision is not null) ForgetMarker(snapshot);
                     if (updated.Id is not null) pushed.Add(updated.Id);
                 }
             }
@@ -361,12 +403,14 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
             {
                 Sql.Update(connection, transaction, "todo", local.Id, values);
             }
-            // 다른 PC도 이후 편집에서 서버가 보존한 표식을 그대로 돌려준다.
+            // 다른 PC도 이후 편집에서 서버가 보존한 표식을 그대로 돌려준다(그 PC가 응답을 잃었으면 이 표식으로 연결한다).
+            // 이 PC가 보낸 표식이 그대로면 보낸 revision을 유지해 RemoveSentMarkersAsync가 지우게 하고, 다른 표식이면 남의 것으로 둔다.
             if (marker is not null)
             {
-                using var remember = Sql.Command(connection, transaction,
-                    "INSERT INTO task_attempt(todo_id,marker) VALUES ($id,$marker) ON CONFLICT(todo_id) DO UPDATE SET marker=excluded.marker",
-                    ("$id", local.Id), ("$marker", marker));
+                using var remember = Sql.Command(connection, transaction, """
+                    INSERT INTO task_attempt(todo_id,marker) VALUES ($id,$marker) ON CONFLICT(todo_id) DO UPDATE
+                        SET sent_revision=CASE WHEN marker=excluded.marker THEN sent_revision END, marker=excluded.marker
+                    """, ("$id", local.Id), ("$marker", marker));
                 remember.ExecuteNonQuery();
             }
             else
@@ -407,17 +451,24 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
     private static List<Snapshot> ReadSnapshots(SqliteConnection connection, SqliteTransaction? transaction, string where,
         params (string Name, object? Value)[] parameters)
     {
-        using var command = Sql.Command(connection, transaction, $"SELECT todo.*, (SELECT marker FROM task_attempt a WHERE a.todo_id=todo.todo_id) AS marker FROM todo WHERE {where} ORDER BY todo_id;", parameters);
+        using var command = Sql.Command(connection, transaction, $"""
+            SELECT todo.*, (SELECT marker FROM task_attempt a WHERE a.todo_id=todo.todo_id) AS marker,
+                (SELECT sent_revision FROM task_attempt a WHERE a.todo_id=todo.todo_id) AS marker_revision
+            FROM todo WHERE {where} ORDER BY todo_id;
+            """, parameters);
         using var reader = command.ExecuteReader();
         var result = new List<Snapshot>();
         while (reader.Read())
             result.Add(new Snapshot(Sql.Number(reader, "todo_id"), Sql.Text(reader, "todo_uid")!, Sql.Text(reader, "google_task_id"),
                 Sql.Text(reader, "google_etag"), Sql.Text(reader, "title")!, Sql.Text(reader, "memo")!, Sql.Text(reader, "due_date"),
                 Sql.Number(reader, "is_done") != 0, Sql.Text(reader, "completed_at"), Sql.Text(reader, "updated_at")!,
-                Sql.Text(reader, "deleted_at"), Sql.Number(reader, "local_revision"), Sql.Text(reader, "marker")));
+                Sql.Text(reader, "deleted_at"), Sql.Number(reader, "local_revision"), Sql.Text(reader, "marker"),
+                reader["marker_revision"] is long revision ? revision : null));
         return result;
     }
 
+    // Marker: task_attempt의 표식. MarkerRevision이 있으면 이 PC가 보낸 생성의 표식이다(없으면 pull에서 기억한 다른 PC의 표식).
     private sealed record Snapshot(long TodoId, string TodoUid, string? GoogleTaskId, string? GoogleEtag, string Title, string Memo,
-        string? DueDate, bool IsDone, string? CompletedAt, string UpdatedAt, string? DeletedAt, long LocalRevision, string? Marker);
+        string? DueDate, bool IsDone, string? CompletedAt, string UpdatedAt, string? DeletedAt, long LocalRevision, string? Marker,
+        long? MarkerRevision = null);
 }

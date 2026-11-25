@@ -36,7 +36,11 @@ public sealed class TaskRecovery(Database database)
         using var find = Sql.Command(c, tx, "SELECT todo_id FROM todo WHERE todo_uid=$uid AND push_state='unknown' AND google_task_id IS NULL", ("$uid", uid));
         if (find.ExecuteScalar() is not long localId) return Task.FromResult(false);
         var now = Validation.Timestamp(TimeProvider.System);
-        using (var clear = Sql.Command(c, tx, "DELETE FROM task_attempt WHERE todo_id=$id", ("$id", localId)))
+        // 새로 보내면 다음 push가 새 시도 표식을 만든다. 사본에 연결하면 이 PC가 보낸 시도(보낸 revision 있음)만 남겨
+        // 동기화가 연결된 Google 메모에서 그 표식을 지우게 한다(TaskSync.RemoveSentMarkersAsync).
+        using (var clear = Sql.Command(c, tx, candidate is null
+            ? "DELETE FROM task_attempt WHERE todo_id=$id"
+            : "DELETE FROM task_attempt WHERE todo_id=$id AND sent_revision IS NULL", ("$id", localId)))
             clear.ExecuteNonQuery();
         if (candidate is null)
         {

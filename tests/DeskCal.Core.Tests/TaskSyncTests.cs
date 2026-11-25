@@ -344,6 +344,65 @@ public sealed class TaskSyncTests
         Assert.Equal("별개", remote.Items.Single(i => i.Id == "other").Notes);
     }
 
+    // 리뷰 A-4·B-L3: 시도 표식이 생성 확인 뒤에도 모든 갱신에 다시 실려 폰의 Tasks 메모에 계속 보였다.
+    // 생성 응답을 받으면 같은 동기화에서 표식을 지우고, 그 뒤 갱신에는 다시 싣지 않는다.
+    [Fact]
+    public async Task SuccessfulCreateRemovesItsMarkerInTheSameSync()
+    {
+        using var db = new TestDatabase();
+        var created = db.Todos.Create([new("바로 연결", Memo: "메모")]).Single();
+        var remote = new FakeTasks();
+        var sync = new TaskSync(db.Database, remote);
+        await sync.SyncAsync(default);
+        Assert.Equal("메모", Assert.Single(remote.Items).Notes);
+        Assert.Equal(1, remote.UpdateCalls);
+        Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM task_attempt"));
+
+        await sync.SyncAsync(default);
+        db.Todos.Update(created.TodoUid, new() { Title = "제목만 고침" });
+        await sync.SyncAsync(default);
+        Assert.Equal(("제목만 고침", "메모"), (remote.Items.Single().Title, remote.Items.Single().Notes));
+        Assert.Equal(2, remote.UpdateCalls);
+        Assert.Equal(1, remote.InsertCalls);
+    }
+
+    // 응답을 잃은 PC(A)가 아직 연결하지 못한 동안 다른 PC(B)의 갱신은 A의 표식을 그대로 돌려준다.
+    // A가 표식으로 연결하면 메모에서 지우고, B도 그 뒤로는 표식을 싣지 않는다.
+    [Fact]
+    public async Task MarkerStaysForTheCreatorUntilItLinksThenLeavesGoogle()
+    {
+        using var a = new TestDatabase();
+        using var b = new TestDatabase();
+        var remote = new FakeTasks { LoseInsertResponse = true, HideNewlyInsertedFromList = true };
+        var created = a.Todos.Create([new("두 PC", Memo: "원문")]).Single();
+        var pcA = new TaskSync(a.Database, remote);
+        var pcB = new TaskSync(b.Database, remote);
+        await pcA.SyncAsync(default);
+        Assert.Equal("unknown", a.Todos.Get(created.TodoUid).PushState);
+        remote.LoseInsertResponse = false;
+
+        await pcB.SyncAsync(default);
+        var copy = Assert.Single(b.Todos.List());
+        Assert.Equal("원문", copy.Memo);
+        b.Todos.Update(copy.TodoUid, new() { Title = "B가 고친 제목" });
+        await pcB.SyncAsync(default);
+        var item = remote.Items.Single();
+        Assert.Equal(("B가 고친 제목", "원문"), (item.Title, TaskMarker.Read(item.Notes).Memo));
+        Assert.NotNull(TaskMarker.Read(item.Notes).Token);
+
+        await pcA.SyncAsync(default);
+        Assert.Equal(("synced", "B가 고친 제목"), (a.Todos.Get(created.TodoUid).PushState, a.Todos.Get(created.TodoUid).Title));
+        Assert.Equal("원문", remote.Items.Single().Notes);
+        Assert.Equal(0, a.Scalar("SELECT COUNT(*) FROM task_attempt"));
+
+        await pcB.SyncAsync(default);
+        Assert.Equal(0, b.Scalar("SELECT COUNT(*) FROM task_attempt"));
+        b.Todos.Update(copy.TodoUid, new() { Memo = "B가 고친 메모" });
+        await pcB.SyncAsync(default);
+        Assert.Equal("B가 고친 메모", remote.Items.Single().Notes);
+        Assert.Equal(1, remote.InsertCalls);
+    }
+
     // 수동 복구도 같은 규칙: 고른 Google 사본의 값을 받고, 이 PC 내용이 다르면 충돌 기록에 남긴다. 다음 동기화가 Google을 덮지 않는다.
     [Fact]
     public async Task ManualLinkTakesGoogleValuesAndKeepsTheLocalEditAsConflict()
@@ -568,8 +627,10 @@ public sealed class TaskSyncTests
             return Task.FromResult(Copy(stored));
         }
 
+        public int UpdateCalls { get; private set; }
         public Task<GoogleTask> UpdateAsync(GoogleTask task, CancellationToken cancellationToken)
         {
+            UpdateCalls++;
             BeforeUpdateReturns?.Invoke();
             var index = Items.FindIndex(t => t.Id == task.Id);
             if (index < 0) throw new GoogleApiException("tasks", "not found") { HttpStatusCode = HttpStatusCode.NotFound };
