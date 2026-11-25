@@ -12,6 +12,11 @@ public sealed class SettingStore(Database database)
         set => SemesterSettings.Write(database, value);
     }
 
+    internal void SaveSemesterEdit(Semester opened, Semester submitted)
+    {
+        if (submitted != opened) Semester = submitted;
+    }
+
     public bool DetailedBars
     {
         get => Get("detailed_period_bars") == "1";
