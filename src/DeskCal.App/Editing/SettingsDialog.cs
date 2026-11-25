@@ -13,25 +13,22 @@ namespace DeskCal.App;
 public partial class SettingsDialog : Window
 {
     private readonly CategoryRepository _categories;
+    private readonly SettingStore _settings;
     private readonly Dictionary<string, TextBox> _nameBoxes = [];
 
-    public SettingsDialog(CategoryRepository categories)
+    public SettingsDialog(CategoryRepository categories, SettingStore settings)
     {
         InitializeComponent();
         _categories = categories;
+        _settings = settings;
+        TextSizeBox.SelectedValue = settings.TextSizePercent.ToString(System.Globalization.CultureInfo.InvariantCulture);
         foreach (var category in categories.List()) AddRow(category);
         AutoStartCheck.IsChecked = AutoStart.IsEnabled;
         Loaded += (_, _) => _nameBoxes.Values.FirstOrDefault()?.Focus();
     }
 
     // 달력 창 위쪽 가운데에 띄운다.
-    public void PlaceOver(Window owner)
-    {
-        WindowStartupLocation = WindowStartupLocation.Manual;
-        var workArea = SystemParameters.WorkArea;
-        Left = Math.Clamp(owner.Left + (owner.ActualWidth - Width) / 2, workArea.Left, Math.Max(workArea.Left, workArea.Right - Width));
-        Top = Math.Clamp(owner.Top + 60, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - 640));
-    }
+    public void PlaceOver(Window owner) => TextSize.PlaceDialog(this, owner, 60, 640);
 
     private void AddRow(CategoryRecord category)
     {
@@ -54,6 +51,7 @@ public partial class SettingsDialog : Window
         try
         {
             _categories.Rename(_nameBoxes.ToDictionary(pair => pair.Key, pair => pair.Value.Text));
+            _settings.TextSizePercent = int.Parse((string)TextSizeBox.SelectedValue, System.Globalization.CultureInfo.InvariantCulture);
         }
         catch (ArgumentException exception)
         {
@@ -88,12 +86,12 @@ public partial class SettingsDialog : Window
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         base.OnPreviewKeyDown(e);
-        if (e.Key == Key.Escape)
+        if (e.Key == Key.Escape && !TextSizeBox.IsDropDownOpen)
         {
             DialogResult = false;
             e.Handled = true;
         }
-        else if (e.Key == Key.Enter)
+        else if (e.Key == Key.Enter && !TextSizeBox.IsDropDownOpen)
         {
             OnSave(this, e);
             e.Handled = true;

@@ -14,6 +14,7 @@ public partial class App : Application
     // MCP가 연달아 여러 번 쓸 수 있으므로 신호가 3초 동안 조용해지면 한 번만 동기화한다.
     private readonly DispatcherTimer _quickSyncTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private Mutex? _singleInstance;
+    private IDisposable? _appPresence;
     private TrayIcon? _tray;
     private MainWindow? _calendar;
     private bool _isSyncing;
@@ -49,6 +50,7 @@ public partial class App : Application
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskCal", "deskcal.db");
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var database = new Database(path);
+        AppendLog("app.log", $"App {database.DiagnosticIdentity}");
         database.Initialize();
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         // OAuth 클라이언트 파일은 설치마다 하나, 토큰은 계정 결합 정보와 함께 DB 안에(§5.1).
@@ -66,6 +68,7 @@ public partial class App : Application
             if (PendingChanges.ExistSince(database, _lastSyncStartedAt)) await SyncAsync(database, google);
         };
         _ = SyncAsync(database, google);
+        _appPresence = AppPresence.Register(database);
         _started = true;
     }
 
@@ -169,6 +172,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _appPresence?.Dispose();
         _tray?.Dispose();
         _singleInstance?.Dispose();
         base.OnExit(e);

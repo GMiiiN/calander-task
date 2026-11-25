@@ -27,7 +27,8 @@ builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogL
 var path = Environment.GetEnvironmentVariable("DESKCAL_DB")
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskCal", "deskcal.db");
 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-var database = new Database(path);
+var database = new Database(path, Console.Error.WriteLine);
+Console.Error.WriteLine($"MCP {database.DiagnosticIdentity}");
 database.Initialize();
 var tools = new CalendarTools(database);
 builder.Services.AddMcpServer().WithStdioServerTransport().WithTools(ToolCatalog.Create(tools));

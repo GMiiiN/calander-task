@@ -223,7 +223,7 @@ public sealed class OrphanEventDiagnosisTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task MovingSeriesStartLeavesOldChecklistSlotUntilItsCancellationCanBeMatched(bool uploadExceptionFirst)
+    public async Task PreviouslyMovedSeriesKeepsOldChecklistSlotUntilItsCancellationCanBeMatched(bool uploadExceptionFirst)
     {
         using var db = new TestDatabase();
         var remote = new FakeCalendar();
@@ -238,7 +238,21 @@ public sealed class OrphanEventDiagnosisTests
         if (uploadExceptionFirst) await Sync(db, remote);
         else remote.MissingInstances.Add(oldId); // 본체 시간 변경 뒤 옛 인스턴스 GET이 404인 응답을 모사한다.
 
-        db.Events.Update(series.EventUid, new() { StartTime = "11:00", EndTime = "12:00" });
+        var refused = Assert.Throws<InvalidOperationException>(() =>
+            db.Events.Update(series.EventUid, new() { StartTime = "11:00", EndTime = "12:00" }));
+        Assert.Equal(EventRepository.OccurrenceKeyChangeError, refused.Message);
+        Assert.Equal(occurrence.OccurrenceId, Assert.Single(db.Events.List(Monday, Monday)).OccurrenceId);
+
+        // D3 이전 앱이 시간 이동을 이미 저장하고 종료한 DB를 재현한다.
+        // 예외의 키와 전송 이력은 유지하고, 부모에만 구버전이 남겼던 미전송 변경을 넣는다.
+        var moved = new EventTime(TestDatabase.Seoul).Normalize(series with { StartTime = "11:00", EndTime = "12:00" });
+        db.Execute("""
+            UPDATE event SET start_time=$start, end_time=$end, google_start_raw=$rawStart, google_end_raw=$rawEnd,
+                local_revision=local_revision+1, is_dirty=1, push_state='pending', updated_at=$now
+            WHERE event_uid=$uid
+            """, ("$start", moved.StartTime), ("$end", moved.EndTime),
+            ("$rawStart", moved.GoogleStartRaw), ("$rawEnd", moved.GoogleEndRaw),
+            ("$now", db.Clock.GetUtcNow().ToString("O", System.Globalization.CultureInfo.InvariantCulture)), ("$uid", series.EventUid));
         var slots = db.Events.List(Monday, Monday);
         Assert.Equal([9, 11], slots.Select(o => o.Start.Hour));
         Assert.Single(slots[0].Event.Checklist);

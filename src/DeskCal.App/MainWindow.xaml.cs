@@ -33,6 +33,8 @@ public partial class MainWindow : Window
     private readonly DesktopPinning _pinning;
     private readonly WallpaperTone _wallpaperTone;
     private readonly DataVersionWatcher _watcher;
+    private readonly SidebarTitleToolTip _sidebarTip;
+    private bool _sidebarOwnsEditing;
     private readonly ChangeSignal _signal = new();
     private readonly RegisteredWaitHandle _signalRegistration;
     private readonly DispatcherTimer _fallbackTimer = new() { Interval = TimeSpan.FromSeconds(30) };
@@ -58,10 +60,12 @@ public partial class MainWindow : Window
     public MainWindow(Database database)
     {
         InitializeComponent();
+        _sidebarTip = new SidebarTitleToolTip((ToolTip)FindResource("SidebarTitleTip"));
         _database = database;
         _events = new EventRepository(database);
         _todos = new TodoRepository(database);
         _settings = new SettingStore(database);
+        TextSize.Apply(Application.Current.Resources, _settings.TextSizePercent);
         _viewModel = new MainViewModel(database);
         DataContext = _viewModel;
         // 자리는 물리 픽셀로 옮기므로 창 핸들이 생긴 뒤(보이기 전)에 놓는다.
@@ -92,6 +96,11 @@ public partial class MainWindow : Window
             (_, _) => Dispatcher.BeginInvoke(RefreshFromOutside), null, Timeout.Infinite, false);
         _fallbackTimer.Tick += (_, _) => { if (_watcher.HasChanged()) _viewModel.Refresh(); UpdateSyncStatus(); };
         _fallbackTimer.Start();
+        Deactivated += (_, _) =>
+        {
+            _sidebarTip.Dismiss();
+            if (_sidebarOwnsEditing) EndEditing();
+        };
         Activated += (_, _) => { if (_watcher.HasChanged()) _viewModel.Refresh(); };
         UpdateSyncStatus();
 
@@ -126,6 +135,7 @@ public partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _isClosed = true;
+            _sidebarTip.Dismiss();
             _fallbackTimer.Stop();
             _clockTimer.Stop();
             _displayTimer.Stop();
@@ -243,7 +253,7 @@ public partial class MainWindow : Window
     // 편집 창이 떠 있는 동안은 Z순서 고정을 멈춘다(§3.3 Editing). 저장·삭제했으면 바로 다시 그린다.
     private void ShowEditor(EditorModel editor)
     {
-        _pinning.BeginEditing();
+        BeginDialogEditing();
         try
         {
             var dialog = new EditDialog(editor, _events, _todos, ReadCategories());
@@ -259,8 +269,15 @@ public partial class MainWindow : Window
     }
 
     // 창이 열린 사이 트레이로 조정 모드를 켰으면 고정 해제를 유지한다. 조정 모드가 끝날 때 되돌린다.
+    private void BeginDialogEditing()
+    {
+        _sidebarOwnsEditing = false;
+        _pinning.BeginEditing();
+    }
+
     private void EndEditing()
     {
+        _sidebarOwnsEditing = false;
         if (!IsAdjusting) _pinning.EndEditing();
     }
 
@@ -275,12 +292,16 @@ public partial class MainWindow : Window
             openDialog.Activate();
             return;
         }
-        _pinning.BeginEditing();
+        BeginDialogEditing();
         try
         {
-            var dialog = new SettingsDialog(new CategoryRepository(_database));
+            var dialog = new SettingsDialog(new CategoryRepository(_database), _settings);
             dialog.PlaceOver(this);
-            if (dialog.ShowDialog() == true) _viewModel.Refresh();
+            if (dialog.ShowDialog() == true)
+            {
+                TextSize.Apply(Application.Current.Resources, _settings.TextSizePercent);
+                _viewModel.Refresh();
+            }
         }
         finally
         {
@@ -311,6 +332,22 @@ public partial class MainWindow : Window
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         base.OnPreviewKeyDown(e);
+        if (e.Key == Key.Escape && !IsAdjusting)
+        {
+            var dismissed = _sidebarTip.Dismiss();
+            if (_sidebarOwnsEditing && Keyboard.FocusedElement is DockPanel { Tag: TextBlock })
+            {
+                Keyboard.ClearFocus();
+                if (_sidebarOwnsEditing) EndEditing();
+                e.Handled = true;
+                return;
+            }
+            if (dismissed && Keyboard.FocusedElement is not TextBoxBase)
+            {
+                e.Handled = true;
+                return;
+            }
+        }
         if (IsAdjusting && e.Key is Key.Enter or Key.Escape)
         {
             e.Handled = true;
@@ -325,7 +362,7 @@ public partial class MainWindow : Window
     // 고른 결과의 날짜로 이동한다. 마감일 없는 할 일은 갈 날짜가 없으므로 편집 창을 연다.
     private void ShowSearch()
     {
-        _pinning.BeginEditing();
+        BeginDialogEditing();
         SearchHit? hit;
         try
         {
@@ -448,6 +485,13 @@ public partial class MainWindow : Window
         });
     }
 
+    // The local widths already account for both Windows DPI and the selected text scale.
+    private void OnToolbarSizeChanged(object sender, SizeChangedEventArgs e) =>
+        DockPanel.SetDock(HeaderButtons, e.NewSize.Width < 400 ? Dock.Top : Dock.Right);
+
+    private void OnFooterSizeChanged(object sender, SizeChangedEventArgs e) =>
+        DockPanel.SetDock(SyncStatusPanel, e.NewSize.Width < 400 ? Dock.Bottom : Dock.Right);
+
     private void BuildWeekdayHeader()
     {
         for (var day = 0; day < 7; day++)
@@ -525,11 +569,16 @@ public partial class MainWindow : Window
         }
     }
 
-    // 사이드바 제목 툴팁: 말줄임으로 잘린 제목에만 연다.
-    private void OnTitleToolTipOpening(object sender, ToolTipEventArgs e)
+    private void OnTitleEnter(object sender, MouseEventArgs e) => _sidebarTip.Enter((TextBlock)sender);
+    private void OnTitleLeave(object sender, MouseEventArgs e) => _sidebarTip.Leave((TextBlock)sender);
+
+    private void OnSidebarRowPreviewFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (sender is TextBlock text && !TextTrim.IsTrimmed(text)) e.Handled = true;
+        if (e.NewFocus == sender && !_pinning.AllowsKeyboardNavigation) e.Handled = true;
     }
+
+    private void OnSidebarRowFocusChanged(object sender, KeyboardFocusChangedEventArgs e) =>
+        _sidebarTip.OnRowFocusChanged(sender, e);
 
     // +N 목록의 폭: 달력 칸보다 넓게(1.6배) 잡되 너무 작거나 크지 않게. 긴 제목은 줄바꿈한다(feedback 3-7).
     private const double OVERFLOW_MIN_WIDTH = 280, OVERFLOW_MAX_WIDTH = 420, OVERFLOW_WIDTH_RATIO = 1.6;
@@ -563,6 +612,7 @@ public partial class MainWindow : Window
             }
         };
         DockPanel.SetDock(header, Dock.Top);
+        card.SetResourceReference(LayoutTransformProperty, "TextLayoutScale");
         card.SetResourceReference(Border.BackgroundProperty, "PopupBrush");
         card.SetResourceReference(Border.BorderBrushProperty, "ControlBorderBrush");
         var popup = new Popup { Child = card, PlacementTarget = (UIElement)sender, Placement = PlacementMode.Bottom, StaysOpen = false };
@@ -580,11 +630,13 @@ public partial class MainWindow : Window
     {
         var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = PlacementMode.Top };
         // 설정 창은 메뉴가 닫힌(편집 상태가 풀린) 뒤에 연다.
+        if (SidebarCard.IsVisible)
+            menu.Items.Add(MenuItem("사이드바 제목 탐색", () => Dispatcher.BeginInvoke(BrowseSidebar)));
         menu.Items.Add(MenuItem("설정", () => Dispatcher.BeginInvoke(ShowSettings)));
         menu.Items.Add(MenuItem("크기·위치 조정", ToggleAdjust));
         menu.Items.Add(MenuItem("종료", Exit));
         // 메뉴가 열린 동안에는 창이 활성화되므로 Z순서 고정을 잠시 멈춘다. 조정 모드를 켰으면 끝날 때까지 그대로 둔다.
-        menu.Opened += (_, _) => _pinning.BeginEditing();
+        menu.Opened += (_, _) => BeginDialogEditing();
         menu.Closed += (_, _) => EndEditing();
         menu.IsOpen = true;
 
@@ -633,20 +685,32 @@ public partial class MainWindow : Window
     // 창은 평소 활성화되지 않으므로(WS_EX_NOACTIVATE) 입력란을 누를 때만 편집 상태로 바꿔 키보드를 받는다.
     private void OnInputMouseDown(object sender, MouseButtonEventArgs e)
     {
+        _sidebarOwnsEditing = true;
         if (_pinning.State == PinState.Editing) return;
         _pinning.BeginEditing();
         Activate();
         NewTodoBox.Focus();
     }
 
-    private void OnInputBlur(object sender, KeyboardFocusChangedEventArgs e)
+    private void BrowseSidebar()
     {
-        if (_pinning.State == PinState.Editing) EndEditing();
+        if (IsAdjusting || !SidebarCard.IsVisible) return;
+        _sidebarOwnsEditing = true;
+        _pinning.BeginEditing();
+        if (Activate() && SidebarCard.MoveFocus(new TraversalRequest(FocusNavigationDirection.First))) return;
+        EndEditing();
+    }
+
+    private void OnSidebarBlur(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (!_sidebarOwnsEditing || e.NewFocus is Visual target && (target == SidebarCard || target.IsDescendantOf(SidebarCard))) return;
+        EndEditing();
     }
 
     private void OnChecklistEditLoaded(object sender, RoutedEventArgs e)
     {
         if (sender is not TextBox { DataContext: ChecklistItemViewModel { IsEditing: true } } box) return;
+        _sidebarOwnsEditing = true;
         if (_pinning.State != PinState.Editing) _pinning.BeginEditing();
         Activate();
         box.Focus();
@@ -665,8 +729,6 @@ public partial class MainWindow : Window
     {
         if (sender is not TextBox { DataContext: ChecklistItemViewModel { IsEditing: true } item } box) return;
         _viewModel.EndChecklistEdit(item, box.Text);
-        // 다른 입력란으로 옮겨 갔으면 키보드를 계속 받아야 하므로 편집 상태를 풀지 않는다. 그 입력란이 끝날 때 푼다.
-        if (e.NewFocus is not System.Windows.Controls.Primitives.TextBoxBase && _pinning.State == PinState.Editing) EndEditing();
     }
 
     private void OnChecklistItemRightClick(object sender, MouseButtonEventArgs e)
@@ -677,7 +739,7 @@ public partial class MainWindow : Window
         delete.Click += (_, _) => _viewModel.DeleteChecklistItem(item);
         var menu = new ContextMenu { PlacementTarget = target };
         menu.Items.Add(delete);
-        menu.Opened += (_, _) => _pinning.BeginEditing();
+        menu.Opened += (_, _) => BeginDialogEditing();
         menu.Closed += (_, _) => EndEditing();
         menu.IsOpen = true;
     }

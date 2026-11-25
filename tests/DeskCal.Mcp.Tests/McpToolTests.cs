@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using DeskCal.Core;
@@ -19,11 +20,7 @@ public sealed class McpToolTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         var path = Path.Combine(_directory, "nested", "deskcal.db");
-        _client = await McpClient.CreateAsync(new StdioClientTransport(new()
-        {
-            Command = "dotnet", Arguments = [typeof(CalendarTools).Assembly.Location],
-            EnvironmentVariables = new Dictionary<string, string?> { ["DESKCAL_DB"] = path }
-        }), cancellationToken: _timeout.Token);
+        _client = await StartServer(path);
         Assert.True(File.Exists(path)); // The executable creates the directory and initializes the DB.
         _database = new Database(path);
         using var connection = _database.OpenConnection();
@@ -31,6 +28,12 @@ public sealed class McpToolTests : IAsyncLifetime
         command.CommandText = "INSERT OR REPLACE INTO category(color_id,name,color_hex) VALUES ('1','개인','#123456'),('2','업무','#654321');";
         command.ExecuteNonQuery();
     }
+
+    private Task<McpClient> StartServer(string path) => McpClient.CreateAsync(new StdioClientTransport(new()
+    {
+        Command = "dotnet", Arguments = [typeof(CalendarTools).Assembly.Location],
+        EnvironmentVariables = new Dictionary<string, string?> { ["DESKCAL_DB"] = path }
+    }), cancellationToken: _timeout.Token);
 
     public async Task DisposeAsync()
     {
@@ -53,6 +56,11 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.InRange(today.DayNumber, DateOnly.FromDateTime(DateTime.Now).DayNumber - 1, DateOnly.FromDateTime(DateTime.Now).DayNumber);
         AssertSnakeCase(body);
         Assert.DoesNotContain("google_", text);
+        var write = name is not ("get_agenda" or "list_events" or "get_event" or "find_free_time" or "list_todos" or "list_categories");
+        Assert.Equal(write && !error, body.TryGetProperty("saved_locally", out var saved));
+        Assert.Equal(write && !error, body.TryGetProperty("app_running", out _));
+        Assert.Equal(write && !error, body.TryGetProperty("last_verified_sync", out _));
+        if (write && !error) Assert.True(saved.GetBoolean());
         if (error)
         {
             Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("error").GetString()));
@@ -81,6 +89,27 @@ public sealed class McpToolTests : IAsyncLifetime
     private static string Id(JsonElement value, string field = "event_id") => value.GetProperty(field).GetString()!;
 
     [Fact]
+    public async Task TwoServerProcessesPublishOneVerifiedBackupOnUpgrade()
+    {
+        using var connection = _database.OpenConnection();
+        using var schema = connection.CreateCommand();
+        schema.CommandText = "ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
+        schema.ExecuteNonQuery();
+        var path = Path.Combine(_directory, "nested", "deskcal.db");
+        var clients = await Task.WhenAll(StartServer(path), StartServer(path));
+        try
+        {
+            Assert.Single(Directory.GetFiles(path + ".backups"));
+            schema.CommandText = "PRAGMA user_version";
+            Assert.Equal((long)Database.LatestVersion, schema.ExecuteScalar());
+        }
+        finally
+        {
+            foreach (var client in clients) await client.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task LockedDatabaseReturnsSqliteCodesAndRetryGuidance()
     {
         using var connection = _database.OpenConnection();
@@ -89,7 +118,11 @@ public sealed class McpToolTests : IAsyncLifetime
         command.ExecuteNonQuery();
         try
         {
+            Assert.Empty((await Call("list_todos")).GetProperty("todos").EnumerateArray());
             var result = await Call("create_todos", new { todos = new[] { new { title = "locked" } } }, error: true);
+            Assert.Equal(_database.PathFingerprint, result.GetProperty("db_fingerprint").GetString());
+            Assert.Equal("begin", result.GetProperty("db_stage").GetString());
+            Assert.InRange(result.GetProperty("db_elapsed_ms").GetInt64(), 4000, 15000);
             var error = result.GetProperty("error").GetString();
             Assert.Contains("SQLITE_BUSY(5)", error);
             Assert.Contains("SqliteExtendedErrorCode=5", error);
@@ -103,6 +136,13 @@ public sealed class McpToolTests : IAsyncLifetime
             command.ExecuteNonQuery();
         }
         Assert.Empty(Todos.List());
+        var created = await Call("create_todos", new { todos = new[] { new { title = "저장 확인" } } });
+        var uid = Id(created.GetProperty("todos")[0], "todo_id");
+        Assert.Equal(uid, Assert.Single(Todos.List()).TodoUid);
+        await _client.DisposeAsync();
+        _client = await StartServer(Path.Combine(_directory, "nested", "deskcal.db"));
+        var reopened = await Call("list_todos", new { status = "all", include_deleted = true });
+        Assert.Equal(uid, Id(Assert.Single(reopened.GetProperty("todos").EnumerateArray()), "todo_id"));
     }
 
     [Fact]
@@ -117,10 +157,82 @@ public sealed class McpToolTests : IAsyncLifetime
         command.ExecuteNonQuery();
         var result = await Call("create_todos", new { todos = new[] { new { title = "rejected" } } }, error: true);
         var error = result.GetProperty("error").GetString();
+        Assert.Equal("insert", result.GetProperty("db_stage").GetString());
         Assert.Contains("SQLITE_CONSTRAINT(19)", error);
         Assert.Contains("SqliteExtendedErrorCode=1811", error);
         Assert.Contains("Try again.", error);
         Assert.Empty(Todos.List());
+    }
+
+    [Fact]
+    public async Task WriteReceiptSeparatesVerifiedCalendarTimeAppStateAndRowState()
+    {
+        var args = new { todos = new[] { new { title = "첫째" }, new { title = "둘째" } } };
+        var off = await Call("create_todos", args);
+        Assert.False(off.GetProperty("app_running").GetBoolean());
+        Assert.Equal("app_not_running", off.GetProperty("app_reason").GetString());
+        Assert.Equal(JsonValueKind.Null, off.GetProperty("last_verified_sync").GetProperty("calendar").ValueKind);
+        Assert.Equal(JsonValueKind.Null, off.GetProperty("last_verified_sync").GetProperty("tasks").ValueKind);
+        var uid = Id(off.GetProperty("todos")[0], "todo_id");
+        Assert.Equal(uid, Todos.Get(uid).TodoUid);
+
+        using var connection = _database.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO sync_state(sync_key,last_synced_at) VALUES ('calendar_primary','2026-11-24T10:00:00Z');
+            INSERT INTO setting VALUES ('google_token','x');
+            """;
+        cmd.ExecuteNonQuery();
+        var update = new { todo_id = uid, title = "변경" };
+        var waiting = await Call("update_todo", update);
+        Assert.Equal("app_not_running", waiting.GetProperty("todo").GetProperty("reason").GetString());
+        using (AppPresence.Register(_database))
+        {
+            var on = await Call("update_todo", update);
+            Assert.True(on.GetProperty("app_running").GetBoolean());
+            Assert.False(on.TryGetProperty("app_reason", out _));
+            Assert.False(on.GetProperty("todo").TryGetProperty("reason", out _));
+            Assert.Equal(DateTimeOffset.Parse("2026-11-24T10:00:00Z"),
+                on.GetProperty("last_verified_sync").GetProperty("calendar").GetDateTimeOffset());
+            Assert.Equal(JsonValueKind.Null, on.GetProperty("last_verified_sync").GetProperty("tasks").ValueKind);
+        }
+        cmd.CommandText = "DELETE FROM setting WHERE setting_key='google_token'; UPDATE todo SET push_state='unknown';";
+        cmd.ExecuteNonQuery();
+        var unknown = await Call("update_todo", update);
+        Assert.Equal("needs_review", unknown.GetProperty("todo").GetProperty("reason").GetString());
+        Assert.Equal("app_not_running", unknown.GetProperty("app_reason").GetString());
+        await Call("create_todos", new { todos = new[] { new { title = "셋째" }, new { title = " " } } }, error: true);
+        Assert.Equal(2, Todos.List().Count);
+    }
+
+    [Fact]
+    public async Task ReceiptRecoversAfterMarkerOwnerProcessCrashes()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var start = new ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
+            ArgumentList = { "-NoProfile", "-NonInteractive", "-Command",
+                "$f=[IO.File]::Open($env:DESKCAL_TEST_MARKER,'OpenOrCreate','ReadWrite','None'); [Console]::WriteLine('ready'); Start-Sleep 60" }
+        };
+        start.Environment["DESKCAL_TEST_MARKER"] = Path.Combine(_directory, "nested", "deskcal.db.app-running");
+        using var child = Process.Start(start)!;
+        try
+        {
+            Assert.Equal("ready", await child.StandardOutput.ReadLineAsync(_timeout.Token));
+            Assert.False(AppPresence.IsRunning(new Database(Path.Combine(_directory, "other.db"))));
+            var receipt = await Call("create_todos", new { todos = new[] { new { title = "앱 실행 중" } } });
+            Assert.True(receipt.GetProperty("app_running").GetBoolean());
+        }
+        finally
+        {
+            if (!child.HasExited) child.Kill();
+            await child.WaitForExitAsync(_timeout.Token);
+        }
+        // Wait for Windows to finish releasing the terminated process's file handles.
+        Assert.True(SpinWait.SpinUntil(() => !AppPresence.IsRunning(_database), TimeSpan.FromSeconds(5)));
+        var next = await Call("create_todos", new { todos = new[] { new { title = "앱 종료 후" } } });
+        Assert.False(next.GetProperty("app_running").GetBoolean());
     }
 
     [Fact]
@@ -282,6 +394,22 @@ public sealed class McpToolTests : IAsyncLifetime
         await Call("update_todo", new { todo_id = todo.TodoUid, due_date = (string?)null, memo = (string?)null });
         Assert.Null(Todos.Get(todo.TodoUid).DueDate);
         Assert.Equal("", Todos.Get(todo.TodoUid).Memo);
+    }
+
+    [Fact]
+    public async Task SeriesStartTimeCanChangeUntilAnOccurrenceHasItsOwnState()
+    {
+        var created = await Call("create_events", """{"events":[{"title":"주간","start_date":"2026-11-02","start_time":"09:00","repeat":{"frequency":"weekly","weekdays":["monday"]}}]}""");
+        var uid = Id(created.GetProperty("events")[0]);
+        await Call("update_event", new { event_id = uid, start_time = "11:00", end_time = "12:00" });
+        var date = new { start_date = "2026-11-09", end_date = "2026-11-09" };
+        var id = Id((await Call("list_events", date)).GetProperty("events")[0], "occurrence_id");
+        await Call("add_checklist_items", new { occurrence_id = id, items = new[] { "준비" } });
+        var result = await Call("update_event", new { event_id = uid, start_time = "12:00", end_time = "13:00" }, error: true);
+        Assert.Contains("occurrence", result.GetProperty("error").GetString());
+        var same = Assert.Single((await Call("list_events", date)).GetProperty("events").EnumerateArray());
+        Assert.Equal(id, Id(same, "occurrence_id"));
+        Assert.Equal("준비", same.GetProperty("checklist")[0].GetProperty("text").GetString());
     }
 
     [Fact]
