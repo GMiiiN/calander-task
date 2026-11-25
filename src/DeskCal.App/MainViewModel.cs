@@ -130,7 +130,7 @@ public sealed class MainViewModel : ObservableObject
             _today = today;
             OnPropertyChanged(nameof(TodayText));
         }
-        var builder = new CalendarModelBuilder(_events, _todos, _database);
+        var builder = new CalendarModelBuilder(_events, _todos, _database, _settings.DetailedBars);
         if (IsMonthView)
         {
             Month = builder.BuildMonth(_anchor.Year, _anchor.Month, _today);

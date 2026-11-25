@@ -5,6 +5,12 @@ namespace DeskCal.App;
 // 이 PC 전용 설정(§4.2 setting 테이블). 보던 보기·날짜, 창 위치, 투명도처럼 동기화하지 않는 값.
 public sealed class SettingStore(Database database)
 {
+    public bool DetailedBars
+    {
+        get => Get("detailed_period_bars") == "1";
+        set => Set("detailed_period_bars", value ? "1" : "0");
+    }
+
     public int TextSizePercent
     {
         get => Get("text_size_percent") switch { "115" => 115, "130" => 130, _ => 100 };

@@ -3,7 +3,7 @@ using DeskCal.Core;
 
 namespace DeskCal.App.Calendar;
 
-public sealed class CalendarModelBuilder(EventRepository events, TodoRepository todos, Database database)
+public sealed class CalendarModelBuilder(EventRepository events, TodoRepository todos, Database database, bool detailedBars = false)
 {
     // 주간 시간표에서 짧은 일정도 이 길이만큼은 그려진다. 겹침 판단도 이 길이로 해야 화면에서 서로 가리지 않는다.
     public const int MIN_BLOCK_MINUTES = 30;
@@ -37,9 +37,9 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         return new(year, month, weeks);
     }
 
-    public WeekModel BuildWeek(DateOnly anyDay, DateOnly today)
+    public WeekModel BuildWeek(DateOnly anyDay, DateOnly today, DayOfWeek firstDay = DayOfWeek.Monday)
     {
-        var start = WeekStartOf(anyDay);
+        var start = WeekStartOf(anyDay, firstDay);
         var occurrences = events.List(start, start.AddDays(6));
         var dueTodos = todos.List("all");
         var holidays = new HolidayRepository(database).List(start, start.AddDays(6));
@@ -63,8 +63,8 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         return new(start, days);
     }
 
-    private static bool IsWeekBar(EventOccurrence occurrence) =>
-        occurrence.IsAllDay || occurrence.End - occurrence.Start >= TimeSpan.FromHours(24);
+    private bool IsWeekBar(EventOccurrence occurrence) =>
+        occurrence.IsAllDay || (detailedBars && LastDate(occurrence) > FirstDate(occurrence)) || occurrence.End - occurrence.Start >= TimeSpan.FromHours(24);
 
     private IReadOnlyList<ChipModel> ItemsForDay(DateOnly date, IReadOnlyList<EventOccurrence> occurrences, IReadOnlyList<TodoRecord> dueTodos)
     {
@@ -95,7 +95,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
                 lane = lanes.Count;
                 lanes.Add(new ChipModel?[7]);
             }
-            for (var day = from; day <= to; day++) lanes[lane][day] = BarChip(occurrence, rowStart.AddDays(day), day == 0);
+            for (var day = from; day <= to; day++) lanes[lane][day] = BarChip(occurrence, rowStart.AddDays(day), rowStart);
         }
         var singles = occurrences.Where(o => !spans.Contains(o)).ToArray();
         var result = new IReadOnlyList<ChipModel>[7];
@@ -118,13 +118,13 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
     // 마지막 날의 "이름 - 마감"은 시작한 주와 다른 주에서 끝날 때만 쓴다. 둘이 겹치면 마감 표시만.
     private const int LONG_EVENT_DAYS = 14;
 
-    private ChipModel BarChip(EventOccurrence occurrence, DateOnly date, bool isRowStart)
+    private ChipModel BarChip(EventOccurrence occurrence, DateOnly date, DateOnly rowStart)
     {
         var chip = ToChip(occurrence);
         var first = FirstDate(occurrence);
         var last = LastDate(occurrence);
-        var showEnd = date == last && first < WeekStartOf(last);
-        var showRowStart = isRowStart && (last.DayNumber - first.DayNumber + 1 >= LONG_EVENT_DAYS || last > date.AddDays(6));
+        var showEnd = date == last && (detailedBars || first < rowStart);
+        var showRowStart = date == rowStart && (detailedBars || last.DayNumber - first.DayNumber + 1 >= LONG_EVENT_DAYS || last > date.AddDays(6));
         var title = showEnd ? $"{chip.Title} - 마감" : date == first || showRowStart ? chip.Title : "";
         return chip with
         {
@@ -203,7 +203,8 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
 
     // 주는 월요일에 시작한다(월~일).
     private static int DaysFromMonday(DateOnly date) => ((int)date.DayOfWeek + 6) % 7;
-    private static DateOnly WeekStartOf(DateOnly date) => date.AddDays(-DaysFromMonday(date));
+    private static DateOnly WeekStartOf(DateOnly date, DayOfWeek firstDay = DayOfWeek.Monday) =>
+        date.AddDays(-((7 + (int)date.DayOfWeek - (int)firstDay) % 7));
 
     private static DateTime Min(DateTime left, DateTime right) => left < right ? left : right;
     private static DateTime Max(DateTime left, DateTime right) => left > right ? left : right;

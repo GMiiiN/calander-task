@@ -376,6 +376,31 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.Equal(new[] { 2, 2, 2 }, blocks.Select(b => b.ColumnCount));
     }
 
+    [Theory]
+    [InlineData("2026-11-03", "2026-11-05", "2026-11-05", "여행 - 마감")]
+    [InlineData("2026-11-08", "2026-11-10", "2026-11-09", "여행")]
+    [InlineData("2026-11-08", "2026-11-09", "2026-11-09", "여행 - 마감")]
+    [InlineData("2026-10-30", "2026-11-12", "2026-11-02", "여행")]
+    public void DetailedMonthLabelsFollowOccupiedDates(string start, string end, string date, string title)
+    {
+        var item = events.Create([new("여행", start) { EndDate = end }]).Single();
+        var builder = new CalendarModelBuilder(events, todos, database, true);
+        var cell = Cell(builder.BuildMonth(2026, 11, TODAY), DateOnly.Parse(date));
+        Assert.Equal(title, cell.Chips.Single().Title);
+        Assert.Equal(item.EventUid, cell.AllItems.Single().EventId);
+    }
+
+    [Fact]
+    public void DetailedWeekUsesSelectedBoundaryAndMovesOnlyActualOvernights()
+    {
+        events.Create([new("밤샘", "2026-11-03") { StartTime = "23:00", EndDate = "2026-11-04", EndTime = "01:00" },
+            new("자정", "2026-11-04") { StartTime = "23:00", EndDate = "2026-11-05", EndTime = "00:00" }]);
+        var builder = new CalendarModelBuilder(events, todos, database, true);
+        var day = builder.BuildWeek(new(2026, 11, 04), TODAY, DayOfWeek.Wednesday).Days[0];
+        Assert.Equal("밤샘 - 마감", day.AllDay.Single().Title);
+        Assert.Equal("자정", day.Blocks.Single().Chip.Title);
+    }
+
     private static DayCellModel Cell(MonthModel model, DateOnly date) => model.Weeks.SelectMany(w => w).Single(d => d.Date == date);
 
     private void Execute(string sql)

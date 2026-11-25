@@ -23,6 +23,7 @@ public partial class SettingsDialog : Window
         _settings = settings;
         TextSizeBox.SelectedValue = settings.TextSizePercent.ToString(System.Globalization.CultureInfo.InvariantCulture);
         foreach (var category in categories.List()) AddRow(category);
+        DetailedBarsCheck.IsChecked = settings.DetailedBars;
         AutoStartCheck.IsChecked = AutoStart.IsEnabled;
         Loaded += (_, _) => _nameBoxes.Values.FirstOrDefault()?.Focus();
     }
@@ -51,6 +52,7 @@ public partial class SettingsDialog : Window
         try
         {
             _categories.Rename(_nameBoxes.ToDictionary(pair => pair.Key, pair => pair.Value.Text));
+            _settings.DetailedBars = DetailedBarsCheck.IsChecked == true;
             _settings.TextSizePercent = int.Parse((string)TextSizeBox.SelectedValue, System.Globalization.CultureInfo.InvariantCulture);
         }
         catch (ArgumentException exception)
