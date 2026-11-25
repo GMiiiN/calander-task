@@ -187,18 +187,27 @@ public partial class MainWindow : Window
             SyncStatusText.Text = _settings.Get("google_account_id") is null ? "Google 연결 전 · 이 PC에만 저장" : "Google 연결 끊김 · 알림 영역 메뉴에서 다시 연결";
             return;
         }
+        // 토큰은 있는데 invalid_grant 말고 4xx로 계속 실패한다(OAuth 클라이언트가 바뀜 등, S4). "연결됨"으로 두지 않는다.
+        if (GoogleAccount.ReadAuthError(_database) is not null)
+        {
+            SyncStatusText.Text = "Google 연결 오류 · 알림 영역 메뉴에서 다시 연결";
+            return;
+        }
         var text = EventSync.LastSyncedAt(_database) is { } last ? $"Calendar 동기화 · {last.ToLocalTime():HH:mm}" : "Google 연결됨 · 동기화 준비 중";
-        SyncStatusText.Text = SharedSettingsSync.UnavailableReason(_database) switch
+        text = SharedSettingsSync.UnavailableReason(_database) switch
         {
             SharedSettingsSync.ScopeMissing => text + " · 설정 공유에 Drive 권한 필요",
             SharedSettingsSync.ApiDisabled => text + " · 설정 공유에 Drive API 필요",
             _ => text
         };
+        // 확인하지 않은 충돌(S4)은 여기 한 줄로만 알리고, 상세는 눌러서 연다.
+        SyncStatusText.Text = ConflictLog.UnseenCount(_database) is var conflicts and > 0 ? $"{text} · 충돌 {conflicts}건 확인" : text;
     }
 
     private void OnSyncDetails(object sender, RoutedEventArgs e)
     {
         var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = PlacementMode.Top };
+        AddConflicts(menu);
         var recovery = new TaskRecovery(_database);
         IReadOnlyList<TaskRecovery.Candidate>? candidates = null;
         foreach (var item in PendingChanges.List(_database))
@@ -243,10 +252,62 @@ public partial class MainWindow : Window
                 else MessageBox.Show(this, "동기화 중이거나 후보가 변경되었습니다. 상태 상세를 다시 열어 주세요.", "할 일 복구");
             }
         }
-        if (menu.Items.Count == 0) menu.Items.Add(new MenuItem { Header = "전송 대기 항목이 없습니다.", IsEnabled = false });
+        if (menu.Items.Count == 0 || menu.Items[^1] is Separator) menu.Items.Add(new MenuItem { Header = "전송 대기 항목이 없습니다.", IsEnabled = false });
         menu.Opened += (_, _) => BeginDialogEditing();
         menu.Closed += (_, _) => EndEditing();
         menu.IsOpen = true;
+    }
+
+    // 확인하지 않은 충돌(S4). 무엇이 겹쳐 어느 값을 남겼는지 보이고, 이 PC 값을 다시 적용하거나 확인으로 숨긴다.
+    private void AddConflicts(ContextMenu menu)
+    {
+        var conflicts = ConflictLog.Unseen(_database);
+        foreach (var conflict in conflicts)
+        {
+            var kind = conflict.Kind switch { "event" => "일정", "todo" => "할 일", _ => "설정" };
+            var row = new MenuItem
+            {
+                Header = $"충돌 · {kind} ‘{conflict.Title}’ · {conflict.Summary}",
+                ToolTip = conflict.Fields.Count == 0 ? null
+                    : string.Join("\n", conflict.Fields.Select(f => $"{f.Label}: 이 PC ‘{f.Mine}’ → 남긴 값 ‘{f.Kept}’"))
+            };
+            if (conflict.CanReapply)
+            {
+                var reapply = new MenuItem { Header = conflict.Deleted == "local" ? "다시 지우기" : "이 PC 값 다시 적용" };
+                reapply.Click += (_, _) =>
+                {
+                    try { ConflictLog.Reapply(_database, conflict.Id); }
+                    catch (Exception error) when (error is ArgumentException or InvalidOperationException or KeyNotFoundException)
+                    {
+                        MessageBox.Show(this, $"다시 적용하지 못했습니다.\n{error.Message}", "충돌 기록");
+                        return;
+                    }
+                    _viewModel.Refresh();
+                    UpdateSyncStatus();
+                    ExternalChange?.Invoke(); // 바로 보내도록 빠른 동기화를 건다
+                };
+                row.Items.Add(reapply);
+            }
+            var seen = new MenuItem { Header = "확인" };
+            seen.Click += (_, _) =>
+            {
+                ConflictLog.MarkSeen(_database, conflict.Id);
+                UpdateSyncStatus();
+            };
+            row.Items.Add(seen);
+            menu.Items.Add(row);
+        }
+        if (conflicts.Count > 1)
+        {
+            var all = new MenuItem { Header = "충돌 모두 확인" };
+            all.Click += (_, _) =>
+            {
+                ConflictLog.MarkAllSeen(_database);
+                UpdateSyncStatus();
+            };
+            menu.Items.Add(all);
+        }
+        if (conflicts.Count > 0) menu.Items.Add(new Separator());
     }
 
     private void RefreshFromOutside()

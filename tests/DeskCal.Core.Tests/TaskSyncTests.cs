@@ -251,14 +251,22 @@ public sealed class TaskSyncTests
 
         todos.Update(local.TodoUid, new TodoPatch { Title = "첫 수정" });
         remote.Edit("r1", t => t.Title = "다른 곳에서 바꾼 제목");
-        remote.BeforeUpdateReturns = () => todos.Update(local.TodoUid, new TodoPatch { Title = "보내는 중에 또 고침" });
+        var edits = 0;
+        remote.BeforeUpdateReturns = () => { if (edits++ == 0) todos.Update(local.TodoUid, new TodoPatch { Title = "보내는 중에 또 고침" }); };
+        await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
+        // S4: 같은 필드(제목)를 둘 다 바꿨다. 보내는 사이 또 고친 값은 다음 동기화에서 다시 합친다(옛 etag라 412).
+        Assert.True(todos.Get(local.TodoUid).IsDirty);
         await new TaskSync(db.Database, remote).SyncAsync(CancellationToken.None);
 
         Assert.Equal("다른 곳에서 바꾼 제목", todos.Get(local.TodoUid).Title);
+        Assert.False(todos.Get(local.TodoUid).IsDirty);
         using var connection = db.Database.OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT discarded_json FROM sync_conflict WHERE item_kind='todo';";
-        Assert.Contains("보내는 중에 또 고침", (string)command.ExecuteScalar()!);
+        command.CommandText = "SELECT group_concat(discarded_json || detail_json) FROM sync_conflict WHERE item_kind='todo';";
+        var recorded = (string)command.ExecuteScalar()!;
+        Assert.Contains("첫 수정", recorded);
+        Assert.Contains("보내는 중에 또 고침", recorded);
+        Assert.Equal("다른 곳에서 바꾼 제목", remote.Items.Single().Title);
     }
 
     [Fact]

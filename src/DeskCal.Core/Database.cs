@@ -7,8 +7,8 @@ namespace DeskCal.Core;
 
 public sealed class Database
 {
-    private static readonly Action<SqliteCommand>[] Migrations = [MigrateToV1, MigrateToV2, MigrateToV3, MigrateToV4, MigrateToV5];
-    public const int LatestVersion = 5;
+    private static readonly Action<SqliteCommand>[] Migrations = [MigrateToV1, MigrateToV2, MigrateToV3, MigrateToV4, MigrateToV5, MigrateToV6];
+    public const int LatestVersion = 6;
     private readonly string _connectionString;
 
     private readonly Action<string>? _trace;
@@ -159,6 +159,19 @@ public sealed class Database
         using var stream = typeof(Database).Assembly.GetManifestResourceStream("DeskCal.Core.SchemaV1.sql")!;
         using var reader = new StreamReader(stream);
         command.CommandText = reader.ReadToEnd();
+        command.ExecuteNonQuery();
+    }
+
+    // 412 필드 병합(S4). sync_base는 마지막으로 Google과 맞춘 값(필드 묶음별 JSON)이다. 이것과 이 PC·Google 값을 비교해
+    // 서로 다른 필드는 둘 다 살리고, 같은 필드가 둘 다 바뀌었으면 Google 값을 남기고 이 PC 값은 sync_conflict.detail_json에 둔다.
+    // S4 이전에 동기화한 행은 sync_base가 없어 예전처럼 원격 우선이다.
+    private static void MigrateToV6(SqliteCommand command)
+    {
+        command.CommandText = """
+            ALTER TABLE event ADD COLUMN sync_base TEXT;
+            ALTER TABLE todo ADD COLUMN sync_base TEXT;
+            ALTER TABLE sync_conflict ADD COLUMN detail_json TEXT;
+            """;
         command.ExecuteNonQuery();
     }
 

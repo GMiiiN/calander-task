@@ -428,8 +428,15 @@ public sealed class EventSyncTests
         }
 
         // 고치지 않은 회차는 저장하지 않고, 물으면 시리즈 ID와 꼬리로 만들어 준다(Google도 회차 ID로 조회된다).
-        public Task<Event> GetAsync(string eventId, CancellationToken cancellationToken) =>
-            Task.FromResult(Items.TryGetValue(eventId, out var value) ? Copy(value) : Instance(eventId));
+        public HashSet<string> FailGet { get; } = [];
+        public List<string> GetAttempts { get; } = [];
+
+        public Task<Event> GetAsync(string eventId, CancellationToken cancellationToken)
+        {
+            GetAttempts.Add(eventId);
+            if (FailGet.Contains(eventId)) throw new HttpRequestException("조회 실패");
+            return Task.FromResult(Items.TryGetValue(eventId, out var value) ? Copy(value) : Instance(eventId));
+        }
 
         private Event Instance(string eventId)
         {
