@@ -189,8 +189,10 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         {
             SharedSettings.SeedCategoryNames(connection, transaction, now);
             DayEventOrder.SeedLegacy(connection, transaction, new EventRepository(database, localTimeZone));
+            SemesterSettings.Seed(connection, transaction, now);
             SharedSettings.Merge(connection, transaction, read.Values.OfType<Document>().SelectMany(d => d.Entries), now);
             SharedSettings.ApplyCategoryNames(connection, transaction);
+            SemesterSettings.Apply(connection, transaction);
             foreach (var file in files.Where(f => read.ContainsKey(f.Id))) WriteCache(connection, transaction, file);
             var listed = files.Select(f => CachePrefix + f.Id).ToHashSet();
             foreach (var stale in cache.Keys.Select(id => CachePrefix + id).Where(key => !listed.Contains(key)))
