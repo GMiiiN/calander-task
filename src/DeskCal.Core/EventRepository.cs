@@ -94,11 +94,24 @@ public sealed class EventRepository
         if (value.RecurrenceRule != previous.RecurrenceRule ||
             (previous.RecurrenceRule is not null && !RecurrenceExpander.HasSameSeriesStart(previous, value)))
         {
-            using var command = Sql.Command(connection, transaction, """
-                SELECT EXISTS(SELECT 1 FROM event WHERE parent_event_id=$id
-                    OR (parent_event_id IS NULL AND google_recurring_id=$remote));
-                """, ("$id", previous.EventId), ("$remote", previous.GoogleEventId));
-            if ((long)command.ExecuteScalar()! != 0) throw new InvalidOperationException(OccurrenceKeyChangeError);
+            // 회차 키가 바뀐다(D3). 기록이 있는 회차(예외)가 모두 같은 날의 새 회차로 하나씩 대응하면(S5) 바꾸고 기록을 옮긴다.
+            // 대응이 불명확하거나, 시리즈에 아직 잇지 못한 예외가 있거나, 반복을 없애면 예전처럼 거부한다.
+            using var unlinked = Sql.Command(connection, transaction,
+                "SELECT EXISTS(SELECT 1 FROM event WHERE parent_event_id IS NULL AND google_recurring_id=$remote);", ("$remote", previous.GoogleEventId));
+            var exceptions = ReadAll(connection, transaction).Where(e => e.ParentEventId == previous.EventId).ToList();
+            if ((long)unlinked.ExecuteScalar()! != 0 || (exceptions.Count > 0 && value.RecurrenceRule is null))
+                throw new InvalidOperationException(OccurrenceKeyChangeError);
+            if (exceptions.Count > 0)
+            {
+                var map = SeriesShift.Map(value, exceptions.Select(e => e.OriginalStartKey!), _time.LocalTimeZone);
+                if (map.Values.Any(key => key is null)) throw new InvalidOperationException(OccurrenceKeyChangeError);
+                value = Save(connection, transaction, value);
+                var now = Validation.Timestamp(_clock);
+                foreach (var exception in exceptions)
+                    SeriesShift.Rekey(connection, transaction, value, exception, map[exception.OriginalStartKey!]!, _time.LocalTimeZone, now);
+                transaction.Commit();
+                return value;
+            }
         }
         value = Save(connection, transaction, value);
         transaction.Commit();

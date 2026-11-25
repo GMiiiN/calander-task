@@ -122,6 +122,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
 
     public async Task SyncAsync(CancellationToken cancellationToken)
     {
+        RepairPendingSeries();
         await PushAsync(cancellationToken);
         var token = HasSetting(CreatedBasisKey) && HasSetting(SyncBaseKey) ? ReadSyncToken() : null;
         try
@@ -171,6 +172,30 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             items = items.Concat(found.Where(e => e.Id is not null)).ToList();
         }
         Pull(items, next, fullList, held, cancellationToken);
+    }
+
+    // S5: 이 PC에서 시각·반복을 바꿨는데 회차 기록이 옛 키에 남은 시리즈(D3 이전 앱이 저장하고 끝난 DB)를 보내기 전에 새 회차로 옮긴다.
+    // 같은 날 새 회차가 하나일 때만 옮기고, 아니면 그대로 두고 충돌 기록(옮기지 못한 옛 회차)에 남긴다.
+    private void RepairPendingSeries()
+    {
+        var now = Validation.Timestamp(_clock);
+        using var connection = database.OpenConnection();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var records = ReadStored(connection, transaction).Select(s => s.Record).ToList();
+        foreach (var series in records.Where(r => r.IsDirty && r.RecurrenceRule is not null && r.ParentEventId is null && r.DeletedAt is null))
+        {
+            var exceptions = records.Where(r => r.ParentEventId == series.EventId).ToList();
+            var orphans = exceptions.Where(r => r.Status != "cancelled" && !SeriesShift.IsCurrent(series, r.OriginalStartKey!, _time.LocalTimeZone)).ToList();
+            if (orphans.Count == 0) continue;
+            var map = SeriesShift.Map(series, orphans.Select(o => o.OriginalStartKey!), _time.LocalTimeZone);
+            foreach (var orphan in orphans)
+            {
+                if (map[orphan.OriginalStartKey!] is { } key && exceptions.All(e => e.OriginalStartKey != key))
+                    SeriesShift.Rekey(connection, transaction, series, orphan, key, _time.LocalTimeZone, now);
+                else SeriesShift.Review(connection, transaction, orphan, now);
+            }
+        }
+        transaction.Commit();
     }
 
     // ---- push ----
@@ -522,6 +547,9 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         version.Transaction = transaction;
         // WAL 읽기 동안 MCP가 썼으면 최신 revision으로 다시 판단한다.
         if ((fullList || sorted.Length != 0) && (long)version.ExecuteScalar()! != before) records = ReadStored(connection, transaction);
+        // S5: 다른 곳(폰 등)에서 시리즈의 시각·반복을 바꿨다. Google은 예외를 모두 버리고 옛 인스턴스 ID를 취소로만 보낸다.
+        // 그 취소를 적용하기 전에 이 PC의 회차 기록(완료·체크리스트·회차 삭제)을 같은 날의 새 회차로 옮긴다(유일할 때만).
+        if (ShiftSeries(connection, transaction, sorted, records, now)) records = ReadStored(connection, transaction);
         var byGoogleId = records.Where(s => s.Record.GoogleEventId != null).ToDictionary(s => s.Record.GoogleEventId!);
         var localInstances = records.Where(s => s.Record.ParentEventId != null)
             .ToDictionary(s => (s.Record.ParentEventId!.Value, s.Record.OriginalStartKey!));
@@ -628,6 +656,33 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         using var connection = database.OpenConnection();
         using var command = Sql.Command(connection, null, "SELECT 1 FROM setting WHERE setting_key=$key;", ("$key", key));
         return command.ExecuteScalar() is not null;
+    }
+
+    // 옮긴 행이 있으면 true(호출한 쪽이 행을 다시 읽는다). 같은 시리즈 본체가 다시 와도(같은 etag) 다시 옮기지 않는다(멱등).
+    private bool ShiftSeries(SqliteConnection connection, SqliteTransaction transaction, IEnumerable<Event> items, List<Stored> records, string now)
+    {
+        var moved = false;
+        var byGoogleId = records.Where(s => s.Record.GoogleEventId != null).ToDictionary(s => s.Record.GoogleEventId!);
+        foreach (var item in items.Where(i => i.Id is not null && i.Status != "cancelled" && i.RecurringEventId is null && i.Recurrence is { Count: > 0 }))
+        {
+            if (!byGoogleId.TryGetValue(item.Id!, out var series) || series.Record.IsDirty || series.Record.PushState != "synced"
+                || series.Etag == item.ETag || EventFields.Same("time", EventFields.Of(series.Record)["time"], EventFields.Of(item)["time"])) continue;
+            var exceptions = records.Where(r => r.Record.ParentEventId == series.Record.EventId).Select(r => r.Record).ToList();
+            if (exceptions.Count == 0) continue;
+            var shifted = _time.Derive(series.Record with
+            {
+                GoogleStartRaw = item.Start?.Date ?? item.Start?.DateTimeRaw, GoogleEndRaw = item.End?.Date ?? item.End?.DateTimeRaw,
+                TimeZone = item.Start?.TimeZone ?? item.End?.TimeZone, RecurrenceRule = string.Join('\n', item.Recurrence!),
+            });
+            var map = SeriesShift.Map(shifted, exceptions.Select(e => e.OriginalStartKey!), _time.LocalTimeZone);
+            foreach (var exception in exceptions)
+            {
+                if (map[exception.OriginalStartKey!] is { } key) SeriesShift.Rekey(connection, transaction, shifted, exception, key, _time.LocalTimeZone, now);
+                else if (exception.Status != "cancelled" || exception.IsDirty) SeriesShift.Review(connection, transaction, exception, now);
+                moved = true;
+            }
+        }
+        return moved;
     }
 
     // 삭제 항목은 ID(취소 회차는 recurringEventId·originalStartTime)만 보장된다. 기존 값은 두고 상태만 바꾼다.

@@ -279,10 +279,11 @@ public sealed class OrphanEventDiagnosisTests
         Assert.Equal(deleteConflicts ? 1 : 0, db.Scalar("SELECT count(*) FROM sync_conflict WHERE item_kind='event';"));
     }
 
+    // S5(D3 완화): 같은 날 시간만 옮기면 회차 기록이 새 회차로 하나씩 대응한다. 바꾸게 하고 체크리스트를 새 회차로 옮겨 Google 새 인스턴스에 다시 올린다.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task PreviouslyMovedSeriesKeepsOldChecklistSlotUntilItsCancellationCanBeMatched(bool uploadExceptionFirst)
+    public async Task SameDayTimeMoveCarriesTheChecklistToTheNewOccurrence(bool uploadExceptionFirst)
     {
         using var db = new TestDatabase();
         var remote = new FakeCalendar();
@@ -297,48 +298,71 @@ public sealed class OrphanEventDiagnosisTests
         if (uploadExceptionFirst) await Sync(db, remote);
         else remote.MissingInstances.Add(oldId); // 본체 시간 변경 뒤 옛 인스턴스 GET이 404인 응답을 모사한다.
 
-        var refused = Assert.Throws<InvalidOperationException>(() =>
-            db.Events.Update(series.EventUid, new() { StartTime = "11:00", EndTime = "12:00" }));
-        Assert.Equal(EventRepository.OccurrenceKeyChangeError, refused.Message);
-        Assert.Equal(occurrence.OccurrenceId, Assert.Single(db.Events.List(Monday, Monday)).OccurrenceId);
-
-        // D3 이전 앱이 시간 이동을 이미 저장하고 종료한 DB를 재현한다.
-        // 예외의 키와 전송 이력은 유지하고, 부모에만 구버전이 남겼던 미전송 변경을 넣는다.
-        var moved = new EventTime(TestDatabase.Seoul).Normalize(series with { StartTime = "11:00", EndTime = "12:00" });
-        db.Execute("""
-            UPDATE event SET start_time=$start, end_time=$end, google_start_raw=$rawStart, google_end_raw=$rawEnd,
-                local_revision=local_revision+1, is_dirty=1, push_state='pending', updated_at=$now
-            WHERE event_uid=$uid
-            """, ("$start", moved.StartTime), ("$end", moved.EndTime),
-            ("$rawStart", moved.GoogleStartRaw), ("$rawEnd", moved.GoogleEndRaw),
-            ("$now", db.Clock.GetUtcNow().ToString("O", System.Globalization.CultureInfo.InvariantCulture)), ("$uid", series.EventUid));
-        var slots = db.Events.List(Monday, Monday);
-        Assert.Equal([9, 11], slots.Select(o => o.Start.Hour));
-        Assert.Single(slots[0].Event.Checklist);
-        Assert.Empty(slots[1].Event.Checklist);
+        db.Events.Update(series.EventUid, new() { StartTime = "11:00", EndTime = "12:00" });
+        var slot = Assert.Single(db.Events.List(Monday, Monday));
+        Assert.Equal((11, "준비"), (slot.Start.Hour, Assert.Single(slot.Event.Checklist).Text));
         await Sync(db, remote);
-        Assert.Equal([series.EventUid], remote.InsertAttempts);
-        Assert.Contains(remote.PatchAttempts, call => call.Id == series.GoogleEventId);
-        Assert.Empty(remote.DeleteAttempts);
+        await Sync(db, remote);
 
-        if (uploadExceptionFirst)
+        var instance = remote.Items[series.GoogleEventId + "_20261109T020000Z"];
+        Assert.Contains(instance.ExtendedProperties.Private__, p => p.Key.StartsWith("deskcalCheck", StringComparison.Ordinal) && p.Value.Contains("준비"));
+        slot = Assert.Single(db.Events.List(Monday, Monday));
+        Assert.Equal((11, "준비"), (slot.Start.Hour, Assert.Single(slot.Event.Checklist).Text));
+        Assert.Single(db.Events.GetRecords(), e => e.ParentEventId == series.EventId);
+        Assert.All(db.Events.GetRecords(), e => Assert.False(e.IsDirty));
+        Assert.Equal(0, db.Scalar("SELECT count(*) FROM sync_conflict;"));
+        Assert.Equal([series.EventUid], remote.InsertAttempts);
+        Assert.Empty(remote.DeleteAttempts);
+    }
+
+    // 기존 고아 예외: D3 이전 앱이 시간 이동만 저장하고 끝난 DB. 보내기 전에 같은 날 새 회차로 옮긴다(S5).
+    // 요일이 바뀌어 같은 날 새 회차가 없으면 옮기지 않고 옛 회차로 보관한 채 충돌 기록에 한 번 남긴다.
+    [Theory]
+    [InlineData("11:00", true)]
+    [InlineData("tuesday", false)]
+    public async Task LegacyOrphanMovesBeforePushOrStaysForReview(string change, bool moves)
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeCalendar();
+        var series = db.Events.Create([new("반복 일정", "2026-11-02")
         {
-            // 설계 문서의 옛 인스턴스 tombstone 예시처럼 ID와 취소 상태만 보낸다.
-            remote.Put(new Event { Id = oldId, Status = "cancelled" });
-            await Sync(db, remote);
-            Assert.Equal(11, Assert.Single(db.Events.List(Monday, Monday)).Start.Hour);
+            StartTime = "09:00", EndTime = "10:00", Repeat = new("weekly", Weekdays: [DayOfWeek.Monday])
+        }]).Single();
+        await Sync(db, remote);
+        var occurrence = Assert.Single(db.Events.List(Monday, Monday));
+        db.Events.AddChecklistItems(occurrence.OccurrenceId!, true, ["준비"]);
+        await Sync(db, remote);
+        var moved = change == "tuesday"
+            ? new EventTime(TestDatabase.Seoul).Normalize(series with { StartDate = "2026-11-03", EndDate = "2026-11-03" }) with
+                { RecurrenceRule = "RRULE:FREQ=WEEKLY;BYDAY=TU" }
+            : new EventTime(TestDatabase.Seoul).Normalize(series with { StartTime = "11:00", EndTime = "12:00" });
+        db.Execute("""
+            UPDATE event SET start_date=$sd, end_date=$ed, start_time=$start, end_time=$end, google_start_raw=$rawStart, google_end_raw=$rawEnd,
+                recurrence_rule=$rule, local_revision=local_revision+1, is_dirty=1, push_state='pending', updated_at=$now
+            WHERE event_uid=$uid
+            """, ("$sd", moved.StartDate), ("$ed", moved.EndDate), ("$start", moved.StartTime), ("$end", moved.EndTime),
+            ("$rawStart", moved.GoogleStartRaw), ("$rawEnd", moved.GoogleEndRaw), ("$rule", moved.RecurrenceRule),
+            ("$now", db.Clock.GetUtcNow().ToString("O", System.Globalization.CultureInfo.InvariantCulture)), ("$uid", series.EventUid));
+        await Sync(db, remote);
+        await Sync(db, remote);
+
+        if (moves)
+        {
+            var slot = Assert.Single(db.Events.List(Monday, Monday));
+            Assert.Equal((11, "준비"), (slot.Start.Hour, Assert.Single(slot.Event.Checklist).Text));
+            Assert.Equal(0, db.Scalar("SELECT count(*) FROM sync_conflict;"));
         }
         else
         {
-            // 404로 전체를 받은 뒤에도 원격 ID 없는 옛 예외가 로컬에 남는다.
-            await Sync(db, remote);
-            Assert.Single(remote.Items);
-            Assert.Equal([9, 11], db.Events.List(Monday, Monday).Select(o => o.Start.Hour));
-            var exception = Assert.Single(db.Events.GetRecords(), e => e.ParentEventId == series.EventId);
-            Assert.Null(exception.GoogleEventId);
-            Assert.False(exception.IsDirty);
-            Assert.Equal(1, db.Scalar("SELECT count(*) FROM sync_conflict WHERE item_kind='event';"));
+            var review = Assert.Single(ConflictLog.Unseen(db.Database));
+            Assert.True(review.Orphan);
+            Assert.False(review.CanReapply);
+            var kept = Assert.Single(db.Events.GetRecords(), e => e.ParentEventId == series.EventId);
+            Assert.Equal("2026-11-09T00:00:00Z", kept.OriginalStartKey);
+            Assert.Single(kept.Checklist);
+            Assert.Empty(db.Events.List(new DateOnly(2026, 11, 10), new DateOnly(2026, 11, 10)).SelectMany(o => o.Event.Checklist));
         }
+        Assert.Equal([series.EventUid], remote.InsertAttempts);
     }
 
     [Theory]
