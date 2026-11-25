@@ -397,6 +397,22 @@ public sealed class McpToolTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SeriesStartTimeCanChangeUntilAnOccurrenceHasItsOwnState()
+    {
+        var created = await Call("create_events", """{"events":[{"title":"주간","start_date":"2026-11-02","start_time":"09:00","repeat":{"frequency":"weekly","weekdays":["monday"]}}]}""");
+        var uid = Id(created.GetProperty("events")[0]);
+        await Call("update_event", new { event_id = uid, start_time = "11:00", end_time = "12:00" });
+        var date = new { start_date = "2026-11-09", end_date = "2026-11-09" };
+        var id = Id((await Call("list_events", date)).GetProperty("events")[0], "occurrence_id");
+        await Call("add_checklist_items", new { occurrence_id = id, items = new[] { "준비" } });
+        var result = await Call("update_event", new { event_id = uid, start_time = "12:00", end_time = "13:00" }, error: true);
+        Assert.Contains("occurrence", result.GetProperty("error").GetString());
+        var same = Assert.Single((await Call("list_events", date)).GetProperty("events").EnumerateArray());
+        Assert.Equal(id, Id(same, "occurrence_id"));
+        Assert.Equal("준비", same.GetProperty("checklist")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
     public async Task ChecklistIsPerOccurrenceAndSupportsEditDeleteRestore()
     {
         var created = await Call("create_events", """{"events":[{"title":"카공","start_date":"2026-11-08","start_time":"15:30","repeat":{"frequency":"weekly","weekdays":["sunday"],"count":3}}]}""");

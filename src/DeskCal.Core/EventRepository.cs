@@ -4,6 +4,8 @@ namespace DeskCal.Core;
 
 public sealed class EventRepository
 {
+    public const string OccurrenceKeyChangeError =
+        "This series has occurrence exceptions. Changing its start date, time, time zone, all-day type or repeat rule could detach their checklist or completion state.";
     private readonly Database _database;
     private readonly EventTime _time;
     private readonly TimeProvider _clock;
@@ -88,10 +90,14 @@ public sealed class EventRepository
         };
         if (patch.ChangesTime) value = _time.Normalize(value);
         if (patch.Repeat.IsSpecified) value = value with { RecurrenceRule = patch.Repeat.Value?.ToRule(value) };
-        if (value.StartDate != previous.StartDate || value.RecurrenceRule != previous.RecurrenceRule)
+        if (value.RecurrenceRule != previous.RecurrenceRule ||
+            (previous.RecurrenceRule is not null && !RecurrenceExpander.HasSameSeriesStart(previous, value)))
         {
-            using var command = Sql.Command(connection, transaction, "SELECT EXISTS(SELECT 1 FROM event WHERE parent_event_id=$id);", ("$id", previous.EventId));
-            if ((long)command.ExecuteScalar()! != 0) throw new InvalidOperationException("Edit in Google Calendar or resolve occurrence exceptions first.");
+            using var command = Sql.Command(connection, transaction, """
+                SELECT EXISTS(SELECT 1 FROM event WHERE parent_event_id=$id
+                    OR (parent_event_id IS NULL AND google_recurring_id=$remote));
+                """, ("$id", previous.EventId), ("$remote", previous.GoogleEventId));
+            if ((long)command.ExecuteScalar()! != 0) throw new InvalidOperationException(OccurrenceKeyChangeError);
         }
         value = Save(connection, transaction, value);
         transaction.Commit();
