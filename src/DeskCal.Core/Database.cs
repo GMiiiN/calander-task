@@ -11,13 +11,14 @@ public sealed class Database
     private readonly string _connectionString;
 
     private readonly Action<string>? _trace;
+    internal string FilePath { get; }
     public string PathFingerprint { get; }
     public string DiagnosticIdentity => $"db={PathFingerprint} version={typeof(Database).Assembly.GetName().Version} pid={Environment.ProcessId}";
 
     public Database(string path, Action<string>? trace = null)
     {
         _trace = trace;
-        path = Path.GetFullPath(path);
+        FilePath = path = Path.GetFullPath(path);
         var normalized = OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path;
         PathFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)))[..24];
         _connectionString = new SqliteConnectionStringBuilder

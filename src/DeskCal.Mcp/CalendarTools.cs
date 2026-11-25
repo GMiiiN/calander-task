@@ -23,7 +23,9 @@ public sealed class CalendarTools(Database database)
         try
         {
             var input = new ToolInput(arguments);
-            var output = new ToolOutput(database, _events);
+            var isWrite = name is "create_events" or "update_event" or "delete_event" or "restore_event" or "add_checklist_items" or "update_checklist_item" or "delete_checklist_item"
+                or "restore_checklist_item" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo";
+            var output = new ToolOutput(database, _events, isWrite);
             body = database.Measure("execute", () => name switch
             {
                 "get_agenda" => GetAgenda(input, output),
@@ -46,8 +48,11 @@ public sealed class CalendarTools(Database database)
                 "restore_todo" => SetTodoDeleted(input, output, false),
                 _ => throw new ArgumentException("Unknown tool.")
             });
-            if (name is "create_events" or "update_event" or "delete_event" or "restore_event" or "add_checklist_items" or "update_checklist_item" or "delete_checklist_item"
-                or "restore_checklist_item" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo") ChangeSignal.Notify();
+            if (isWrite)
+            {
+                ChangeSignal.Notify();
+                output.AddReceipt(body);
+            }
         }
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or InvalidOperationException or FormatException or JsonException or SqliteException)
         {
