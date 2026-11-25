@@ -94,7 +94,8 @@ public sealed class McpToolTests : IAsyncLifetime
     {
         using var connection = _database.OpenConnection();
         using var schema = connection.CreateCommand();
-        schema.CommandText = "DROP TABLE shared_entry; ALTER TABLE sync_state DROP COLUMN last_error; " +
+        schema.CommandText = "ALTER TABLE event DROP COLUMN sync_base; ALTER TABLE todo DROP COLUMN sync_base; ALTER TABLE sync_conflict DROP COLUMN detail_json; " +
+            "DROP TABLE shared_entry; ALTER TABLE sync_state DROP COLUMN last_error; " +
             "DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
         schema.ExecuteNonQuery();
         var path = Path.Combine(_directory, "nested", "deskcal.db");
@@ -187,7 +188,8 @@ public sealed class McpToolTests : IAsyncLifetime
         cmd.ExecuteNonQuery();
         var update = new { todo_id = uid, title = "변경" };
         var waiting = await Call("update_todo", update);
-        Assert.Equal("sync_deferred", waiting.GetProperty("todo").GetProperty("reason").GetString());
+        // 로그인(토큰)은 있는데 DB 옆 OAuth 클라이언트 파일이 없어 보낼 수 없다(S4: 사용 중·미로그인과 구분).
+        Assert.Equal("client_file_missing", waiting.GetProperty("todo").GetProperty("reason").GetString());
         using (AppPresence.Register(_database))
         {
             var on = await Call("update_todo", update);
@@ -218,7 +220,7 @@ public sealed class McpToolTests : IAsyncLifetime
         {
             cmd.CommandText = "UPDATE todo SET push_state='synced',is_dirty=0 WHERE title='확인됨';";
             cmd.ExecuteNonQuery();
-            return Task.FromResult(true);
+            return Task.FromResult(SyncOutcome.Completed);
         });
         var args = JsonSerializer.SerializeToElement(new { todos = new[] { new { title = "확인됨" }, new { title = "대기" } } });
         var response = (await tools.InvokeAsync("create_todos", args, default)).StructuredContent!.Value;
@@ -226,14 +228,19 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Equal("synced", response.GetProperty("todos")[0].GetProperty("sync").GetString());
         Assert.Equal("pending", response.GetProperty("todos")[1].GetProperty("sync").GetString());
 
-        var never = new TaskCompletionSource<bool>();
+        // S4: 다른 DeskCal(앱·다른 MCP)이 보내는 중이면 그쪽이 보낸다. "로그인 없음"과 구분한다.
+        var busy = await new CalendarTools(_database, () => Task.FromResult(SyncOutcome.Busy)).InvokeAsync("update_todo",
+            JsonSerializer.SerializeToElement(new { todo_id = Id(response.GetProperty("todos")[1], "todo_id"), memo = "사용 중" }), default);
+        Assert.Equal("sync_busy", busy.StructuredContent!.Value.GetProperty("todo").GetProperty("reason").GetString());
+
+        var never = new TaskCompletionSource<SyncOutcome>();
         tools = new CalendarTools(_database, () => never.Task);
         using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
         response = (await tools.InvokeAsync("create_todos", args, deadline.Token)).StructuredContent!.Value;
         Assert.True(response.GetProperty("saved_locally").GetBoolean());
         Assert.Equal("sync_timeout", response.GetProperty("todos")[0].GetProperty("reason").GetString());
         Assert.Equal(4, Todos.List().Count);
-        never.SetResult(false);
+        never.SetResult(SyncOutcome.Busy);
     }
 
     // 리뷰 A-1: 영수증의 5초 마감이 실제 Google 전송까지 취소해, 보내기 전에 결과 불명으로 표시한 생성이 needs_review로 남았다.
@@ -249,12 +256,12 @@ public sealed class McpToolTests : IAsyncLifetime
         }
         var remote = new GatedTasks();
         using var lifetime = new CancellationTokenSource();
-        Task<bool>? sending = null;
+        Task<SyncOutcome>? sending = null;
         var tools = new CalendarTools(_database, () => sending = SendAsync());
-        async Task<bool> SendAsync()
+        async Task<SyncOutcome> SendAsync()
         {
             await new TaskSync(_database, remote).SyncAsync(lifetime.Token);
-            return true;
+            return SyncOutcome.Completed;
         }
 
         var waited = Stopwatch.StartNew();
@@ -271,7 +278,7 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.False(remote.InsertCancelled);
 
         remote.Release();
-        Assert.True(await sending.WaitAsync(_timeout.Token));
+        Assert.Equal(SyncOutcome.Completed, await sending.WaitAsync(_timeout.Token));
         var stored = Todos.Get(Id(todo, "todo_id"));
         Assert.Equal("synced", stored.PushState);
         Assert.False(stored.IsDirty);

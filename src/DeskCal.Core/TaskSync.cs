@@ -170,7 +170,22 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
             {
                 if (snapshot.DeletedAt is not null)
                 {
-                    if (snapshot.GoogleTaskId is not null) await DeleteRemoteAsync(snapshot, cancellationToken);
+                    if (snapshot.GoogleTaskId is not null)
+                    {
+                        try { await DeleteRemoteAsync(snapshot, snapshot.GoogleEtag, cancellationToken); }
+                        catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed
+                            && FieldMerge.Parse(snapshot.SyncBase) is { } baseline)
+                        {
+                            // 지우기 전에 다른 곳에서 고쳤다(S4). 고친 내용이 있으면 삭제/수정 겹침이라 원격 우선(삭제 취소), 없으면 지금 etag로 지운다.
+                            var current = await remote.GetAsync(snapshot.GoogleTaskId, cancellationToken);
+                            if (current is { Deleted: not true } && FieldMerge.Changed(baseline, TodoFields.Of(current), TodoFields.Same))
+                            {
+                                Discard(snapshot, deleted: "local");
+                                continue;
+                            }
+                            if (current is not null) await DeleteRemoteAsync(snapshot, current.ETag, cancellationToken);
+                        }
+                    }
                     Apply(snapshot, snapshot.GoogleTaskId, null);
                 }
                 else if (snapshot.GoogleTaskId is null)
@@ -208,22 +223,37 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                         continue;
                     }
                     if (string.IsNullOrEmpty(created.Id)) continue; // ID 없는 성공 응답도 전체 목록에서 확인한다.
-                    Apply(snapshot, created.Id, created.ETag);
+                    Apply(snapshot, created.Id, created.ETag, created);
                     pushed.Add(created.Id);
                 }
                 else
                 {
                     // 이 PC가 보낸 표식은 연결이 확인됐으므로 싣지 않는다(이번 갱신으로 Google 메모에서 지워진다).
                     // 다른 PC의 표식(보낸 revision 없음)은 그 PC가 아직 연결하지 못했을 수 있어 그대로 돌려준다.
-                    var updated = await remote.UpdateAsync(ToRemote(snapshot with { Marker = snapshot.MarkerRevision is null ? snapshot.Marker : null }), cancellationToken);
-                    Apply(snapshot, updated.Id, updated.ETag);
+                    GoogleTask updated;
+                    try
+                    {
+                        updated = await remote.UpdateAsync(ToRemote(snapshot with { Marker = snapshot.MarkerRevision is null ? snapshot.Marker : null }), cancellationToken);
+                    }
+                    catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed
+                        && FieldMerge.Parse(snapshot.SyncBase) is { } baseline)
+                    {
+                        if (await MergeAsync(snapshot, baseline, cancellationToken) is { Id: not null } merged) pushed.Add(merged.Id);
+                        continue;
+                    }
+                    Apply(snapshot, updated.Id, updated.ETag, updated);
                     if (snapshot.MarkerRevision is not null) ForgetMarker(snapshot);
                     if (updated.Id is not null) pushed.Add(updated.Id);
                 }
             }
-            catch (GoogleApiException exception) when (exception.HttpStatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.NotFound or HttpStatusCode.Gone)
+            catch (GoogleApiException exception) when (exception.HttpStatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
             {
-                // 다른 곳에서 먼저 바꾸거나 지웠다. 원격 우선: 로컬 변경을 기록하고 버린 뒤 pull이 원격 값을 받게 한다.
+                // 다른 곳에서 지웠다. 이 PC 변경은 원격 삭제에 밀린다. 기록하고 버린 뒤 pull의 전체 대조가 로컬도 지운다.
+                Discard(snapshot, deleted: snapshot.SyncBase is null ? null : "remote");
+            }
+            catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed)
+            {
+                // 다른 곳에서 먼저 바꿨는데 병합 기준값이 없는 예전 행이다. 원격 우선: 로컬 변경을 기록하고 버린 뒤 pull이 원격 값을 받게 한다.
                 Discard(snapshot);
             }
             catch (GoogleApiException exception)
@@ -254,11 +284,74 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
         return false;
     }
 
-    private async Task DeleteRemoteAsync(Snapshot snapshot, CancellationToken cancellationToken)
+    /// <summary>
+    /// 다른 곳에서 할 일이 먼저 바뀌었다(412, S4). 마지막으로 맞춘 값과 비교해 필드 묶음(제목·메모·마감·완료)별로 합친다.
+    /// 서로 다른 묶음은 둘 다 살리고, 같은 묶음을 둘 다 바꿨으면 Google 값을 남기고 이 PC 값을 충돌로 기록한다.
+    /// 완료 여부와 완료 시각은 한 묶음이다. Google에서 지웠으면 원격 삭제가 이긴다. 합친 결과를 돌려준다(보내지 못했으면 null).
+    /// </summary>
+    private async Task<GoogleTask?> MergeAsync(Snapshot snapshot, System.Text.Json.Nodes.JsonObject baseline, CancellationToken cancellationToken)
+    {
+        var current = await remote.GetAsync(snapshot.GoogleTaskId!, cancellationToken);
+        if (current is null || current.Deleted == true)
+        {
+            Discard(snapshot, deleted: "remote");
+            return null;
+        }
+        var theirs = TodoFields.Of(current);
+        var merged = FieldMerge.Merge(baseline, TodoFields.Of(snapshot.Title, snapshot.Memo, snapshot.DueDate, snapshot.IsDone), theirs, TodoFields.Same);
+        var done = merged.Values["done"]!.GetValue<bool>();
+        var completed = !done ? null : merged.FromTheirs.Contains("done") ? current.Completed : Rfc3339(snapshot.CompletedAt ?? snapshot.UpdatedAt);
+        var due = merged.Values["due"]?.GetValue<string>();
+        try
+        {
+            var response = !FieldMerge.Changed(theirs, merged.Values, TodoFields.Same) ? current : await remote.UpdateAsync(new GoogleTask
+            {
+                Id = current.Id, ETag = current.ETag, Title = merged.Values["title"]!.GetValue<string>(),
+                Notes = TaskMarker.Add(merged.Values["memo"]!.GetValue<string>(), snapshot.MarkerRevision is null ? snapshot.Marker : null),
+                Due = due is null ? null : due + "T00:00:00.000Z", Status = done ? "completed" : "needsAction", Completed = completed,
+            }, cancellationToken);
+            ApplyMerged(snapshot, merged, response, done ? completed : null);
+            if (snapshot.MarkerRevision is not null) ForgetMarker(snapshot);
+            return response;
+        }
+        catch (GoogleApiException exception) when (exception.HttpStatusCode == HttpStatusCode.PreconditionFailed)
+        {
+            return null; // 합치는 사이 또 바뀌었다(412 재발). dirty로 두고 다음 동기화에서 다시 합친다.
+        }
+    }
+
+    // 병합 결과를 반영한다. 보내는 사이 이 PC에서 또 고쳤으면 Google 쪽 값을 받은 묶음 중 다시 고치지 않은 것만 넣고 dirty로 둔다.
+    private void ApplyMerged(Snapshot snapshot, FieldMerge.Result merged, GoogleTask response, string? completed)
+    {
+        var now = Validation.Timestamp(_clock);
+        using var connection = database.OpenConnection();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var current = ReadSnapshots(connection, transaction, "todo_id=$id", ("$id", snapshot.TodoId)).Single();
+        var same = current.LocalRevision == snapshot.LocalRevision;
+        var before = TodoFields.Of(snapshot.Title, snapshot.Memo, snapshot.DueDate, snapshot.IsDone);
+        var latest = TodoFields.Of(current.Title, current.Memo, current.DueDate, current.IsDone);
+        var values = same ? merged.Values : (System.Text.Json.Nodes.JsonObject)latest.DeepClone();
+        if (!same)
+            foreach (var field in merged.FromTheirs.Where(f => TodoFields.Same(f, latest[f], before[f])))
+                values[field] = merged.Values[field]?.DeepClone();
+        var done = values["done"]!.GetValue<bool>();
+        using (var save = Sql.Command(connection, transaction,
+            "UPDATE todo SET title=$title, memo=$memo, due_date=$due, is_done=$done, completed_at=$completed" +
+            (same ? ", google_etag=$etag, sync_base=$base, is_dirty=0, push_state='synced', attempt_count=0, last_error=NULL, updated_at=$now" : "") +
+            " WHERE todo_id=$id;",
+            ("$title", values["title"]!.GetValue<string>()), ("$memo", values["memo"]!.GetValue<string>()), ("$due", values["due"]?.GetValue<string>()),
+            ("$done", done), ("$completed", !done ? null : same || merged.FromTheirs.Contains("done") ? completed : current.CompletedAt),
+            ("$etag", response.ETag), ("$base", TodoFields.Of(response).ToJsonString()), ("$now", now), ("$id", snapshot.TodoId)))
+            save.ExecuteNonQuery();
+        if (merged.Conflicts.Count > 0) InsertConflict(connection, transaction, snapshot, now, FieldMerge.Detail(merged.Conflicts));
+        transaction.Commit();
+    }
+
+    private async Task DeleteRemoteAsync(Snapshot snapshot, string? etag, CancellationToken cancellationToken)
     {
         try
         {
-            await remote.DeleteAsync(snapshot.GoogleTaskId!, snapshot.GoogleEtag, cancellationToken);
+            await remote.DeleteAsync(snapshot.GoogleTaskId!, etag, cancellationToken);
         }
         catch (GoogleApiException exception) when (exception.HttpStatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
         {
@@ -280,27 +373,28 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
             .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
 
     // 응답 적용(§5.2): 보낸 뒤 로컬이 또 바뀌었으면(revision 다름) ID·etag만 저장하고 dirty를 남긴다.
-    private void Apply(Snapshot snapshot, string? googleId, string? etag)
+    private void Apply(Snapshot snapshot, string? googleId, string? etag, GoogleTask? response = null)
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
         var same = CurrentRevision(connection, transaction, snapshot.TodoId) == snapshot.LocalRevision;
         using var command = Sql.Command(connection, transaction,
-            "UPDATE todo SET google_task_id=$id, google_etag=$etag, attempt_count=0, last_error=NULL" +
+            "UPDATE todo SET google_task_id=$id, google_etag=$etag, attempt_count=0, last_error=NULL, sync_base=COALESCE($base, sync_base)" +
             (same ? ", is_dirty=0, push_state='synced'" : ", push_state='pending'") + " WHERE todo_id=$todo;",
-            ("$id", googleId), ("$etag", etag), ("$todo", snapshot.TodoId));
+            ("$id", googleId), ("$etag", etag), ("$todo", snapshot.TodoId), ("$base", response is null ? null : TodoFields.Of(response).ToJsonString()));
         command.ExecuteNonQuery();
         transaction.Commit();
     }
 
-    private void Discard(Snapshot snapshot)
+    // deleted: local(이 PC 삭제가 Google 수정에 밀림) | remote(이 PC 변경이 Google 삭제에 밀림)(S4)
+    private void Discard(Snapshot snapshot, string? deleted = null)
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
         // 보내는 사이에 또 고쳤으면 그 최신 내용을 남긴다(버리는 것은 지금 행이다).
         var discarded = CurrentRevision(connection, transaction, snapshot.TodoId) == snapshot.LocalRevision
             ? snapshot : ReadSnapshots(connection, transaction, "todo_id=$id", ("$id", snapshot.TodoId)).Single();
-        InsertConflict(connection, transaction, discarded, Validation.Timestamp(_clock));
+        InsertConflict(connection, transaction, discarded, Validation.Timestamp(_clock), deleted is null ? null : FieldMerge.Detail([], deleted));
         // etag를 비워 다음 pull이 원격 값을 그대로 덮게 한다. 원격에서 지워졌으면 pull의 전체 대조가 로컬도 지운다.
         using var command = Sql.Command(connection, transaction,
             "UPDATE todo SET is_dirty=0, push_state='synced', google_etag=NULL, attempt_count=0, last_error=NULL WHERE todo_id=$todo;",
@@ -313,11 +407,11 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
     internal static void RecordDiscarded(SqliteConnection connection, SqliteTransaction transaction, long todoId, string at) =>
         InsertConflict(connection, transaction, ReadSnapshots(connection, transaction, "todo_id=$id", ("$id", todoId)).Single(), at);
 
-    private static void InsertConflict(SqliteConnection connection, SqliteTransaction transaction, Snapshot discarded, string at)
+    private static void InsertConflict(SqliteConnection connection, SqliteTransaction transaction, Snapshot discarded, string at, string? detail = null)
     {
         using var conflict = Sql.Command(connection, transaction,
-            "INSERT INTO sync_conflict(item_kind, item_uid, discarded_json, occurred_at) VALUES ('todo', $uid, $json, $at);",
-            ("$uid", discarded.TodoUid), ("$json", JsonSerializer.Serialize(discarded, ConflictJson)), ("$at", at));
+            "INSERT INTO sync_conflict(item_kind, item_uid, discarded_json, occurred_at, detail_json) VALUES ('todo', $uid, $json, $at, $detail);",
+            ("$uid", discarded.TodoUid), ("$json", JsonSerializer.Serialize(discarded, ConflictJson)), ("$at", at), ("$detail", detail));
         conflict.ExecuteNonQuery();
     }
 
@@ -383,14 +477,21 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                 if (found && local.DeletedAt is null) MarkDeleted(connection, transaction, local.Id, now);
                 continue;
             }
-            if (found && local.Etag == item.ETag && local.DeletedAt is null) continue;
+            if (found && local.Etag == item.ETag && local.DeletedAt is null)
+            {
+                // 내용이 그대로인 S4 이전 행에 412 병합 기준값을 채운다.
+                using var baseline = Sql.Command(connection, transaction, "UPDATE todo SET sync_base=$base WHERE todo_id=$id AND sync_base IS NULL;",
+                    ("$base", TodoFields.Of(item).ToJsonString()), ("$id", local.Id));
+                baseline.ExecuteNonQuery();
+                continue;
+            }
             var (memo, marker) = TaskMarker.Read(item.Notes);
             var values = new Dictionary<string, object?>
             {
                 ["google_task_id"] = item.Id, ["google_etag"] = item.ETag, ["title"] = item.Title ?? "", ["memo"] = memo,
                 ["due_date"] = item.Due is { Length: >= 10 } due ? due[..10] : null, ["is_done"] = item.Status == "completed",
                 ["completed_at"] = item.Status == "completed" ? item.Completed : null, ["position"] = item.Position,
-                ["deleted_at"] = null, ["updated_at"] = now, ["is_dirty"] = false, ["push_state"] = "synced",
+                ["deleted_at"] = null, ["updated_at"] = now, ["is_dirty"] = false, ["push_state"] = "synced", ["sync_base"] = TodoFields.Of(item).ToJsonString(),
             };
             if (!found)
             {
@@ -463,12 +564,12 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
                 Sql.Text(reader, "google_etag"), Sql.Text(reader, "title")!, Sql.Text(reader, "memo")!, Sql.Text(reader, "due_date"),
                 Sql.Number(reader, "is_done") != 0, Sql.Text(reader, "completed_at"), Sql.Text(reader, "updated_at")!,
                 Sql.Text(reader, "deleted_at"), Sql.Number(reader, "local_revision"), Sql.Text(reader, "marker"),
-                reader["marker_revision"] is long revision ? revision : null));
+                reader["marker_revision"] is long revision ? revision : null, Sql.Text(reader, "sync_base")));
         return result;
     }
 
     // Marker: task_attempt의 표식. MarkerRevision이 있으면 이 PC가 보낸 생성의 표식이다(없으면 pull에서 기억한 다른 PC의 표식).
     private sealed record Snapshot(long TodoId, string TodoUid, string? GoogleTaskId, string? GoogleEtag, string Title, string Memo,
         string? DueDate, bool IsDone, string? CompletedAt, string UpdatedAt, string? DeletedAt, long LocalRevision, string? Marker,
-        long? MarkerRevision = null);
+        long? MarkerRevision = null, string? SyncBase = null);
 }

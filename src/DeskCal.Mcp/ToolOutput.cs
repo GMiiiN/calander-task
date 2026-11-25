@@ -47,13 +47,13 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
     // 커밋 뒤 전송이나 상태 조회가 실패해도 클라이언트에는 기존 로컬 영수증을 반환한다.
     // 마감·요청 취소는 기다림만 끊는다. 전송은 send가 쥔 MCP 수명 토큰으로 끝까지 간다.
     // 할 일 생성은 보내기 전에 결과 불명으로 표시하므로, 도중에 취소하면 Google에 닿지 않았어도 needs_review로 남는다.
-    public async Task<JsonObject> SendAndVerifyAsync(JsonObject receipt, Func<Task<bool>> send, CancellationToken token)
+    public async Task<JsonObject> SendAndVerifyAsync(JsonObject receipt, Func<Task<SyncOutcome>> send, CancellationToken token)
     {
         var sending = Task.Run(send);
         try
         {
-            var sent = await sending.WaitAsync(ReceiptWait, token);
-            return Verify((JsonObject)receipt.DeepClone(), sent);
+            var outcome = await sending.WaitAsync(ReceiptWait, token);
+            return Verify((JsonObject)receipt.DeepClone(), Waiting(outcome));
         }
         catch (Exception ex)
         {
@@ -67,7 +67,16 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
         }
     }
 
-    private JsonObject Verify(JsonObject result, bool sent)
+    // 보내고도 남은 행의 이유(S4). 사용 중(다른 DeskCal이 보내는 중), 로그인 없음, 클라이언트 파일 없음, 인증 오류, 다음 차례 재시도를 구분한다.
+    private string Waiting(SyncOutcome outcome) => outcome switch
+    {
+        SyncOutcome.Busy => "sync_busy",
+        SyncOutcome.NotSignedIn => "not_signed_in",
+        SyncOutcome.NoClientFile => "client_file_missing",
+        _ => GoogleAccount.ReadAuthError(database) is not null ? "sign_in_error" : "retry_pending"
+    };
+
+    private JsonObject Verify(JsonObject result, string waiting)
     {
         result["last_verified_sync"] = SyncTimes(database);
         var signedIn = PendingChanges.HasToken(database);
@@ -87,16 +96,16 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
             var reason = reader.GetBoolean(2) ? "conflict" : reader.GetInt64(1) != row.Revision ? "newer_revision"
                 : PendingChanges.Reason(state, signedIn);
             if (reason is null && state == "synced") { item["sync"] = "synced"; item.Remove("reason"); }
-            else { item["sync"] = "pending"; item["reason"] = reason ?? (sent ? "retry_pending" : "sync_deferred"); }
+            else { item["sync"] = "pending"; item["reason"] = reason ?? waiting; }
         }
         // 공유 설정(S6 카테고리 별칭, S8 하루 순서): Drive 앱 전용 공간에 올렸는지 다시 읽는다.
         if (result["category"] is JsonObject category && (string?)category["color_id"] is { } colorId)
-            VerifyShared(category, SharedSettings.CategoryPrefix + colorId, signedIn, sent);
-        if (_orderDate is { } day) VerifyShared(result, OrderKey(day), signedIn, sent);
+            VerifyShared(category, SharedSettings.CategoryPrefix + colorId, signedIn, waiting);
+        if (_orderDate is { } day) VerifyShared(result, OrderKey(day), signedIn, waiting);
         return result;
     }
 
-    private void VerifyShared(JsonObject item, string key, bool signedIn, bool sent)
+    private void VerifyShared(JsonObject item, string key, bool signedIn, string waiting)
     {
         if (SharedState(database, key) == "synced")
         {
@@ -105,7 +114,7 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
             return;
         }
         item["sync"] = "pending";
-        item["reason"] = PendingChanges.Reason("pending", signedIn) ?? SharedSettingsSync.UnavailableReason(database) ?? (sent ? "retry_pending" : "sync_deferred");
+        item["reason"] = PendingChanges.Reason("pending", signedIn) ?? SharedSettingsSync.UnavailableReason(database) ?? waiting;
     }
 
     // 카테고리 별칭. 이 PC에서 바꾸고 아직 다른 기기용으로 올리지 않았으면 pending이다.
