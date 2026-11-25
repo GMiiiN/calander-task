@@ -7,9 +7,6 @@
     <Style TargetType="ToolTip">
         <Setter Property="LayoutTransform" Value="{DynamicResource TextLayoutScale}" />
     </Style>
-    <Style TargetType="ContextMenu">
-        <Setter Property="LayoutTransform" Value="{DynamicResource TextLayoutScale}" />
-    </Style>
     <FontFamily x:Key="AppFont">Noto Sans KR, Malgun Gothic</FontFamily>
 
     <DropShadowEffect x:Key="CardShadow" Color="#263359" Opacity="0.12" BlurRadius="24" ShadowDepth="4" Direction="270" />
@@ -35,6 +32,89 @@
         <GradientStop Color="#33FFFFFF" Offset="0" />
         <GradientStop Color="#0FFFFFFF" Offset="1" />
     </LinearGradientBrush>
+
+    <Style x:Key="MenuSurface" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource PopupBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="MinWidth" Value="108" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="Padding" Value="4" />
+    </Style>
+
+    <Style TargetType="ContextMenu">
+        <Style.Resources>
+            <Style x:Key="{x:Static MenuItem.SeparatorStyleKey}" TargetType="Separator">
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Separator">
+                            <Border Height="1" Margin="8,3" Background="{DynamicResource DividerBrush}" />
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+            <Style TargetType="MenuItem">
+                <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="Padding" Value="10,5" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="MenuItem">
+                            <Grid>
+                                <Border x:Name="Row" CornerRadius="6" Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}">
+                                    <DockPanel>
+                                        <Path x:Name="Arrow" DockPanel.Dock="Right" Width="5" Height="8" Margin="12,0,0,0"
+                                              Data="{StaticResource ChevronRightIcon}" Stretch="Fill" Stroke="{TemplateBinding Foreground}"
+                                              StrokeThickness="1.4" VerticalAlignment="Center" Visibility="Collapsed" />
+                                        <TextBlock x:Name="Gesture" DockPanel.Dock="Right" Margin="16,0,0,0"
+                                                   Text="{TemplateBinding InputGestureText}" VerticalAlignment="Center" />
+                                        <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center" />
+                                    </DockPanel>
+                                </Border>
+                                <!-- 동기화 상태 상세에는 복구 작업을 고르는 하위 메뉴가 있다. -->
+                                <Popup x:Name="PART_Popup" Placement="Right" PlacementTarget="{Binding ElementName=Row}"
+                                       IsOpen="{TemplateBinding IsSubmenuOpen}" AllowsTransparency="True" Focusable="False">
+                                    <Border Style="{StaticResource MenuSurface}">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto" Focusable="False" CanContentScroll="True">
+                                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" />
+                                        </ScrollViewer>
+                                    </Border>
+                                </Popup>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="InputGestureText" Value="">
+                                    <Setter TargetName="Gesture" Property="Visibility" Value="Collapsed" />
+                                </Trigger>
+                                <Trigger Property="HasItems" Value="True">
+                                    <Setter TargetName="Arrow" Property="Visibility" Value="Visible" />
+                                </Trigger>
+                                <Trigger Property="IsHighlighted" Value="True">
+                                    <Setter TargetName="Row" Property="Background" Value="{DynamicResource TodayCellBrush}" />
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </Style.Resources>
+        <Setter Property="FontFamily" Value="{StaticResource AppFont}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="LayoutTransform" Value="{DynamicResource TextLayoutScale}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContextMenu">
+                    <Border Style="{StaticResource MenuSurface}">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Focusable="False" CanContentScroll="True">
+                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" />
+                        </ScrollViewer>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
 
     <Style x:Key="Card" TargetType="Border">
         <Setter Property="CornerRadius" Value="24" />
