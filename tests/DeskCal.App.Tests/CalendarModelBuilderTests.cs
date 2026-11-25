@@ -401,6 +401,22 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.Equal("자정", day.Blocks.Single().Chip.Title);
     }
 
+    [Fact]
+    public void StudentWeeksNavigateAcrossMonthsWhileMonthStartsMonday()
+    {
+        var settings = new SettingStore(database);
+        Assert.False(settings.Semester.Enabled);
+        settings.Semester = new(true, new(2026, 10, 28), 16);
+        var vm = new MainViewModel(database);
+        vm.GoTo(new(2026, 11, 1));
+        vm.ShowWeekCommand.Execute(null);
+        Assert.Equal(new DateOnly(2026, 10, 28), vm.Week!.WeekStart);
+        vm.NextCommand.Execute(null);
+        Assert.Equal(new DateOnly(2026, 11, 4), vm.Week!.WeekStart);
+        vm.ShowMonthCommand.Execute(null);
+        Assert.Equal(DayOfWeek.Monday, vm.Month!.Weeks[0][0].DayOfWeek);
+    }
+
     private static DayCellModel Cell(MonthModel model, DateOnly date) => model.Weeks.SelectMany(w => w).Single(d => d.Date == date);
 
     private void Execute(string sql)

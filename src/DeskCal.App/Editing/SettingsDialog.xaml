@@ -37,6 +37,16 @@
                             <ComboBoxItem Tag="130">더 크게 (130%)</ComboBoxItem>
                         </ComboBox>
                     </DockPanel>
+                    <CheckBox x:Name="StudentCheck" Content="학생 모드" Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6" />
+                    <StackPanel IsEnabled="{Binding IsChecked, ElementName=StudentCheck}" Margin="0,0,0,10">
+                        <WrapPanel>
+                            <Label Content="개강일" Target="{Binding ElementName=TermStart}" Foreground="{DynamicResource TextBrush}" />
+                            <DatePicker x:Name="TermStart" SelectedDateChanged="OnTermStartChanged" />
+                            <Label Content="총 주차" Target="{Binding ElementName=TermWeeks}" Foreground="{DynamicResource TextBrush}" />
+                            <TextBox x:Name="TermWeeks" Width="44" Style="{StaticResource Field}" />
+                        </WrapPanel>
+                        <TextBlock x:Name="TermHint" Style="{StaticResource BaseText}" Margin="0,4,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
                     <CheckBox x:Name="DetailedBarsCheck" Content="여러 날 일정 자세히 표시" Foreground="{DynamicResource TextBrush}" Margin="0,0,0,10" />
                     <StackPanel Orientation="Horizontal">
                         <CheckBox x:Name="AutoStartCheck" Style="{StaticResource RoundCheck}" VerticalAlignment="Center" />

@@ -525,6 +525,8 @@
                             </Button>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding SemesterText}" Visibility="{Binding SemesterText, Converter={StaticResource Visible}}"
+                                       Style="{StaticResource BaseText}" Margin="0,0,8,0" VerticalAlignment="Center" />
                             <Ellipse Width="4" Height="4" Fill="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
                             <TextBlock Text="{Binding TodayText}" Style="{StaticResource BaseText}" FontWeight="Medium"
                                        Foreground="{DynamicResource SubtleBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />

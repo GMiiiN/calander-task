@@ -118,6 +118,7 @@ public sealed class MainViewModel : ObservableObject
     public IReadOnlyList<SidebarGroupViewModel> Groups { get => _groups; private set => Set(ref _groups, value); }
     public int AgendaCount { get => _agendaCount; private set => Set(ref _agendaCount, value); }
     public string NewTodoTitle { get => _newTodoTitle; set => Set(ref _newTodoTitle, value); }
+    public string SemesterText { get; private set; } = "";
     public string TodayText => $"오늘 · {_today.ToString("M월 d일 dddd", Korean)}";
 
     // 자정이 지났으면 오늘 기준도 옮긴다. 보던 날짜가 어제(=그때의 오늘)였으면 함께 따라간다.
@@ -130,6 +131,9 @@ public sealed class MainViewModel : ObservableObject
             _today = today;
             OnPropertyChanged(nameof(TodayText));
         }
+        var semester = _settings.Semester;
+        SemesterText = semester.WeekOn(today) is { } number ? $"현재 {number}주차 / {semester.Weeks}주차" : "";
+        OnPropertyChanged(nameof(SemesterText));
         var builder = new CalendarModelBuilder(_events, _todos, _database, _settings.DetailedBars);
         if (IsMonthView)
         {
@@ -140,7 +144,7 @@ public sealed class MainViewModel : ObservableObject
         }
         else
         {
-            Week = builder.BuildWeek(_anchor, _today);
+            Week = builder.BuildWeek(_anchor, _today, semester.WeekStart);
             Month = null;
             var end = Week.WeekStart.AddDays(6);
             YearText = $"{Week.WeekStart.Year}년 {Week.WeekStart.Month}월";
