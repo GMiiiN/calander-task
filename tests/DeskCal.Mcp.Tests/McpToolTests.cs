@@ -32,6 +32,7 @@ public sealed class McpToolTests : IAsyncLifetime
     private Task<McpClient> StartServer(string path) => McpClient.CreateAsync(new StdioClientTransport(new()
     {
         Command = "dotnet", Arguments = [typeof(CalendarTools).Assembly.Location],
+        // 클라이언트 파일은 DB 옆에서 찾는다. 임시 폴더에는 없으므로 서버는 Google에 연결하지 않는다.
         EnvironmentVariables = new Dictionary<string, string?> { ["DESKCAL_DB"] = path }
     }), cancellationToken: _timeout.Token);
 
@@ -93,7 +94,7 @@ public sealed class McpToolTests : IAsyncLifetime
     {
         using var connection = _database.OpenConnection();
         using var schema = connection.CreateCommand();
-        schema.CommandText = "ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
+        schema.CommandText = "DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
         schema.ExecuteNonQuery();
         var path = Path.Combine(_directory, "nested", "deskcal.db");
         var clients = await Task.WhenAll(StartServer(path), StartServer(path));
@@ -185,7 +186,7 @@ public sealed class McpToolTests : IAsyncLifetime
         cmd.ExecuteNonQuery();
         var update = new { todo_id = uid, title = "변경" };
         var waiting = await Call("update_todo", update);
-        Assert.Equal("app_not_running", waiting.GetProperty("todo").GetProperty("reason").GetString());
+        Assert.Equal("sync_deferred", waiting.GetProperty("todo").GetProperty("reason").GetString());
         using (AppPresence.Register(_database))
         {
             var on = await Call("update_todo", update);
@@ -203,6 +204,129 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Equal("app_not_running", unknown.GetProperty("app_reason").GetString());
         await Call("create_todos", new { todos = new[] { new { title = "셋째" }, new { title = " " } } }, error: true);
         Assert.Equal(2, Todos.List().Count);
+    }
+
+    [Fact]
+    public async Task ClosedAppWriteReportsOnlyVerifiedRowsAndPreservesReceiptOnTimeout()
+    {
+        using var connection = _database.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+        cmd.ExecuteNonQuery();
+        var tools = new CalendarTools(_database, () =>
+        {
+            cmd.CommandText = "UPDATE todo SET push_state='synced',is_dirty=0 WHERE title='확인됨';";
+            cmd.ExecuteNonQuery();
+            return Task.FromResult(true);
+        });
+        var args = JsonSerializer.SerializeToElement(new { todos = new[] { new { title = "확인됨" }, new { title = "대기" } } });
+        var response = (await tools.InvokeAsync("create_todos", args, default)).StructuredContent!.Value;
+        Assert.True(response.GetProperty("saved_locally").GetBoolean());
+        Assert.Equal("synced", response.GetProperty("todos")[0].GetProperty("sync").GetString());
+        Assert.Equal("pending", response.GetProperty("todos")[1].GetProperty("sync").GetString());
+
+        var never = new TaskCompletionSource<bool>();
+        tools = new CalendarTools(_database, () => never.Task);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        response = (await tools.InvokeAsync("create_todos", args, deadline.Token)).StructuredContent!.Value;
+        Assert.True(response.GetProperty("saved_locally").GetBoolean());
+        Assert.Equal("sync_timeout", response.GetProperty("todos")[0].GetProperty("reason").GetString());
+        Assert.Equal(4, Todos.List().Count);
+        never.SetResult(false);
+    }
+
+    // 리뷰 A-1: 영수증의 5초 마감이 실제 Google 전송까지 취소해, 보내기 전에 결과 불명으로 표시한 생성이 needs_review로 남았다.
+    // 마감은 기다림만 끊고, 전송은 끝까지 가서 행이 synced가 되어야 한다.
+    [Fact]
+    public async Task SlowSendOutlivesTheReceiptWaitAndStillSyncsTheTodo()
+    {
+        using (var connection = _database.OpenConnection())
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+            cmd.ExecuteNonQuery();
+        }
+        var remote = new GatedTasks();
+        using var lifetime = new CancellationTokenSource();
+        Task<bool>? sending = null;
+        var tools = new CalendarTools(_database, () => sending = SendAsync());
+        async Task<bool> SendAsync()
+        {
+            await new TaskSync(_database, remote).SyncAsync(lifetime.Token);
+            return true;
+        }
+
+        var waited = Stopwatch.StartNew();
+        var args = JsonSerializer.SerializeToElement(new { todos = new[] { new { title = "느린 망에서 만든 할 일" } } });
+        var response = (await tools.InvokeAsync("create_todos", args, default)).StructuredContent!.Value;
+        waited.Stop();
+
+        var todo = response.GetProperty("todos")[0];
+        Assert.Equal("pending", todo.GetProperty("sync").GetString());
+        Assert.Equal("sync_timeout", todo.GetProperty("reason").GetString());
+        Assert.True(waited.Elapsed >= ToolOutput.ReceiptWait - TimeSpan.FromMilliseconds(100), waited.Elapsed.ToString());
+        Assert.NotNull(sending);
+        Assert.False(sending.IsCompleted); // 영수증을 돌려준 뒤에도 전송은 계속된다.
+        Assert.False(remote.InsertCancelled);
+
+        remote.Release();
+        Assert.True(await sending.WaitAsync(_timeout.Token));
+        var stored = Todos.Get(Id(todo, "todo_id"));
+        Assert.Equal("synced", stored.PushState);
+        Assert.False(stored.IsDirty);
+        Assert.Equal(1, remote.InsertCalls);
+        Assert.False(remote.InsertCancelled);
+    }
+
+    // 리뷰 B-L1: get_agenda는 list_events처럼 시작 시각순이다. 앱에서 저장한 날짜별 순서나 완료 여부로 바뀌지 않는다.
+    [Fact]
+    public async Task AgendaListsEventsOfADayInStartTimeOrder()
+    {
+        var day = DateOnly.FromDateTime(DateTime.Now).AddDays(1);
+        var date = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var afternoon = Events.Create([new("오후", date) { StartTime = "15:00" }]).Single();
+        var morning = Events.Create([new("오전", date) { StartTime = "09:00" }]).Single();
+        Events.Update(morning.EventUid, new() { IsDone = true });
+        var noon = Events.Create([new("정오", date) { StartTime = "12:00" }]).Single();
+        Assert.True(DayEventOrder.Move(Events, day, noon.EventUid, afternoon.EventUid)); // 앱에서 정오를 맨 위로 옮겼다
+
+        var args = JsonSerializer.SerializeToElement(new { start_date = date, end_date = date });
+        var body = (await new CalendarTools(_database).InvokeAsync("get_agenda", args, default)).StructuredContent!.Value;
+        var group = body.GetProperty("groups").EnumerateArray().Single(g => g.GetProperty("date").GetString() == date);
+        Assert.Equal(new[] { "오전", "정오", "오후" }, group.GetProperty("events").EnumerateArray().Select(e => e.GetProperty("title").GetString()));
+    }
+
+    // 생성 요청이 문을 열어 줄 때까지 응답하지 않는 가짜 Google Tasks. 받은 토큰이 취소되면 요청도 취소된다.
+    private sealed class GatedTasks : ITasksRemote
+    {
+        private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly List<Google.Apis.Tasks.v1.Data.Task> _items = [];
+        public int InsertCalls { get; private set; }
+        public bool InsertCancelled { get; private set; }
+        public void Release() => _gate.TrySetResult();
+
+        public async Task<Google.Apis.Tasks.v1.Data.Task> InsertAsync(Google.Apis.Tasks.v1.Data.Task task, CancellationToken cancellationToken)
+        {
+            InsertCalls++;
+            try { await _gate.Task.WaitAsync(cancellationToken); }
+            catch (OperationCanceledException) { InsertCancelled = true; throw; }
+            task.Id = "g" + InsertCalls;
+            task.ETag = "e" + InsertCalls;
+            _items.Add(task);
+            return task;
+        }
+
+        public Task<IReadOnlyList<Google.Apis.Tasks.v1.Data.Task>> ListAllAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<Google.Apis.Tasks.v1.Data.Task>>(_items.ToList());
+        public Task<Google.Apis.Tasks.v1.Data.Task?> GetAsync(string id, CancellationToken cancellationToken) =>
+            Task.FromResult(_items.SingleOrDefault(t => t.Id == id));
+        public Task<Google.Apis.Tasks.v1.Data.Task> UpdateAsync(Google.Apis.Tasks.v1.Data.Task task, CancellationToken cancellationToken)
+        {
+            task.ETag += "+";
+            _items[_items.FindIndex(t => t.Id == task.Id)] = task;
+            return Task.FromResult(task);
+        }
+        public Task DeleteAsync(string taskId, string? etag, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     [Fact]
@@ -274,15 +398,17 @@ public sealed class McpToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DiscoversExactlyEighteenToolsWithAnnotationsAndEnums()
+    public async Task DiscoversToolsWithAnnotationsAndEnums()
     {
         var tools = await _client.ListToolsAsync(cancellationToken: _timeout.Token);
-        Assert.Equal(18, tools.Count);
+        Assert.Equal(19, tools.Count);
+        var rename = tools.Single(t => t.Name == "rename_category").ProtocolTool.InputSchema;
+        Assert.Equal(new[] { "color_id", "name" }, rename.GetProperty("required").EnumerateArray().Select(p => p.GetString()));
         var reads = new[] { "get_agenda", "list_events", "get_event", "find_free_time", "list_todos", "list_categories" };
         foreach (var tool in tools)
         {
             Assert.Equal(reads.Contains(tool.Name), tool.ProtocolTool.Annotations!.ReadOnlyHint);
-            Assert.Equal(tool.Name.StartsWith("update_"), tool.ProtocolTool.Annotations.IdempotentHint);
+            Assert.Equal(tool.Name.StartsWith("update_") || tool.Name == "rename_category", tool.ProtocolTool.Annotations.IdempotentHint);
             Assert.Equal(tool.Name.StartsWith("delete_"), tool.ProtocolTool.Annotations.DestructiveHint);
         }
         var schema = tools.Single(t => t.Name == "create_events").ProtocolTool.InputSchema;
@@ -292,6 +418,21 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Contains("transparent", tools.Single(t => t.Name == "find_free_time").Description);
         Assert.Contains("get_agenda", tools.Single(t => t.Name == "create_events").Description);
         Assert.Contains("entire series", tools.Single(t => t.Name == "delete_event").Description);
+    }
+
+    [Fact]
+    public async Task RenameCategoryReturnsNewAliasAndPreservesExistingColor()
+    {
+        var existing = Events.Create([new("기존", "2026-11-03") { ColorId = "1" }]).Single();
+        var changed = await Call("rename_category", new { color_id = "1", name = " 수업 " });
+        Assert.Equal("수업", changed.GetProperty("category").GetProperty("name").GetString());
+        Assert.Equal("#123456", changed.GetProperty("category").GetProperty("color_hex").GetString());
+        var result = await Call("list_events", new { start_date = "2026-11-03", category = "수업" });
+        Assert.Equal(existing.EventUid, Id(result.GetProperty("events")[0]));
+        var created = await Call("create_events", new { events = new[] { new { title = "새 수업", start_date = "2026-11-03", category = "수업" } } });
+        Assert.Equal("1", Events.Get(Id(created.GetProperty("events")[0])).ColorId);
+        foreach (var bad in new[] { "", "업무", "2" }) await Call("rename_category", new { color_id = "1", name = bad }, error: true);
+        await Call("rename_category", new { color_id = "99", name = "없음" }, error: true);
     }
 
     [Fact]

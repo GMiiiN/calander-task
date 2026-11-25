@@ -14,6 +14,7 @@ public partial class SettingsDialog : Window
 {
     private readonly CategoryRepository _categories;
     private readonly SettingStore _settings;
+    private readonly Dictionary<string, string> _originalNames = [];
     private readonly Dictionary<string, TextBox> _nameBoxes = [];
 
     public SettingsDialog(CategoryRepository categories, SettingStore settings)
@@ -23,6 +24,11 @@ public partial class SettingsDialog : Window
         _settings = settings;
         TextSizeBox.SelectedValue = settings.TextSizePercent.ToString(System.Globalization.CultureInfo.InvariantCulture);
         foreach (var category in categories.List()) AddRow(category);
+        var semester = settings.Semester;
+        StudentCheck.IsChecked = semester.Enabled;
+        TermStart.SelectedDate = semester.Start.ToDateTime(TimeOnly.MinValue);
+        TermWeeks.Text = semester.Weeks.ToString();
+        DetailedBarsCheck.IsChecked = settings.DetailedBars;
         AutoStartCheck.IsChecked = AutoStart.IsEnabled;
         Loaded += (_, _) => _nameBoxes.Values.FirstOrDefault()?.Focus();
     }
@@ -43,6 +49,7 @@ public partial class SettingsDialog : Window
         row.Children.Add(dot);
         row.Children.Add(box);
         CategoryRows.Children.Add(row);
+        _originalNames[category.ColorId] = category.Name;
         _nameBoxes[category.ColorId] = box;
     }
 
@@ -50,7 +57,17 @@ public partial class SettingsDialog : Window
     {
         try
         {
-            _categories.Rename(_nameBoxes.ToDictionary(pair => pair.Key, pair => pair.Value.Text));
+            var semester = _settings.Semester with { Enabled = StudentCheck.IsChecked == true };
+            if (semester.Enabled)
+            {
+                if (TermStart.SelectedDate is not { } date || !int.TryParse(TermWeeks.Text, out var weeks) || weeks < 1)
+                    throw new ArgumentException("개강일과 1 이상의 총 주차를 입력해 주세요.");
+                semester = new(true, DateOnly.FromDateTime(date), weeks);
+            }
+            _categories.Rename(_nameBoxes.Where(pair => pair.Value.Text.Trim() != _originalNames[pair.Key])
+                .ToDictionary(pair => pair.Key, pair => pair.Value.Text));
+            _settings.Semester = semester;
+            _settings.DetailedBars = DetailedBarsCheck.IsChecked == true;
             _settings.TextSizePercent = int.Parse((string)TextSizeBox.SelectedValue, System.Globalization.CultureInfo.InvariantCulture);
         }
         catch (ArgumentException exception)
@@ -74,6 +91,12 @@ public partial class SettingsDialog : Window
         }
         if (AutoStartCheck.IsChecked != AutoStart.IsEnabled) AutoStart.Set(AutoStartCheck.IsChecked == true);
         DialogResult = true;
+    }
+
+    private void OnTermStartChanged(object sender, SelectionChangedEventArgs e)
+    {
+        TermHint.Text = TermStart.SelectedDate is { } date
+            ? $"주간 화면은 개강 요일인 {date.ToString("dddd", System.Globalization.CultureInfo.GetCultureInfo("ko-KR"))}부터 시작합니다." : "";
     }
 
     private void OnAutoStartLabelClick(object sender, MouseButtonEventArgs e) => AutoStartCheck.IsChecked = AutoStartCheck.IsChecked != true;

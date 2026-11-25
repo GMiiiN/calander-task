@@ -30,6 +30,37 @@ Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
 var database = new Database(path, Console.Error.WriteLine);
 Console.Error.WriteLine($"MCP {database.DiagnosticIdentity}");
 database.Initialize();
-var tools = new CalendarTools(database);
+// 앱과 같은 규칙으로 DB 옆의 OAuth 클라이언트 파일을 쓴다(다른 클라이언트로 갱신하면 공유 로그인이 실패한다).
+// MCP는 갱신이 어떻게 실패해도 공유 토큰을 지우지 않는다(forgetRevokedToken 기본값 false).
+var coordinator = new SyncCoordinator(database, new GoogleAccount(database, GoogleAccount.ClientSecretPathFor(path)), Console.Error.WriteLine);
+// 쓰기 직후 전송은 MCP가 끝날 때만 멈춘다. 영수증의 5초 마감은 기다림에만 쓴다(ToolOutput.SendAndVerifyAsync).
+using var stopping = new CancellationTokenSource();
+var tools = new CalendarTools(database, () => coordinator.RunAsync(false, stopping.Token));
 builder.Services.AddMcpServer().WithStdioServerTransport().WithTools(ToolCatalog.Create(tools));
-await builder.Build().RunAsync();
+using var host = builder.Build();
+var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+using var stopRegistration = lifetime.ApplicationStopping.Register(stopping.Cancel);
+lifetime.ApplicationStarted.Register(() => _ = ResumeAsync());
+await host.RunAsync();
+
+async Task ResumeAsync()
+{
+    try
+    {
+        // 마지막 쓰기 때 앱이 켜져 있었어도 전송 전에 종료될 수 있다. 살아 있는 MCP가 다음 차례에 인계한다.
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(2));
+        do
+        {
+            try
+            {
+                if (!AppPresence.IsRunning(database) && PendingChanges.HasToken(database) && PendingChanges.HasUnsent(database))
+                    await coordinator.RunAsync(false, lifetime.ApplicationStopping);
+            }
+            catch (Exception ex) when (!lifetime.ApplicationStopping.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"동기화 재개 실패 ({ex.GetType().Name})");
+            }
+        } while (await timer.WaitForNextTickAsync(lifetime.ApplicationStopping));
+    }
+    catch (OperationCanceledException) when (lifetime.ApplicationStopping.IsCancellationRequested) { }
+}

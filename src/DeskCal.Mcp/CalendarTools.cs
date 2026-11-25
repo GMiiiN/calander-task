@@ -9,12 +9,13 @@ using ModelContextProtocol.Protocol;
 
 namespace DeskCal.Mcp;
 
-public sealed class CalendarTools(Database database)
+// send는 취소 토큰을 받지 않는다. 요청 취소나 영수증 마감이 진행 중인 Google 전송을 끊으면 안 된다(전송은 프로세스 수명 토큰을 쓴다).
+public sealed class CalendarTools(Database database, Func<Task<bool>>? send = null)
 {
     private readonly EventRepository _events = new(database);
     private readonly TodoRepository _todos = new(database);
 
-    internal CallToolResult Invoke(string name, JsonElement arguments)
+    internal async Task<CallToolResult> InvokeAsync(string name, JsonElement arguments, CancellationToken cancellationToken)
     {
         using var operation = new Activity(name).Start();
         var today = DateOnly.FromDateTime(DateTime.Now);
@@ -23,7 +24,7 @@ public sealed class CalendarTools(Database database)
         try
         {
             var input = new ToolInput(arguments);
-            var isWrite = name is "create_events" or "update_event" or "delete_event" or "restore_event" or "add_checklist_items" or "update_checklist_item" or "delete_checklist_item"
+            var isWrite = name is "rename_category" or "create_events" or "update_event" or "delete_event" or "restore_event" or "add_checklist_items" or "update_checklist_item" or "delete_checklist_item"
                 or "restore_checklist_item" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo";
             var output = new ToolOutput(database, _events, isWrite);
             body = database.Measure("execute", () => name switch
@@ -33,6 +34,7 @@ public sealed class CalendarTools(Database database)
                 "get_event" => GetEvent(input, output),
                 "find_free_time" => FindFreeTime(input),
                 "list_todos" => ListTodos(input, output),
+                "rename_category" => RenameCategory(input),
                 "list_categories" => ListCategories(input, output),
                 "create_events" => CreateEvents(input, output),
                 "update_event" => UpdateEvent(input, output),
@@ -52,6 +54,8 @@ public sealed class CalendarTools(Database database)
             {
                 ChangeSignal.Notify();
                 output.AddReceipt(body);
+                if (send is not null && output.ShouldSend && name != "rename_category")
+                    body = await output.SendAndVerifyAsync(body, send, cancellationToken);
             }
         }
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or InvalidOperationException or FormatException or JsonException or SqliteException)
@@ -94,6 +98,13 @@ public sealed class CalendarTools(Database database)
             IsError = isError, StructuredContent = JsonSerializer.SerializeToElement(body),
             Content = [new TextContentBlock { Text = body.ToJsonString() }]
         };
+    }
+
+    private JsonObject RenameCategory(ToolInput input)
+    {
+        input.Only("color_id", "name");
+        var category = new CategoryRepository(database).Rename(input.Required("color_id"), input.Required("name"));
+        return ToolOutput.Object(new { Category = category });
     }
 
     private JsonObject GetAgenda(ToolInput input, ToolOutput output)

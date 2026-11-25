@@ -6,6 +6,7 @@ public sealed record ChipModel(
     string? EventId, string? OccurrenceId, string? TodoId, string CreatedBy)
 {
     // 여러 날 일정 막대의 한 칸. 앞날·다음 날 칸과 이어 그린다.
+    public DateOnly? OrderDate { get; init; }
     public bool JoinsLeft { get; init; }
     public bool JoinsRight { get; init; }
     public string? PeriodText { get; init; }

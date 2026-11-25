@@ -36,6 +36,7 @@ public sealed record ChecklistItemViewModel(string ItemId, string Text, bool IsD
 public sealed record SidebarItemViewModel(string Title, string Meta, bool IsDone, string? DotColorHex,
     string? TodoId, string? EventId, string? OccurrenceId, IReadOnlyList<ChecklistItemViewModel>? Checklist = null, bool IsExpanded = false)
 {
+    public DateOnly? OrderDate { get; init; }
     public bool HasChecklist => Checklist is { Count: > 0 };
 }
 
@@ -118,6 +119,7 @@ public sealed class MainViewModel : ObservableObject
     public IReadOnlyList<SidebarGroupViewModel> Groups { get => _groups; private set => Set(ref _groups, value); }
     public int AgendaCount { get => _agendaCount; private set => Set(ref _agendaCount, value); }
     public string NewTodoTitle { get => _newTodoTitle; set => Set(ref _newTodoTitle, value); }
+    public string SemesterText { get; private set; } = "";
     public string TodayText => $"오늘 · {_today.ToString("M월 d일 dddd", Korean)}";
 
     // 자정이 지났으면 오늘 기준도 옮긴다. 보던 날짜가 어제(=그때의 오늘)였으면 함께 따라간다.
@@ -130,7 +132,10 @@ public sealed class MainViewModel : ObservableObject
             _today = today;
             OnPropertyChanged(nameof(TodayText));
         }
-        var builder = new CalendarModelBuilder(_events, _todos, _database);
+        var semester = _settings.Semester;
+        SemesterText = semester.WeekOn(today) is { } number ? $"현재 {number}주차 / {semester.Weeks}주차" : "";
+        OnPropertyChanged(nameof(SemesterText));
+        var builder = new CalendarModelBuilder(_events, _todos, _database, _settings.DetailedBars);
         if (IsMonthView)
         {
             Month = builder.BuildMonth(_anchor.Year, _anchor.Month, _today);
@@ -140,7 +145,7 @@ public sealed class MainViewModel : ObservableObject
         }
         else
         {
-            Week = builder.BuildWeek(_anchor, _today);
+            Week = builder.BuildWeek(_anchor, _today, semester.WeekStart);
             Month = null;
             var end = Week.WeekStart.AddDays(6);
             YearText = $"{Week.WeekStart.Year}년 {Week.WeekStart.Month}월";
@@ -156,7 +161,7 @@ public sealed class MainViewModel : ObservableObject
 
     private void BuildSidebar()
     {
-        var agenda = new AgendaService(_events, _todos, today: () => _today).GetAgenda(laterEventsUntil: _today.AddDays(LATER_EVENT_DAYS));
+        var agenda = new AgendaService(_events, _todos, today: () => _today).GetAgenda(laterEventsUntil: _today.AddDays(LATER_EVENT_DAYS), dayOrder: true);
         var categories = ReadCategories();
         Ddays = agenda.Ddays.Where(d => d.DaysRemaining >= 0)
             .Select(d => new DdayChipViewModel(d.Occurrence.Event.Title, d.DaysRemaining == 0 ? "D-day" : $"D-{d.DaysRemaining}", d.DaysRemaining == 0))
@@ -191,7 +196,7 @@ public sealed class MainViewModel : ObservableObject
         var checklist = Checklist.Visible(value.Checklist)
             .Select(i => new ChecklistItemViewModel(i.ItemId, i.Text, i.IsDone, i.ItemId == _editingChecklistItemId, eventId, occurrence.OccurrenceId)).ToArray();
         return new(value.Title, $"{time} · {category.Item1}", value.IsDone, category.Item2, null, value.EventUid, occurrence.OccurrenceId,
-            checklist, _expandedChecklists.Contains(occurrence.OccurrenceId ?? eventId));
+            checklist, _expandedChecklists.Contains(occurrence.OccurrenceId ?? eventId)) { OrderDate = firstDay == lastDay ? firstDay : null };
     }
 
     private SidebarItemViewModel TodoItem(TodoRecord todo)

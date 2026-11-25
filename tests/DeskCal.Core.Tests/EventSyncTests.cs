@@ -385,6 +385,7 @@ public sealed class EventSyncTests
         public string? OmitFromNextFullList { get; set; }
         public bool ExpireTokens { get; set; }
         public bool LoseInsertResponse { get; set; }
+        public Action? BeforeListReturns { get; set; }
         public Action? BeforePatch { get; set; }
 
         public void Put(Event value)
@@ -418,6 +419,7 @@ public sealed class EventSyncTests
                 OmitFromNextFullList = null;
             }
             IReadOnlyList<Event> result = ids.Where(Items.ContainsKey).Select(id => Copy(Items[id])).ToList();
+            BeforeListReturns?.Invoke();
             return Task.FromResult((result, (string?)_version.ToString(CultureInfo.InvariantCulture)));
         }
 

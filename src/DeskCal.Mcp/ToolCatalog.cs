@@ -14,7 +14,7 @@ internal static class ToolCatalog
 
     public static IEnumerable<McpServerTool> Create(CalendarTools service)
     {
-        yield return Define("get_agenda", "Use get_agenda for briefings and summaries. Returns sidebar groups and D-days." + RELATIVE_DATES,
+        yield return Define("get_agenda", "Use get_agenda for briefings and summaries. Returns sidebar groups and D-days. Events within each date are in start-time order." + RELATIVE_DATES,
             Object(new() { ["start_date"] = Date(), ["end_date"] = Date() }), true);
         yield return Define("list_events", "List expanded events, including overlaps. Defaults to today through +30 days; at most 366 days. Pages contain at most 200 events. Pass cursor with the same filters; restart if results change." + RELATIVE_DATES,
             Object(new() { ["start_date"] = Date(), ["end_date"] = Date(), ["keyword"] = String(), ["category"] = Category(), ["include_deleted"] = Boolean(), ["cursor"] = String() }), true);
@@ -24,6 +24,8 @@ internal static class ToolCatalog
         yield return Define("list_todos", "List todos, defaulting to open items. Deleted items are excluded unless requested.",
             Object(new() { ["status"] = Enum("open", "done", "all"), ["keyword"] = String(), ["include_deleted"] = Boolean() }), true);
         yield return Define("list_categories", "List category color IDs, names and colors.", Object(new()), true);
+        yield return Define("rename_category", "Rename a DeskCal category on this device. Its color ID and existing event assignments stay the same.",
+            Object(new() { ["color_id"] = String(), ["name"] = String() }, "color_id", "name"), idempotent: true);
         yield return Define("create_events", "Create 1–50 events atomically in the local database. Dates and HH:mm times are local. A missing end_time defaults to one hour after start, including midnight rollover; multi-day timed events require end_time. Sync is reported per item." + RELATIVE_DATES,
             Object(new() { ["events"] = Batch(Object(EventFields(false), "title", "start_date")) }, "events"));
         var eventPatch = EventFields(true);
@@ -122,7 +124,7 @@ internal static class ToolCatalog
         {
             cancellationToken.ThrowIfCancellationRequested();
             var arguments = JsonSerializer.SerializeToElement(request.Params?.Arguments ?? new Dictionary<string, JsonElement>());
-            return ValueTask.FromResult(service.Invoke(definition.Name, arguments));
+            return new ValueTask<CallToolResult>(service.InvokeAsync(definition.Name, arguments, cancellationToken));
         }
     }
 }

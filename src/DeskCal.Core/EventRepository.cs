@@ -7,6 +7,7 @@ public sealed class EventRepository
     public const string OccurrenceKeyChangeError =
         "This series has occurrence exceptions. Changing its start date, time, time zone, all-day type or repeat rule could detach their checklist or completion state.";
     private readonly Database _database;
+    internal Database Database => _database;
     private readonly EventTime _time;
     private readonly TimeProvider _clock;
     private readonly RecurrenceExpander _expander;

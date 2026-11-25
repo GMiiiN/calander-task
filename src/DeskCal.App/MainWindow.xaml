@@ -1,4 +1,4 @@
-<Window x:Class="DeskCal.App.MainWindow"
+<Window AllowDrop="True" x:Class="DeskCal.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:DeskCal.App"
@@ -515,14 +515,18 @@
                     <DockPanel SizeChanged="OnFooterSizeChanged">
                         <StackPanel x:Name="SyncStatusPanel" DockPanel.Dock="Right" HorizontalAlignment="Right" Orientation="Horizontal">
                             <Ellipse Width="5" Height="5" Fill="{DynamicResource MutedBrush}" VerticalAlignment="Center" />
+                            <Button Style="{StaticResource BareButton}" Click="OnSyncDetails" ToolTip="전송 대기 항목 보기">
                             <TextBlock x:Name="SyncStatusText" Text="Google 연결 전 · 이 PC에만 저장" Style="{StaticResource BaseText}"
                                        Foreground="{DynamicResource SubtleBrush}" Margin="5,0,12,0" VerticalAlignment="Center" />
+                            </Button>
                             <Button Style="{StaticResource BareButton}" Click="OnMenuClick" VerticalAlignment="Center">
                                 <Path Data="{StaticResource EllipsisIcon}" Width="17" Height="17" Stroke="{DynamicResource SubtleBrush}"
                                       StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Fill="Transparent" />
                             </Button>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding SemesterText}" Visibility="{Binding SemesterText, Converter={StaticResource Visible}}"
+                                       Style="{StaticResource BaseText}" Margin="0,0,8,0" VerticalAlignment="Center" />
                             <Ellipse Width="4" Height="4" Fill="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
                             <TextBlock Text="{Binding TodayText}" Style="{StaticResource BaseText}" FontWeight="Medium"
                                        Foreground="{DynamicResource SubtleBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />

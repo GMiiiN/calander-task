@@ -33,7 +33,9 @@ public sealed class ProtectedTokenStore(Database database) : IDataStore
         return Task.FromResult(NewtonsoftJsonSerializer.Instance.Deserialize<T>(json));
     }
 
-    public Task DeleteAsync<T>(string key) => ClearAsync();
+    // Google 라이브러리는 갱신이 5xx가 아닌 이유로 실패하면(invalid_client·unauthorized_client·429 등) 이 메서드로 토큰을 지운다.
+    // 이 행은 앱과 MCP가 함께 쓰는 로그인이라 따르지 않는다. 정말 쓸 수 없는 토큰(invalid_grant)은 앱의 동기화만 ForgetTokenAsync로 지운다.
+    public Task DeleteAsync<T>(string key) => Task.CompletedTask;
 
     public Task ClearAsync()
     {

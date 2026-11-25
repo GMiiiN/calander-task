@@ -182,8 +182,59 @@ public partial class MainWindow : Window
     private void UpdateSyncStatus() => SyncStatusText.Text = _settings.Get(ProtectedTokenStore.SettingKey) is null
         ? _settings.Get("google_account_id") is null ? "Google 연결 전 · 이 PC에만 저장" : "Google 연결 끊김 · 알림 영역 메뉴에서 다시 연결"
         : EventSync.LastSyncedAt(_database) is { } last
-            ? $"Google 동기화됨 · {last.ToLocalTime():HH:mm}"
+            ? $"Calendar 동기화 · {last.ToLocalTime():HH:mm}"
             : "Google 연결됨 · 동기화 준비 중";
+
+    private void OnSyncDetails(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = PlacementMode.Top };
+        var recovery = new TaskRecovery(_database);
+        IReadOnlyList<TaskRecovery.Candidate>? candidates = null;
+        foreach (var item in PendingChanges.List(_database))
+        {
+            var reason = item.Reason switch
+            {
+                "needs_review" => "전송 결과 확인 필요",
+                "not_signed_in" => "Google 로그인 대기",
+                "push_failed" => "전송 실패 · 재시도 대기",
+                _ => "전송 대기"
+            };
+            var row = new MenuItem { Header = $"{item.Kind} · {item.Title} · {reason}", IsEnabled = item.Reason == "needs_review" };
+            menu.Items.Add(row);
+            if (!row.IsEnabled) continue;
+            var original = _todos.Get(item.Uid);
+            row.ToolTip = $"{original.DueDate} {original.Memo} · {original.TodoUid}";
+            foreach (var candidate in (candidates ??= recovery.Candidates()).OrderByDescending(c => c.Title == original.Title))
+            {
+                var choice = new MenuItem { Header = $"연결 · {candidate.Title} · {candidate.DueDate ?? "날짜 없음"} · {candidate.Uid[..8]}",
+                    ToolTip = candidate.Memo };
+                choice.Click += async (_, _) => await Resolve(candidate);
+                row.Items.Add(choice);
+            }
+            var retry = new MenuItem { Header = "새 할 일로 다시 전송…" };
+            retry.Click += async (_, _) => await Resolve(null);
+            row.Items.Add(retry);
+
+            async Task Resolve(TaskRecovery.Candidate? candidate)
+            {
+                var message = candidate is null
+                    ? $"Google Tasks에 이미 ‘{original.Title}’이 있으면 중복됩니다. 새 할 일로 다시 전송할까요?"
+                    : $"‘{original.Title}’을 Google의 ‘{candidate.Title}’과 연결할까요?\n\nGoogle의 제목·마감·완료·메모를 받습니다. 이 PC의 내용이 다르면 충돌 기록에 보관합니다.\n\nGoogle 메모\n{candidate.Memo}";
+                if (MessageBox.Show(this, message, "할 일 복구", MessageBoxButton.YesNo, MessageBoxImage.Question,
+                        MessageBoxResult.No) != MessageBoxResult.Yes) return;
+                if (await recovery.ResolveAsync(item.Uid, candidate))
+                {
+                    _viewModel.Refresh();
+                    ExternalChange?.Invoke();
+                }
+                else MessageBox.Show(this, "동기화 중이거나 후보가 변경되었습니다. 상태 상세를 다시 열어 주세요.", "할 일 복구");
+            }
+        }
+        if (menu.Items.Count == 0) menu.Items.Add(new MenuItem { Header = "전송 대기 항목이 없습니다.", IsEnabled = false });
+        menu.Opened += (_, _) => BeginDialogEditing();
+        menu.Closed += (_, _) => EndEditing();
+        menu.IsOpen = true;
+    }
 
     private void RefreshFromOutside()
     {
@@ -197,8 +248,91 @@ public partial class MainWindow : Window
     protected override void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseLeftButtonDown(e);
+        TrackOrderPress(e, this);
         OpenEditorAt(e);
     }
+
+    // 완료한 일정은 늘 미완료 아래에 있으므로 완료 상태가 같은 항목끼리만 순서를 바꾼다(DayEventOrder.Move와 같은 규칙).
+    private sealed record OrderItem(DateOnly Day, string Key, bool IsDone);
+    private OrderItem? _pressedEvent;
+    private OrderItem? _draggingEvent;
+    private Point _pressPoint;
+
+    private void TrackOrderPress(MouseButtonEventArgs e, UIElement surface)
+    {
+        _pressedEvent = e.ClickCount == 1 ? OrderItemAt(e.OriginalSource as DependencyObject) : null;
+        _pressPoint = e.GetPosition(surface);
+    }
+
+    private static OrderItem? OrderItemAt(DependencyObject? node)
+    {
+        // 체크박스 내부 도형에도 행 DataContext가 상속된다. 전체 입력 경로에서 버튼을 먼저 제외한다.
+        for (var part = node; part is not null; part = Parent(part))
+            if (part is ButtonBase or TextBoxBase || part is FrameworkElement { DataContext: ChecklistItemViewModel }) return null;
+        for (; node is not null; node = Parent(node))
+        {
+            if (node is not FrameworkElement element) continue;
+            switch (element.DataContext)
+            {
+                case ChipModel { OrderDate: { } day, EventId: { } id } chip:
+                    return new(day, chip.OccurrenceId ?? id, chip.IsDone);
+                case SidebarItemViewModel { OrderDate: { } day, EventId: { } id } row:
+                    return new(day, row.OccurrenceId ?? id, row.IsDone);
+            }
+        }
+        return null;
+    }
+
+    protected override void OnPreviewMouseMove(MouseEventArgs e)
+    {
+        base.OnPreviewMouseMove(e);
+        StartOrderDrag(e, this);
+    }
+
+    private void StartOrderDrag(MouseEventArgs e, UIElement surface)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || _pressedEvent is null) return;
+        var delta = e.GetPosition(surface) - _pressPoint;
+        if (Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        _draggingEvent = _pressedEvent;
+        _pressedEvent = null;
+        try { DragDrop.DoDragDrop(surface, new DataObject("DeskCal.DayOrder", _draggingEvent.Key), DragDropEffects.Move); }
+        finally { _draggingEvent = null; }
+    }
+
+    protected override void OnPreviewDragOver(DragEventArgs e)
+    {
+        base.OnPreviewDragOver(e);
+        ShowOrderDropEffect(e);
+    }
+
+    private void ShowOrderDropEffect(DragEventArgs e)
+    {
+        if (_draggingEvent is not { } source) return;
+        var target = OrderItemAt(e.OriginalSource as DependencyObject);
+        e.Effects = target is not null && source.Day == target.Day && source.IsDone == target.IsDone && source.Key != target.Key
+            ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    protected override void OnPreviewDrop(DragEventArgs e)
+    {
+        base.OnPreviewDrop(e);
+        DropOrderItem(e);
+    }
+
+    private void DropOrderItem(DragEventArgs e)
+    {
+        if (_draggingEvent is not { } source) return;
+        e.Handled = true;
+        var target = OrderItemAt(e.OriginalSource as DependencyObject);
+        if (target is not null && source.Day == target.Day && DayEventOrder.Move(_events, target.Day, source.Key, target.Key))
+            _viewModel.Refresh();
+    }
+
+    private static DependencyObject? Parent(DependencyObject node) =>
+        node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node);
 
     private void OpenEditorAt(MouseButtonEventArgs e)
     {
@@ -232,8 +366,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        static DependencyObject? Parent(DependencyObject node) =>
-            node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node);
         static bool IsInside(DependencyObject node, DependencyObject ancestor) =>
             node is Visual visual && ancestor is Visual target && visual.IsDescendantOf(target);
         static TimeOnly SlotAt(double y)
@@ -617,8 +749,17 @@ public partial class MainWindow : Window
         card.SetResourceReference(Border.BorderBrushProperty, "ControlBorderBrush");
         var popup = new Popup { Child = card, PlacementTarget = (UIElement)sender, Placement = PlacementMode.Bottom, StaysOpen = false };
         // 팝업은 창과 다른 시각 트리라 창의 더블클릭 처리가 닿지 않는다. 목록의 칩도 더블클릭으로 연다.
+        card.AllowDrop = true;
+        card.PreviewMouseMove += (_, args) => StartOrderDrag(args, card);
+        card.PreviewDragOver += (_, args) => ShowOrderDropEffect(args);
+        card.PreviewDrop += (_, args) =>
+        {
+            DropOrderItem(args);
+            if (args.Handled) popup.IsOpen = false;
+        };
         card.PreviewMouseLeftButtonDown += (_, args) =>
         {
+            TrackOrderPress(args, card);
             if (args.ClickCount != 2) return;
             popup.IsOpen = false;
             OpenEditorAt(args);

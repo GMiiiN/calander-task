@@ -122,6 +122,61 @@ public sealed class OrphanEventDiagnosisTests
         Assert.True(JsonNode.DeepEquals(item["end"], updated["end"]));
     }
 
+    [Fact]
+    public async Task SenderHandoffPatchesOriginalGoogleEventAfterLostResponse()
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeCalendar { LoseInsertResponse = true };
+        var tasks = new TaskSyncTests.FakeTasks();
+        var coordinator = new SyncCoordinator(db.Database, new(db.Database, "unused"), _ => { });
+        var ev = db.Events.Create([new("이전", "2026-11-10")]).Single();
+        db.Todos.Create([new("독립 전송")]);
+        async Task<bool> Run() { await coordinator.SyncDataAsync(remote, tasks, default); return true; }
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var owner = SyncCoordinator.WithSenderAsync(db.Database, async () =>
+        {
+            entered.SetResult();
+            await resume.Task;
+            return await Run();
+        }, default);
+        await entered.Task;
+        try { Assert.False(await SyncCoordinator.WithSenderAsync(new Database(db.Path), Run, default)); }
+        finally { resume.SetResult(); await owner; }
+        Assert.Null(EventSync.LastSyncedAt(db.Database));
+        Assert.Equal(1, db.Scalar("SELECT count(*) FROM sync_state WHERE sync_key='tasks_default' AND last_synced_at IS NOT NULL"));
+        Assert.Single(tasks.Items);
+        db.Events.Update(ev.EventUid, new() { Title = "변경" });
+        remote.LoseInsertResponse = false;
+        Assert.True(await SyncCoordinator.WithSenderAsync(db.Database, Run, default));
+        Assert.True(await SyncCoordinator.WithSenderAsync(db.Database, Run, default));
+        var actual = Assert.Single(remote.Items);
+        Assert.Equal(ev.GoogleEventId, actual.Key);
+        Assert.Equal("변경", actual.Value.Summary);
+    }
+
+    [Fact]
+    public async Task TaskRecoveryAndRepeatedSyncKeepOneEditedCalendarEvent()
+    {
+        using var db = new TestDatabase();
+        var events = new FakeCalendar();
+        var tasks = new TaskSyncTests.FakeTasks { LoseInsertResponse = true };
+        var coordinator = new SyncCoordinator(db.Database, new(db.Database, "unused"), _ => { });
+        var ev = db.Events.Create([new("이전 일정", "2026-11-09")]).Single();
+        var todo = db.Todos.Create([new("메모", Memo: "원문\n")]).Single();
+        await coordinator.SyncDataAsync(events, tasks, default);
+        db.Events.Update(ev.EventUid, new() { Title = "수정 일정", StartTime = "11:00", EndTime = "12:00" });
+        await coordinator.SyncDataAsync(events, tasks, default);
+        await coordinator.SyncDataAsync(events, tasks, default);
+        Assert.Equal("원문\n", db.Todos.Get(todo.TodoUid).Memo);
+        Assert.Equal("synced", db.Todos.Get(todo.TodoUid).PushState);
+        Assert.Single(tasks.Items);
+        Assert.Equal(1, tasks.InsertCalls);
+        Assert.Equal(ev.GoogleEventId, Assert.Single(events.Items).Key);
+        Assert.Equal("수정 일정", events.Items[ev.GoogleEventId!].Summary);
+        Assert.Single(events.InsertAttempts);
+    }
+
     private static EventPatch SwitchTimeType(bool originallyAllDay) => originallyAllDay
         ? new() { StartTime = "11:00", EndTime = "12:00" }
         : new() { StartTime = new(true, null), EndTime = new(true, null) };

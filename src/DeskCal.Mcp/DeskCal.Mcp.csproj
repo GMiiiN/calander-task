@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <InternalsVisibleTo Include="DeskCal.Mcp.Tests" />
     <ProjectReference Include="..\DeskCal.Core\DeskCal.Core.csproj" />
   </ItemGroup>
 

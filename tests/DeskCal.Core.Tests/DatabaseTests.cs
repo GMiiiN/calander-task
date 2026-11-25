@@ -48,12 +48,12 @@ public sealed class DatabaseTests
         Assert.Equal(1, db.Scalar("PRAGMA foreign_keys"));
         Assert.Equal(1, db.Scalar("PRAGMA synchronous"));
         Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
-        Assert.Equal(7, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
+        Assert.Equal(9, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA journal_mode";
         Assert.Equal("wal", command.ExecuteScalar());
         db.Database.Initialize();
-        Assert.Equal(7, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
+        Assert.Equal(9, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'"));
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class DatabaseTests
             using var connection = new Database(path).OpenConnection();
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table'";
-            Assert.Equal(7L, command.ExecuteScalar());
+            Assert.Equal(9L, command.ExecuteScalar());
             command.CommandText = "PRAGMA user_version";
             Assert.Equal((long)Database.LatestVersion, command.ExecuteScalar());
         }
@@ -107,7 +107,7 @@ public sealed class DatabaseTests
     {
         using var db = new TestDatabase();
         var created = db.Events.Create([new EventInput("기존 일정", "2026-11-02")])[0];
-        db.Execute("ALTER TABLE event DROP COLUMN checklist");
+        db.Execute("DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist");
         db.Execute("PRAGMA user_version=1");
 
         db.Database.Initialize();
@@ -125,6 +125,38 @@ public sealed class DatabaseTests
         Assert.Equal("기존 일정", read.ExecuteScalar());
         db.Database.Initialize();
         Assert.Single(Directory.GetFiles(db.Path + ".backups", "*.db"));
+    }
+
+    [Fact]
+    public void DayOrderUpgradeBacksUpVersionTwoBeforeCreatingTheOrderTable()
+    {
+        using var db = new TestDatabase();
+        var ev = db.Events.Create([new("이전 일정", "2026-11-02")]).Single();
+        db.Execute("DROP TABLE task_attempt; DROP TABLE day_event_order; PRAGMA user_version=2;");
+        db.Database.Initialize();
+        var path = Assert.Single(Directory.GetFiles(db.Path + ".backups", "v2-*.db"));
+        using var old = new Database(path).OpenConnection();
+        using var sql = old.CreateCommand();
+        sql.CommandText = "PRAGMA integrity_check";
+        Assert.Equal("ok", sql.ExecuteScalar());
+        sql.CommandText = "PRAGMA user_version";
+        Assert.Equal(2L, sql.ExecuteScalar());
+        sql.CommandText = "SELECT count(*) FROM sqlite_master WHERE name='day_event_order'";
+        Assert.Equal(0L, sql.ExecuteScalar());
+        Assert.Equal(ev.EventUid, new EventRepository(new Database(path)).Get(ev.EventUid).EventUid);
+        Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM day_event_order"));
+    }
+
+    [Fact]
+    public void VersionThreeUnknownHasNoInventedAttemptAfterUpgrade()
+    {
+        using var db = new TestDatabase();
+        var original = db.Todos.Create([new("이전 버전")]).Single();
+        db.Execute("UPDATE todo SET push_state='unknown'; DROP TABLE task_attempt; PRAGMA user_version=3");
+        db.Database.Initialize();
+        Assert.Equal("unknown", db.Todos.Get(original.TodoUid).PushState);
+        Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM task_attempt"));
+        Assert.Single(Directory.GetFiles(db.Path + ".backups", "v3-*.db"));
     }
 
     private static SqliteConnection BackupDestination(string path)
@@ -151,12 +183,12 @@ public sealed class DatabaseTests
         Assert.True(new FileInfo(db.Path + "-wal").Length > 32);
         var folder = Directory.CreateDirectory(db.Path + ".backups").FullName;
         File.WriteAllText(Path.Combine(folder, "snapshot.partial"), "interrupted");
-        db.Database.Initialize([UnusedMigration, UnusedMigration, cmd =>
+        db.Database.Initialize([.. Enumerable.Repeat<Action<SqliteCommand>>(UnusedMigration, Database.LatestVersion), cmd =>
         {
             cmd.CommandText = "DELETE FROM todo; DELETE FROM event;";
             cmd.ExecuteNonQuery();
         }], BackupDestination);
-        Assert.Equal(3, db.Scalar("PRAGMA user_version"));
+        Assert.Equal(Database.LatestVersion + 1, db.Scalar("PRAGMA user_version"));
         Assert.Empty(db.Todos.List("all"));
         var restorePath = Path.Combine(folder, "restored.db");
         File.Copy(Assert.Single(Directory.GetFiles(folder)), restorePath);
@@ -171,13 +203,13 @@ public sealed class DatabaseTests
     {
         using var db = new TestDatabase();
         var todo = db.Todos.Create([new("중단 전")])[0];
-        Assert.Throws<OperationCanceledException>(() => db.Database.Initialize([UnusedMigration, UnusedMigration, cmd =>
+        Assert.Throws<OperationCanceledException>(() => db.Database.Initialize([.. Enumerable.Repeat<Action<SqliteCommand>>(UnusedMigration, Database.LatestVersion), cmd =>
         {
             cmd.CommandText = "DELETE FROM todo";
             cmd.ExecuteNonQuery();
             throw new OperationCanceledException();
         }], BackupDestination));
-        Assert.Equal(2, db.Scalar("PRAGMA user_version"));
+        Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
         Assert.Equal("중단 전", db.Todos.Get(todo.TodoUid).Title);
         var backup = new Database(Assert.Single(Directory.GetFiles(db.Path + ".backups")));
         Assert.Equal(todo.TodoUid, Assert.Single(new TodoRepository(backup).List()).TodoUid);
@@ -188,7 +220,7 @@ public sealed class DatabaseTests
     {
         using var db = new TestDatabase();
         var todo = db.Todos.Create([new("보존")])[0];
-        Action<SqliteCommand>[] migrations = [UnusedMigration, UnusedMigration, _ => { }];
+        Action<SqliteCommand>[] migrations = [.. Enumerable.Repeat<Action<SqliteCommand>>(UnusedMigration, Database.LatestVersion), _ => { }];
         var error = Assert.Throws<SqliteException>(() => db.Database.Initialize(migrations, path =>
         {
             var destination = BackupDestination(path);
@@ -198,7 +230,7 @@ public sealed class DatabaseTests
             return destination;
         }));
         Assert.Equal(13, error.SqliteErrorCode); // SQLITE_FULL during the actual sqlite3_backup
-        Assert.Equal(2, db.Scalar("PRAGMA user_version"));
+        Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
         Assert.Equal("보존", db.Todos.Get(todo.TodoUid).Title);
         Assert.Empty(Directory.GetFiles(db.Path + ".backups"));
         db.Database.Initialize(migrations, BackupDestination);

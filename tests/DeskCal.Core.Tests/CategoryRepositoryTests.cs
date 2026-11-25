@@ -40,6 +40,15 @@ public sealed class CategoryRepositoryTests
     }
 
     [Fact]
+    public async Task ConcurrentRenamesPreserveBothChanges()
+    {
+        using var db = new TestDatabase();
+        var repo = new CategoryRepository(db.Database);
+        await Task.WhenAll(Task.Run(() => repo.Rename("1", "수업")), Task.Run(() => repo.Rename("2", "실습")));
+        Assert.Equal(new[] { "수업", "실습" }, repo.List().Take(2).Select(c => c.Name));
+    }
+
+    [Fact]
     public void SwappingTwoNamesInOneCallIsAllowed()
     {
         using var db = new TestDatabase();
