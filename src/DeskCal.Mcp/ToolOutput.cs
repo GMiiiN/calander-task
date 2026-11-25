@@ -134,13 +134,10 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
         var state = SharedState(DayEventOrder.Prefix + (string?)item["date"]);
         var keys = JsonSerializer.SerializeToNode(requested.Select(DayEventOrder.RemoteKey));
         var differs = !JsonNode.DeepEquals(keys, state.Value);
-        IEnumerable<EventOccurrence> actual = requested;
-        if (differs)
-        {
-            item["requested_event_ids"] = JsonSerializer.SerializeToNode(requested.Select(DayEventOrder.Key));
-            actual = DayEventOrder.Read(database, date, date).Sort(date, events.List(date, date).Where(o => !DayEventOrder.IsPeriod(o)));
-        }
+        if (differs) item["requested_event_ids"] = JsonSerializer.SerializeToNode(requested.Select(DayEventOrder.Key));
         else item.Remove("requested_event_ids");
+        // Drive가 순서를 수락한 사이에도 Calendar가 일정을 삭제하거나 완료할 수 있다.
+        var actual = DayEventOrder.Read(database, date, date).Sort(date, events.List(date, date).Where(o => !DayEventOrder.IsPeriod(o)));
         item["events"] = new JsonArray(actual.Select(o => (JsonNode)Object(new
         {
             EventId = o.OccurrenceId is { } id ? OccurrenceId.Parse(id).EventUid : o.Event.EventUid, o.OccurrenceId, o.Event.Title,

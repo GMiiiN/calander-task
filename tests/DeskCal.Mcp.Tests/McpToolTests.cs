@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CalendarEvent = Google.Apis.Calendar.v3.Data.Event;
 using DeskCal.Core;
 using DeskCal.Mcp;
 using ModelContextProtocol.Client;
@@ -130,6 +131,59 @@ public sealed class McpToolTests : IAsyncLifetime
             Task.FromResult(new AppDataFile("mine", name, null, null, "1"));
         public Task<AppDataFile> UpdateAsync(string id, string content, CancellationToken token) => throw new NotSupportedException();
         public Task DeleteAsync(string id, CancellationToken token) => throw new NotSupportedException();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcceptedOrderReceiptMatchesAgendaAfterCalendarPull(bool deleted)
+    {
+        const string day = "2026-11-26";
+        using var connection = _database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+        command.ExecuteNonQuery();
+        static CalendarEvent Item(string id) => new()
+        {
+            Id = id, Summary = id, ETag = "initial", Status = "confirmed", Start = new() { Date = day }, End = new() { Date = "2026-11-27" }
+        };
+        var calendar = new ReceiptCalendar { Batch = [Item("aaa"), Item("bbb")] };
+        var sync = new EventSync(_database, calendar);
+        await sync.SyncAsync(default);
+        var ids = Events.GetRecords().OrderBy(e => e.Title).Select(e => e.EventUid).ToArray();
+        var drive = new ReceiptDrive("day_order:" + day, new JsonArray("aaa", "bbb"));
+        var tools = new CalendarTools(_database, async () =>
+        {
+            var changed = Item("aaa");
+            changed.ETag = "changed";
+            if (deleted) changed.Status = "cancelled";
+            else changed.ExtendedProperties = new() { Private__ = new Dictionary<string, string> { ["deskcalDone"] = "1" } };
+            calendar.Batch = [changed];
+            await sync.SyncAsync(default);
+            await new SharedSettingsSync(_database, drive).SyncAsync(default);
+            return SyncOutcome.Completed;
+        });
+        var response = await tools.InvokeAsync("reorder_events", JsonSerializer.SerializeToElement(new { date = day, event_ids = ids }), default);
+        var receipt = response.StructuredContent!.Value;
+        Assert.Equal("synced", receipt.GetProperty("sync").GetString());
+        var reported = receipt.GetProperty("events").EnumerateArray().ToArray();
+        var expected = deleted ? new[] { ids[1] } : new[] { ids[1], ids[0] };
+        Assert.Equal(expected, reported.Select(e => Id(e)));
+        Assert.Equal(!deleted, reported.Last().GetProperty("is_done").GetBoolean());
+        var agenda = await tools.InvokeAsync("get_agenda", JsonSerializer.SerializeToElement(new { start_date = day, end_date = day }), default);
+        var group = agenda.StructuredContent!.Value.GetProperty("groups").EnumerateArray().Single(g => g.GetProperty("kind").GetString() == "date");
+        Assert.Equal(expected, group.GetProperty("day_order").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    private sealed class ReceiptCalendar : ICalendarRemote
+    {
+        public IReadOnlyList<CalendarEvent> Batch { get; set; } = [];
+        public Task<(IReadOnlyList<CalendarEvent> Items, string? NextSyncToken)> ListAsync(string? syncToken, CancellationToken token) =>
+            Task.FromResult((Batch, (string?)"next"));
+        public Task<CalendarEvent> GetAsync(string id, CancellationToken token) => throw new NotSupportedException();
+        public Task<CalendarEvent> InsertAsync(CalendarEvent item, CancellationToken token) => throw new NotSupportedException();
+        public Task<CalendarEvent> PatchAsync(string id, CalendarEvent item, string? etag, CancellationToken token) => throw new NotSupportedException();
+        public Task DeleteAsync(string id, string? etag, CancellationToken token) => throw new NotSupportedException();
     }
 
     private static void AssertSnakeCase(JsonElement value)
