@@ -212,7 +212,7 @@ public sealed class McpToolTests : IAsyncLifetime
         using var cmd = connection.CreateCommand();
         cmd.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
         cmd.ExecuteNonQuery();
-        var tools = new CalendarTools(_database, _ =>
+        var tools = new CalendarTools(_database, () =>
         {
             cmd.CommandText = "UPDATE todo SET push_state='synced',is_dirty=0 WHERE title='확인됨';";
             cmd.ExecuteNonQuery();
@@ -224,12 +224,90 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Equal("synced", response.GetProperty("todos")[0].GetProperty("sync").GetString());
         Assert.Equal("pending", response.GetProperty("todos")[1].GetProperty("sync").GetString());
 
-        tools = new CalendarTools(_database, async ct => { await Task.Delay(Timeout.Infinite, ct); return true; });
+        var never = new TaskCompletionSource<bool>();
+        tools = new CalendarTools(_database, () => never.Task);
         using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
         response = (await tools.InvokeAsync("create_todos", args, deadline.Token)).StructuredContent!.Value;
         Assert.True(response.GetProperty("saved_locally").GetBoolean());
         Assert.Equal("sync_timeout", response.GetProperty("todos")[0].GetProperty("reason").GetString());
         Assert.Equal(4, Todos.List().Count);
+        never.SetResult(false);
+    }
+
+    // 리뷰 A-1: 영수증의 5초 마감이 실제 Google 전송까지 취소해, 보내기 전에 결과 불명으로 표시한 생성이 needs_review로 남았다.
+    // 마감은 기다림만 끊고, 전송은 끝까지 가서 행이 synced가 되어야 한다.
+    [Fact]
+    public async Task SlowSendOutlivesTheReceiptWaitAndStillSyncsTheTodo()
+    {
+        using (var connection = _database.OpenConnection())
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+            cmd.ExecuteNonQuery();
+        }
+        var remote = new GatedTasks();
+        using var lifetime = new CancellationTokenSource();
+        Task<bool>? sending = null;
+        var tools = new CalendarTools(_database, () => sending = SendAsync());
+        async Task<bool> SendAsync()
+        {
+            await new TaskSync(_database, remote).SyncAsync(lifetime.Token);
+            return true;
+        }
+
+        var waited = Stopwatch.StartNew();
+        var args = JsonSerializer.SerializeToElement(new { todos = new[] { new { title = "느린 망에서 만든 할 일" } } });
+        var response = (await tools.InvokeAsync("create_todos", args, default)).StructuredContent!.Value;
+        waited.Stop();
+
+        var todo = response.GetProperty("todos")[0];
+        Assert.Equal("pending", todo.GetProperty("sync").GetString());
+        Assert.Equal("sync_timeout", todo.GetProperty("reason").GetString());
+        Assert.True(waited.Elapsed >= ToolOutput.ReceiptWait - TimeSpan.FromMilliseconds(100), waited.Elapsed.ToString());
+        Assert.NotNull(sending);
+        Assert.False(sending.IsCompleted); // 영수증을 돌려준 뒤에도 전송은 계속된다.
+        Assert.False(remote.InsertCancelled);
+
+        remote.Release();
+        Assert.True(await sending.WaitAsync(_timeout.Token));
+        var stored = Todos.Get(Id(todo, "todo_id"));
+        Assert.Equal("synced", stored.PushState);
+        Assert.False(stored.IsDirty);
+        Assert.Equal(1, remote.InsertCalls);
+        Assert.False(remote.InsertCancelled);
+    }
+
+    // 생성 요청이 문을 열어 줄 때까지 응답하지 않는 가짜 Google Tasks. 받은 토큰이 취소되면 요청도 취소된다.
+    private sealed class GatedTasks : ITasksRemote
+    {
+        private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly List<Google.Apis.Tasks.v1.Data.Task> _items = [];
+        public int InsertCalls { get; private set; }
+        public bool InsertCancelled { get; private set; }
+        public void Release() => _gate.TrySetResult();
+
+        public async Task<Google.Apis.Tasks.v1.Data.Task> InsertAsync(Google.Apis.Tasks.v1.Data.Task task, CancellationToken cancellationToken)
+        {
+            InsertCalls++;
+            try { await _gate.Task.WaitAsync(cancellationToken); }
+            catch (OperationCanceledException) { InsertCancelled = true; throw; }
+            task.Id = "g" + InsertCalls;
+            task.ETag = "e" + InsertCalls;
+            _items.Add(task);
+            return task;
+        }
+
+        public Task<IReadOnlyList<Google.Apis.Tasks.v1.Data.Task>> ListAllAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<Google.Apis.Tasks.v1.Data.Task>>(_items.ToList());
+        public Task<Google.Apis.Tasks.v1.Data.Task?> GetAsync(string id, CancellationToken cancellationToken) =>
+            Task.FromResult(_items.SingleOrDefault(t => t.Id == id));
+        public Task<Google.Apis.Tasks.v1.Data.Task> UpdateAsync(Google.Apis.Tasks.v1.Data.Task task, CancellationToken cancellationToken)
+        {
+            task.ETag += "+";
+            _items[_items.FindIndex(t => t.Id == task.Id)] = task;
+            return Task.FromResult(task);
+        }
+        public Task DeleteAsync(string taskId, string? etag, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     [Fact]

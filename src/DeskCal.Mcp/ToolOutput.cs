@@ -41,51 +41,55 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
         return (long)cmd.ExecuteScalar()!;
     }
 
+    // 응답은 이 시간까지만 기다린다(설계 §2.4). 전송 자체의 시간 제한이 아니다.
+    internal static readonly TimeSpan ReceiptWait = TimeSpan.FromSeconds(5);
+
     // 커밋 뒤 전송이나 상태 조회가 실패해도 클라이언트에는 기존 로컬 영수증을 반환한다.
-    public async Task<JsonObject> SendAndVerifyAsync(JsonObject receipt, Func<CancellationToken, Task<bool>> send, CancellationToken token)
+    // 마감·요청 취소는 기다림만 끊는다. 전송은 send가 쥔 MCP 수명 토큰으로 끝까지 간다.
+    // 할 일 생성은 보내기 전에 결과 불명으로 표시하므로, 도중에 취소하면 Google에 닿지 않았어도 needs_review로 남는다.
+    public async Task<JsonObject> SendAndVerifyAsync(JsonObject receipt, Func<Task<bool>> send, CancellationToken token)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-        deadline.CancelAfter(TimeSpan.FromSeconds(5));
-        var budget = deadline.Token;
-        var result = (JsonObject)receipt.DeepClone();
+        var sending = Task.Run(send);
         try
         {
-            return await Task.Run(VerifyAsync, budget).WaitAsync(budget);
+            var sent = await sending.WaitAsync(ReceiptWait, token);
+            return Verify((JsonObject)receipt.DeepClone(), sent);
         }
         catch (Exception ex)
         {
-            var reason = ex is OperationCanceledException ? "sync_timeout" : "sync_unavailable";
+            // 늦게 끝난 전송의 실패를 관찰해 둔다. 결과는 다음 조회·영수증이 행 상태로 보여 준다.
+            _ = sending.ContinueWith(static t => t.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            var reason = ex is TimeoutException or OperationCanceledException ? "sync_timeout" : "sync_unavailable";
             foreach (var item in ReceiptItems(receipt))
                 if ((string?)item["reason"] == "app_not_running") item["reason"] = reason;
             return receipt;
         }
+    }
 
-        async Task<JsonObject> VerifyAsync()
+    private JsonObject Verify(JsonObject result, bool sent)
+    {
+        result["last_verified_sync"] = SyncTimes(database);
+        var signedIn = PendingChanges.HasToken(database);
+        using var connection = database.OpenConnection();
+        foreach (var item in ReceiptItems(result))
         {
-            var sent = await send(budget);
-            result["last_verified_sync"] = SyncTimes(database);
-            var signedIn = PendingChanges.HasToken(database);
-            using var connection = database.OpenConnection();
-            foreach (var item in ReceiptItems(result))
-            {
-                budget.ThrowIfCancellationRequested();
-                var key = (string?)(item["occurrence_id"] ?? item["event_id"] ?? item["todo_id"]);
-                if (key is null || !_writes.TryGetValue(key, out var row)) continue;
-                using var cmd = connection.CreateCommand();
-                cmd.CommandText = $"SELECT push_state, local_revision, EXISTS(SELECT 1 FROM sync_conflict WHERE item_uid=$uid AND conflict_id>$before) FROM {row.Table} WHERE {row.Table}_id=$id";
-                cmd.Parameters.AddWithValue("$id", row.Id);
-                cmd.Parameters.AddWithValue("$uid", row.Uid);
-                cmd.Parameters.AddWithValue("$before", _conflictBefore);
-                using var reader = cmd.ExecuteReader();
-                if (!reader.Read()) continue;
-                var state = reader.GetString(0);
-                var reason = reader.GetBoolean(2) ? "conflict" : reader.GetInt64(1) != row.Revision ? "newer_revision"
-                    : PendingChanges.Reason(state, signedIn);
-                if (reason is null && state == "synced") { item["sync"] = "synced"; item.Remove("reason"); }
-                else { item["sync"] = "pending"; item["reason"] = reason ?? (sent ? "retry_pending" : "sync_deferred"); }
-            }
-            return result;
+            var key = (string?)(item["occurrence_id"] ?? item["event_id"] ?? item["todo_id"]);
+            if (key is null || !_writes.TryGetValue(key, out var row)) continue;
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = $"SELECT push_state, local_revision, EXISTS(SELECT 1 FROM sync_conflict WHERE item_uid=$uid AND conflict_id>$before) FROM {row.Table} WHERE {row.Table}_id=$id";
+            cmd.Parameters.AddWithValue("$id", row.Id);
+            cmd.Parameters.AddWithValue("$uid", row.Uid);
+            cmd.Parameters.AddWithValue("$before", _conflictBefore);
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read()) continue;
+            var state = reader.GetString(0);
+            var reason = reader.GetBoolean(2) ? "conflict" : reader.GetInt64(1) != row.Revision ? "newer_revision"
+                : PendingChanges.Reason(state, signedIn);
+            if (reason is null && state == "synced") { item["sync"] = "synced"; item.Remove("reason"); }
+            else { item["sync"] = "pending"; item["reason"] = reason ?? (sent ? "retry_pending" : "sync_deferred"); }
         }
+        return result;
     }
 
     private static IEnumerable<JsonObject> ReceiptItems(JsonObject receipt)

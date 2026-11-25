@@ -9,7 +9,8 @@ using ModelContextProtocol.Protocol;
 
 namespace DeskCal.Mcp;
 
-public sealed class CalendarTools(Database database, Func<CancellationToken, Task<bool>>? send = null)
+// send는 취소 토큰을 받지 않는다. 요청 취소나 영수증 마감이 진행 중인 Google 전송을 끊으면 안 된다(전송은 프로세스 수명 토큰을 쓴다).
+public sealed class CalendarTools(Database database, Func<Task<bool>>? send = null)
 {
     private readonly EventRepository _events = new(database);
     private readonly TodoRepository _todos = new(database);

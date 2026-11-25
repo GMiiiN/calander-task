@@ -33,10 +33,13 @@ database.Initialize();
 var secret = Environment.GetEnvironmentVariable("DESKCAL_CLIENT_SECRET") ??
     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskCal", "client_secret.json");
 var coordinator = new SyncCoordinator(database, new GoogleAccount(database, secret), Console.Error.WriteLine);
-var tools = new CalendarTools(database, ct => coordinator.RunAsync(false, ct));
+// 쓰기 직후 전송은 MCP가 끝날 때만 멈춘다. 영수증의 5초 마감은 기다림에만 쓴다(ToolOutput.SendAndVerifyAsync).
+using var stopping = new CancellationTokenSource();
+var tools = new CalendarTools(database, () => coordinator.RunAsync(false, stopping.Token));
 builder.Services.AddMcpServer().WithStdioServerTransport().WithTools(ToolCatalog.Create(tools));
 using var host = builder.Build();
 var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+using var stopRegistration = lifetime.ApplicationStopping.Register(stopping.Cancel);
 lifetime.ApplicationStarted.Register(() => _ = ResumeAsync());
 await host.RunAsync();
 
