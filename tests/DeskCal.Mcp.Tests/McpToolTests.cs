@@ -116,19 +116,52 @@ public sealed class McpToolTests : IAsyncLifetime
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UnreadPeerKeepsSharedWriteReceiptPending(bool rename)
+    {
+        const string day = "2026-11-26";
+        using var connection = _database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+        command.ExecuteNonQuery();
+        var drive = new ReceiptDrive("category_name:1", JsonValue.Create("상대 별칭")!) { FailRead = true };
+        var tools = new CalendarTools(_database, async () =>
+        {
+            await new SharedSettingsSync(_database, drive).SyncAsync(default);
+            return SyncOutcome.Completed;
+        });
+        var ids = Events.Create([new("A", day)]).Select(e => e.EventUid).ToArray();
+        var result = rename
+            ? await tools.InvokeAsync("rename_category", JsonSerializer.SerializeToElement(new { color_id = "1", name = "로컬 별칭" }), default)
+            : await tools.InvokeAsync("reorder_events", JsonSerializer.SerializeToElement(new { date = day, event_ids = ids }), default);
+        Assert.False(result.IsError == true);
+        var receipt = rename ? result.StructuredContent!.Value.GetProperty("category") : result.StructuredContent!.Value;
+        Assert.Equal("pending", receipt.GetProperty("sync").GetString());
+        Assert.Equal(SharedSettingsSync.UnreadableDeviceFile, receipt.GetProperty("reason").GetString());
+        Assert.Equal(0, drive.Uploads);
+    }
+
     private sealed class ReceiptDrive(string key, JsonNode value) : IAppDataStore
     {
+        public bool FailRead { get; init; }
+        public int Uploads { get; private set; }
         public Task<IReadOnlyList<AppDataFile>> ListAsync(CancellationToken token) =>
             Task.FromResult<IReadOnlyList<AppDataFile>>([new("remote", "deskcal-shared-other.json", null, null, "1")]);
 
         public Task<string?> ReadAsync(string id, CancellationToken token)
         {
+            if (FailRead) throw new HttpRequestException("download failed");
             var entries = new JsonObject { [key] = new JsonObject { ["rev"] = 1, ["by"] = "other", ["value"] = value.DeepClone() } };
             return Task.FromResult<string?>(new JsonObject { ["entries"] = entries }.ToJsonString());
         }
 
-        public Task<AppDataFile> CreateAsync(string name, string content, CancellationToken token) =>
-            Task.FromResult(new AppDataFile("mine", name, null, null, "1"));
+        public Task<AppDataFile> CreateAsync(string name, string content, CancellationToken token)
+        {
+            Uploads++;
+            return Task.FromResult(new AppDataFile("mine", name, null, null, "1"));
+        }
         public Task<AppDataFile> UpdateAsync(string id, string content, CancellationToken token) => throw new NotSupportedException();
         public Task DeleteAsync(string id, CancellationToken token) => throw new NotSupportedException();
     }

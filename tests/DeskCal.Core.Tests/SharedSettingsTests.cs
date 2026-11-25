@@ -119,6 +119,78 @@ public sealed class SharedSettingsTests
         Assert.Equal("B안", Name(a, "1"));
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task FailedPeerDownloadKeepsOfflineEditUntilTheConfirmedVersionIsKnown(int onlineEdits)
+    {
+        using var local = new TestDatabase();
+        using var peer = new TestDatabase();
+        var drive = new FakeAppData();
+        Categories(peer).Rename("1", "공통값");
+        await Sync(peer, drive);
+        var peerFile = Assert.Single(drive.Files).Key;
+        await Sync(local, drive);
+        Categories(local).Rename("1", "오프라인 별칭");
+        if (onlineEdits == 2)
+        {
+            Categories(peer).Rename("1", "중간값");
+            await Sync(peer, drive);
+        }
+        Categories(peer).Rename("1", "선확정 별칭");
+        await Sync(peer, drive);
+
+        var uploads = drive.Updates;
+        drive.FailedRead = peerFile;
+        await Sync(local, drive);
+        drive.FailedRead = null;
+        local.Clock.Now = local.Clock.Now.AddMinutes(14);
+        await Sync(local, drive);
+        Assert.True(PendingChanges.HasUnsent(local.Database));
+        Assert.Equal("오프라인 별칭", Name(local, "1"));
+        Assert.Equal(1, local.Scalar("SELECT base_rev FROM shared_entry WHERE entry_key='category_name:1'"));
+        Assert.Equal(0, Conflicts(local));
+        Assert.Equal(uploads, drive.Updates);
+        Assert.DoesNotContain(drive.Files.Values, f => f.Content.Contains("오프라인 별칭"));
+
+        local.Clock.Now = local.Clock.Now.AddMinutes(1);
+        await Sync(local, drive);
+        await Sync(peer, drive);
+        Assert.False(PendingChanges.HasUnsent(local.Database));
+        Assert.Equal(1, Conflicts(local));
+        Assert.Contains("오프라인 별칭", Scalar(local, "SELECT discarded_json FROM sync_conflict WHERE item_kind='settings'"));
+        Assert.All(drive.Files.Values, f => Assert.Contains("선확정 별칭", f.Content));
+    }
+
+    [Fact]
+    public async Task ReadablePeersUpdateCleanKeysWhileAllLocalSettingEditsWait()
+    {
+        using var local = new TestDatabase();
+        var drive = new FakeAppData();
+        await Sync(local, drive);
+        Categories(local).Rename("1", "로컬 별칭");
+        SemesterSettings.Write(local.Database, new(true, new(2026, 9, 1), 16));
+        DayEventOrder.Reorder(local.Events, new(2026, 11, 26), []);
+        var healthy = drive.Put("deskcal-shared-b.json", Document("b", ("category_name:1", "\"경합 값\"", 3, "b"),
+            ("category_name:2", "\"읽을 수 있는 값\"", 1, "b")));
+        var missing = drive.Put("deskcal-shared-c.json", Document("c"));
+        drive.FailedRead = missing;
+        var uploads = drive.Updates;
+        await Sync(local, drive);
+        Assert.Equal("읽을 수 있는 값", Name(local, "2"));
+        Assert.Equal("로컬 별칭", Name(local, "1"));
+        Assert.Equal(3, local.Scalar("SELECT COUNT(*) FROM shared_entry WHERE is_dirty=1 AND base_rev=0"));
+        Assert.Equal(uploads, drive.Updates);
+
+        drive.FailedRead = null;
+        local.Clock.Now = local.Clock.Now.AddMinutes(15);
+        await Sync(local, drive);
+        Assert.Equal("경합 값", Name(local, "1"));
+        Assert.Equal(1, Conflicts(local));
+        Assert.False(PendingChanges.HasUnsent(local.Database));
+        Assert.Equal(2, drive.ReadIds.Count(id => id == healthy));
+    }
+
     // 같은 이름 중복: 두 기기가 서로 다른 색에 같은 이름을 붙였다. 두 기기 모두 같은 규칙으로 하나만 그 이름을 갖는다.
     [Fact]
     public async Task DuplicateNamesResolveTheSameWayOnBothDevices()
@@ -187,7 +259,7 @@ public sealed class SharedSettingsTests
         Assert.Equal("요리", Name(b, "6"));
     }
 
-    // 구버전에 없는 키·필드를 지우지 않는다. 읽을 수 없는 파일과 다른 계정의 파일은 건너뛴다. 옛 형식(at 없음)도 읽는다.
+    // 구버전에 없는 키·필드를 지우지 않는다. 손상 파일은 복구를 기다리고 다른 계정 파일은 건너뛴다. 옛 형식(at 없음)도 읽는다.
     [Fact]
     public async Task UnknownKeysAndFieldsArePreservedAndBadFilesAreSkipped()
     {
@@ -201,12 +273,16 @@ public sealed class SharedSettingsTests
         newer["future"] = new JsonObject { ["kept"] = true };
         ((JsonObject)newer["entries"]!["category_name:3"]!).Remove("at");
         drive.Put($"deskcal-shared-{other}.json", newer.ToJsonString());
-        drive.Put("deskcal-shared-broken.json", "{ not json");
+        var broken = drive.Put("deskcal-shared-broken.json", "{ not json");
         drive.Put($"deskcal-shared-{Guid.NewGuid():N}.json", Document("someone", ("category_name:3", "\"남의 계정\"", 9, "someone")).Replace("\"account\":\"\"", "\"account\":\"sub-b\""));
         drive.Put("notes.txt", "다른 이름의 파일");
 
         await Sync(a, drive);
         Assert.Equal("독서", Name(a, "3"));
+        Assert.Equal("{ not json", drive.Files[broken].Content);
+        Assert.Equal(0, drive.Creates);
+        drive.Replace(broken, Document("repaired"));
+        await Sync(a, drive);
         var mine = JsonNode.Parse(drive.Files.Values.Single(f => f.Name.Contains(Device(a))).Content)!;
         Assert.Equal(4, (long)mine["entries"]!["semester_v9"]!["rev"]!);
         Assert.Equal(1, (int)mine["entries"]!["semester_v9"]!["value"]!["x"]!);
@@ -335,10 +411,10 @@ public sealed class SharedSettingsTests
         await Sync(a, drive);
         var canonical = Assert.Single(drive.Files);
         var duplicate = drive.Put(canonical.Value.Name, Document(Device(a)));
-        drive.FailedRead = canonicalFails ? canonical.Key : duplicate;
         Categories(a).Rename("1", "보낼 별칭");
         Categories(b).Rename("2", "다른 PC 별칭");
         await Sync(b, drive);
+        drive.FailedRead = canonicalFails ? canonical.Key : duplicate;
         drive.ReadIds.Clear();
         for (var n = 0; n < 6; n++)
         {

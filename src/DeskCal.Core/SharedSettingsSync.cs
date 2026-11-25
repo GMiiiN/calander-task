@@ -187,6 +187,7 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             read[file.Id] = await ReadDocumentAsync(file, me, account, isOwn && file != canonical, cancellationToken);
         }
 
+        var missingPeer = files.Any(f => f.Name != ownName && read.TryGetValue(f.Id, out var doc) && doc is null);
         var now = Validation.Timestamp(_clock);
         using (var connection = database.OpenConnection())
         using (var transaction = connection.BeginTransaction(deferred: false))
@@ -194,11 +195,22 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             SharedSettings.SeedCategoryNames(connection, transaction, now);
             DayEventOrder.SeedLegacy(connection, transaction, new EventRepository(database, localTimeZone));
             SemesterSettings.Seed(connection, transaction, now);
-            SharedSettings.Merge(connection, transaction, read.Values.OfType<Document>().SelectMany(d => d.Entries), now);
+            // 보지 못한 상대 파일에 더 최신 값이 있을 수 있다. 미전송 키의 값과 기준 버전을 함께 보존한다.
+            var pending = missingPeer ? SharedSettings.ReadAll(connection, transaction, "WHERE is_dirty=1")
+                .ToDictionary(row => row.Key, row => row.Base) : [];
+            var entries = read.Values.OfType<Document>().SelectMany(d => d.Entries);
+            SharedSettings.Merge(connection, transaction, entries.Where(e => !pending.ContainsKey(e.Key)), now);
             SharedSettings.ApplyCategoryNames(connection, transaction);
             SemesterSettings.Apply(connection, transaction);
-            foreach (var file in files.Where(f => f.Name != ownName && read.GetValueOrDefault(f.Id) is not null))
-                WriteCache(connection, transaction, file);
+            foreach (var file in files)
+            {
+                if (read.GetValueOrDefault(file.Id) is not { } doc) continue;
+                bool isOwn = file.Name == ownName;
+                if (isOwn && !missingPeer) continue; // 자기 정본은 업로드 후 확정한다.
+                // 다음 차례에 보류한 충돌 후보를 다시 비교한다. 읽기 성공으로 이전 실패 기한은 해제한다.
+                var recheck = isOwn || doc.Entries.Any(e => pending.TryGetValue(e.Key, out var baseline) && e.Version > baseline);
+                WriteCache(connection, transaction, file, own: isOwn, recheck: recheck);
+            }
             var listed = files.Select(f => CachePrefix + f.Id).ToHashSet();
             foreach (var stale in cache.Keys.Select(id => CachePrefix + id).Where(key => !listed.Contains(key)))
             {
@@ -208,7 +220,7 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             transaction.Commit();
         }
 
-        if (canonical is not null && read.TryGetValue(canonical.Id, out var checkedFile) && checkedFile is null)
+        if (missingPeer || (canonical is not null && read.TryGetValue(canonical.Id, out var checkedFile) && checkedFile is null))
         {
             RecordError(database, UnreadableDeviceFile);
             return;
@@ -306,13 +318,17 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         {
             var text = await store.ReadAsync(file.Id, token);
             var doc = text is null ? null : Document.Parse(text);
-            if (doc is not null && (account.Length == 0 || doc.Account is null || doc.Account == account)
-                && (!own || doc.CanRewrite(me, account) && (!duplicate || doc.Extra.Count == 0))) return doc;
+            if (doc is not null)
+            {
+                if (!own && account.Length > 0 && doc.Account is not null && doc.Account != account)
+                    return doc with { Entries = [] }; // 다른 계정임을 확인했으므로 병합·재시도 대상에서 제외한다.
+                if (!own || doc.CanRewrite(me, account) && (!duplicate || doc.Extra.Count == 0)) return doc;
+            }
         }
         catch (Exception error) when (!token.IsCancellationRequested && (error is HttpRequestException or IOException or OperationCanceledException
             || error is GoogleApiException api && api.HttpStatusCode != HttpStatusCode.Unauthorized && Unavailable(api) is null && !GoogleAccount.IsRevoked(api)))
         {
-            // 개별 파일 다운로드 실패는 다른 파일의 읽기·전송을 막지 않는다.
+            // 다른 파일은 계속 읽고, 이 파일은 기한이 지난 뒤 다시 읽는다.
         }
         using var connection = database.OpenConnection();
         WriteCache(connection, null, file, own, _clock.GetUtcNow().AddMinutes(15));
@@ -339,13 +355,14 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         return cache;
     }
 
-    private static void WriteCache(SqliteConnection connection, SqliteTransaction? transaction, AppDataFile file, bool own = false, DateTimeOffset? retryAfter = null)
+    private static void WriteCache(SqliteConnection connection, SqliteTransaction? transaction, AppDataFile file, bool own = false, DateTimeOffset? retryAfter = null,
+        bool recheck = false)
     {
         using var command = Sql.Command(connection, transaction, """
             INSERT INTO sync_state(sync_key, sync_token, remote_id, last_error, last_synced_at) VALUES ($key, $token, $id, $error, $retry)
             ON CONFLICT(sync_key) DO UPDATE SET sync_token=excluded.sync_token, remote_id=excluded.remote_id,
                 last_error=excluded.last_error, last_synced_at=excluded.last_synced_at
-            """, ("$key", CachePrefix + file.Id), ("$token", Token(file, own)), ("$id", file.Id),
+            """, ("$key", CachePrefix + file.Id), ("$token", recheck ? null : Token(file, own)), ("$id", file.Id),
             ("$error", retryAfter.HasValue ? "read_failed" : null), ("$retry", retryAfter?.ToString("O")));
         command.ExecuteNonQuery();
     }
