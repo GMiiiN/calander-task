@@ -159,8 +159,36 @@ public sealed class DatabaseTests
         Assert.Single(Directory.GetFiles(db.Path + ".backups", "v3-*.db"));
     }
 
-    // v5(S6)가 더한 것을 지워 이전 버전 DB를 흉내 낸다.
-    private const string DropVersionFive = "DROP TABLE shared_entry; ALTER TABLE sync_state DROP COLUMN last_error; ";
+    // v6(S4)·v5(S6)가 더한 것을 지워 이전 버전 DB를 흉내 낸다.
+    private const string DropVersionSix = "ALTER TABLE event DROP COLUMN sync_base; ALTER TABLE todo DROP COLUMN sync_base; ALTER TABLE sync_conflict DROP COLUMN detail_json; ";
+    private const string DropVersionFive = DropVersionSix + "DROP TABLE shared_entry; ALTER TABLE sync_state DROP COLUMN last_error; ";
+
+    // S4: v5 DB를 올릴 때 D4 백업을 먼저 만든다. 예전 충돌 기록은 그대로이고 병합 기준값은 비어 있다(첫 전체 목록에서 채운다).
+    [Fact]
+    public void MergeBaseUpgradeBacksUpVersionFiveAndKeepsConflicts()
+    {
+        using var db = new TestDatabase();
+        var todo = db.Todos.Create([new("이전 할 일")]).Single();
+        db.Execute(DropVersionSix + "INSERT INTO sync_conflict(item_kind, item_uid, discarded_json, occurred_at) VALUES ('todo', $uid, '{}', 'x'); PRAGMA user_version=5;",
+            ("$uid", todo.TodoUid));
+        db.Database.Initialize();
+        var path = Assert.Single(Directory.GetFiles(db.Path + ".backups", "v5-*.db"));
+        using (var old = new Database(path).OpenConnection())
+        using (var sql = old.CreateCommand())
+        {
+            sql.CommandText = "PRAGMA integrity_check";
+            Assert.Equal("ok", sql.ExecuteScalar());
+            sql.CommandText = "PRAGMA user_version";
+            Assert.Equal(5L, sql.ExecuteScalar());
+            sql.CommandText = "SELECT count(*) FROM pragma_table_info('todo') WHERE name='sync_base'";
+            Assert.Equal(0L, sql.ExecuteScalar());
+        }
+        Assert.Equal(Database.LatestVersion, db.Scalar("PRAGMA user_version"));
+        Assert.Equal(1, db.Scalar("SELECT COUNT(*) FROM sync_conflict WHERE detail_json IS NULL"));
+        Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM todo WHERE sync_base IS NOT NULL"));
+        db.Database.Initialize();
+        Assert.Single(Directory.GetFiles(db.Path + ".backups", "*.db"));
+    }
 
     // S6: v4 DB를 올릴 때 D4 백업을 먼저 만들고, 이 PC에서 바꿔 둔 카테고리 이름은 그대로 둔다(공유는 첫 동기화에서 시작).
     [Fact]

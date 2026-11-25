@@ -84,6 +84,33 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
         _ => exception.InnerException is { } inner && IsRevoked(inner)
     };
 
+    public const string AuthErrorKey = "google_auth_error";
+
+    // 토큰은 남았지만 갱신이 invalid_grant가 아닌 4xx(invalid_client·unauthorized_client 등)로 계속 실패한다(S4). 다시 연결해야 한다.
+    public string? AuthError => ReadSetting(AuthErrorKey);
+
+    public static string? ReadAuthError(Database database) => new GoogleAccount(database, "").AuthError;
+
+    // 일시 오류(429·5xx·네트워크)는 인증 문제로 보지 않는다.
+    internal static string? AuthErrorOf(Exception exception) => exception switch
+    {
+        TokenResponseException { Error.Error: not "invalid_grant" } token
+            when token.StatusCode is { } status && (int)status is >= 400 and < 500 && (int)status != 429 => token.Error.Error ?? "token_error",
+        AggregateException aggregate => aggregate.InnerExceptions.Select(AuthErrorOf).FirstOrDefault(e => e is not null),
+        _ => exception.InnerException is { } inner ? AuthErrorOf(inner) : null
+    };
+
+    internal void RecordAuthError(string? error)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = error is null ? "DELETE FROM setting WHERE setting_key=$key;"
+            : "INSERT INTO setting(setting_key, setting_value) VALUES ($key, $value) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value;";
+        command.Parameters.AddWithValue("$key", AuthErrorKey);
+        command.Parameters.AddWithValue("$value", error ?? "");
+        command.ExecuteNonQuery();
+    }
+
     // 쓸 수 없는 토큰만 지운다. 그래야 "연결됨"으로 남지 않고 트레이에서 다시 연결할 수 있다.
     // 계정 결합 정보는 남겨 같은 계정으로만 다시 연결하게 한다. 앱의 동기화(invalid_grant)만 부른다(SyncCoordinator).
     public Task ForgetTokenAsync() => new ProtectedTokenStore(database).ClearAsync();
@@ -110,6 +137,9 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
             "ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value;";
         command.Parameters.AddWithValue("$id", payload.Subject);
         command.Parameters.AddWithValue("$email", payload.Email);
+        command.ExecuteNonQuery();
+        command.CommandText = "DELETE FROM setting WHERE setting_key = $error;"; // 다시 연결했으니 지난 인증 오류는 지운다
+        command.Parameters.AddWithValue("$error", AuthErrorKey);
         command.ExecuteNonQuery();
         ProtectedTokenStore.Write(command, credential.Token);
         transaction.Commit();
