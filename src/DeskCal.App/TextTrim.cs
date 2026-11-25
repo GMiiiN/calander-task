@@ -10,9 +10,10 @@ public static class TextTrim
 {
     public static bool IsTrimmed(TextBlock text)
     {
+        if (text.ActualWidth <= 0 || string.IsNullOrEmpty(text.Text)) return false;
         var full = new FormattedText(text.Text, CultureInfo.CurrentUICulture, text.FlowDirection,
             new Typeface(text.FontFamily, text.FontStyle, text.FontWeight, text.FontStretch),
-            text.FontSize, Brushes.Black, VisualTreeHelper.GetDpi(text).PixelsPerDip);
-        return full.WidthIncludingTrailingWhitespace > text.ActualWidth;
+            text.FontSize, Brushes.Black, null, TextOptions.GetTextFormattingMode(text), VisualTreeHelper.GetDpi(text).PixelsPerDip);
+        return full.WidthIncludingTrailingWhitespace > text.ActualWidth - text.Padding.Left - text.Padding.Right;
     }
 }

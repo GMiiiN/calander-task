@@ -12,6 +12,14 @@
         <local:VisibilityConverter x:Key="Visible" />
         <local:BarShapeConverter x:Key="BarShape" />
 
+        <ToolTip x:Key="SidebarTitleTip" Placement="Bottom" Focusable="False" StaysOpen="True">
+            <ToolTip.ContentTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding}" TextWrapping="Wrap" MaxWidth="420" />
+                </DataTemplate>
+            </ToolTip.ContentTemplate>
+        </ToolTip>
+
         <!-- 날짜 칸·종일 줄 일정 칩 (Figma Event chip) -->
         <DataTemplate x:Key="ChipTemplate" DataType="{x:Type cal:ChipModel}">
             <Border x:Name="Chip" Height="20" CornerRadius="{Binding Converter={StaticResource BarShape}}" Padding="4,0" Margin="0,4,0,0"
@@ -214,7 +222,10 @@
 
         <DataTemplate x:Key="SidebarItemTemplate" DataType="{x:Type local:SidebarItemViewModel}">
             <StackPanel>
-            <DockPanel Height="36" Margin="8,0" Background="Transparent">
+            <DockPanel Height="36" Margin="8,0" Background="Transparent" Tag="{Binding ElementName=Title}"
+                       Focusable="True" KeyboardNavigation.IsTabStop="True" AutomationProperties.Name="{Binding Title}"
+                       PreviewGotKeyboardFocus="OnSidebarRowPreviewFocus" GotKeyboardFocus="OnSidebarRowFocusChanged"
+                       LostKeyboardFocus="OnSidebarRowFocusChanged">
                 <CheckBox Style="{StaticResource RoundCheck}" IsChecked="{Binding IsDone, Mode=OneWay}" VerticalAlignment="Center"
                           Command="{Binding DataContext.ToggleDoneCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                           CommandParameter="{Binding}" Margin="0,0,8,0" />
@@ -232,7 +243,7 @@
                 <StackPanel VerticalAlignment="Center">
                     <!-- 잘린 제목은 1초 머무르면 전체 제목을 툴팁으로 보여 준다(feedback 3-2). -->
                     <TextBlock x:Name="Title" Text="{Binding Title}" Style="{StaticResource BaseText}" FontSize="13" FontWeight="Medium"
-                               ToolTip="{Binding Title}" ToolTipService.InitialShowDelay="1000" ToolTipOpening="OnTitleToolTipOpening" />
+                               MouseEnter="OnTitleEnter" MouseLeave="OnTitleLeave" />
                     <TextBlock Text="{Binding Meta}" Style="{StaticResource BaseText}" FontSize="11"
                                Foreground="{DynamicResource MutedBrush}" Margin="0,1,0,0" />
                 </StackPanel>
@@ -522,7 +533,7 @@
         </Border>
 
         <!-- 사이드바 -->
-        <Border Grid.Column="2" x:Name="SidebarCard" Style="{StaticResource Card}" Background="#EDFFFFFF">
+        <Border Grid.Column="2" x:Name="SidebarCard" LostKeyboardFocus="OnSidebarBlur" Style="{StaticResource Card}" Background="#EDFFFFFF">
             <Grid LayoutTransform="{DynamicResource TextLayoutScale}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -566,7 +577,7 @@
                         <TextBlock Text="{Binding AgendaCount}" Style="{StaticResource BaseText}" FontWeight="Bold"
                                    Foreground="{DynamicResource AccentBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
-                    <ScrollViewer VerticalScrollBarVisibility="Hidden">
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden" Focusable="False">
                         <ItemsControl ItemsSource="{Binding Groups}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type local:SidebarGroupViewModel}">
@@ -617,7 +628,7 @@
                                 <TextBox x:Name="NewTodoBox" Text="{Binding NewTodoTitle, UpdateSourceTrigger=PropertyChanged}"
                                          FontFamily="{StaticResource AppFont}" FontSize="13" Foreground="{DynamicResource TextBrush}"
                                          Background="Transparent" BorderThickness="0" Padding="0"
-                                         PreviewMouseLeftButtonDown="OnInputMouseDown" LostKeyboardFocus="OnInputBlur">
+                                         PreviewMouseLeftButtonDown="OnInputMouseDown">
                                     <TextBox.InputBindings>
                                         <KeyBinding Key="Enter" Command="{Binding AddTodoCommand}" />
                                     </TextBox.InputBindings>
