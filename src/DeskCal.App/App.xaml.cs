@@ -49,6 +49,7 @@ public partial class App : Application
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskCal", "deskcal.db");
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var database = new Database(path);
+        AppendLog("app.log", $"App {database.DiagnosticIdentity}");
         database.Initialize();
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         // OAuth 클라이언트 파일은 설치마다 하나, 토큰은 계정 결합 정보와 함께 DB 안에(§5.1).

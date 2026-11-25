@@ -9,8 +9,8 @@ internal sealed record Category(string ColorId, string Name, string ColorHex);
 internal sealed class ToolOutput(Database database, EventRepository events)
 {
     internal static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
-    private readonly IReadOnlyList<Category> _categories = ReadCategories(database);
-    private readonly bool _signedIn = ReadSignedIn(database);
+    private readonly IReadOnlyList<Category> _categories = database.Measure("categories", () => ReadCategories(database));
+    private readonly bool _signedIn = database.Measure("account", () => ReadSignedIn(database));
     private Dictionary<string, EventRecord>? _parents;
 
     public IReadOnlyList<Category> Categories => _categories;

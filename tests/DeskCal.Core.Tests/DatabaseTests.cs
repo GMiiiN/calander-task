@@ -6,6 +6,17 @@ namespace DeskCal.Core.Tests;
 public sealed class DatabaseTests
 {
     [Fact]
+    public void FingerprintUsesTheResolvedPathWithoutRevealingIt()
+    {
+        var folder = Path.GetTempPath();
+        var name = "deskcal-" + Guid.NewGuid().ToString("N") + ".db";
+        var database = new Database(Path.Combine(folder, name));
+        Assert.Equal(database.PathFingerprint, new Database(Path.Combine(folder, ".", name)).PathFingerprint);
+        Assert.NotEqual(database.PathFingerprint, new Database(Path.Combine(folder, "other.db")).PathFingerprint);
+        Assert.DoesNotContain(name, database.DiagnosticIdentity);
+    }
+
+    [Fact]
     public void InitializeSeedsDefaultCategoriesOnlyOnce()
     {
         using var db = new TestDatabase();
