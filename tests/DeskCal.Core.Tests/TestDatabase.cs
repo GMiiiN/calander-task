@@ -39,6 +39,7 @@ public sealed class TestDatabase : IDisposable
     public void Dispose()
     {
         foreach (var suffix in new[] { "", "-wal", "-shm" }) File.Delete(Path + suffix);
+        if (Directory.Exists(Path + ".backups")) Directory.Delete(Path + ".backups", recursive: true);
     }
 }
 
