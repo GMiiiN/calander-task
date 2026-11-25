@@ -7,6 +7,7 @@ namespace DeskCal.Core;
 
 public sealed class Database
 {
+    private static readonly Action<SqliteCommand>[] Migrations = [MigrateToV1, MigrateToV2];
     public const int LatestVersion = 2;
     private readonly string _connectionString;
 
@@ -75,7 +76,9 @@ public sealed class Database
         }
     }
 
-    public void Initialize()
+    public void Initialize() => Initialize(Migrations, path => OpenSnapshot(path, SqliteOpenMode.ReadWriteCreate));
+
+    internal void Initialize(IReadOnlyList<Action<SqliteCommand>> migrations, Func<string, SqliteConnection> openDestination)
     {
         using var connection = OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
@@ -83,10 +86,12 @@ public sealed class Database
         command.Transaction = transaction;
         command.CommandText = "PRAGMA user_version;";
         var version = Convert.ToInt32(command.ExecuteScalar());
-        if (version > LatestVersion)
-            throw new InvalidOperationException($"Database version {version} is newer than supported version {LatestVersion}.");
-        Action<SqliteCommand>[] migrations = [MigrateToV1, MigrateToV2];
-        while (version < LatestVersion)
+        if (version > migrations.Count)
+            throw new InvalidOperationException($"Database version {version} is newer than supported version {migrations.Count}.");
+        // BEGIN IMMEDIATE holds competing initializers and writers until the snapshot and migration finish.
+        if (version > 0 && version < migrations.Count)
+            BackupBeforeMigration(version, openDestination);
+        while (version < migrations.Count)
         {
             migrations[version](command);
             command.CommandText = $"PRAGMA user_version={++version};";
@@ -107,6 +112,53 @@ public sealed class Database
             command.ExecuteNonQuery();
         }
         transaction.Commit();
+    }
+
+    private void BackupBeforeMigration(int version, Func<string, SqliteConnection> openDestination)
+    {
+        var directory = Directory.CreateDirectory(FilePath + ".backups").FullName;
+        var staging = Path.Combine(directory, "snapshot.partial");
+        var final = Path.Combine(directory, $"v{version}-{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}.db");
+        // Only the holder of the source write lock accesses this staging name, including after a crash.
+        void ClearStaging()
+        {
+            foreach (var suffix in new[] { "", "-journal", "-wal", "-shm" })
+                File.Delete(staging + suffix);
+        }
+
+        ClearStaging();
+        try
+        {
+            using (var reader = OpenSnapshot(FilePath, SqliteOpenMode.ReadOnly))
+            using (var destination = openDestination(staging))
+            {
+                reader.BackupDatabase(destination);
+                using var journal = destination.CreateCommand();
+                journal.CommandText = "PRAGMA journal_mode=DELETE";
+                if (!string.Equals(journal.ExecuteScalar() as string, "delete", StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("독립적인 백업 파일을 만들 수 없습니다.");
+            }
+            using (var check = OpenSnapshot(staging, SqliteOpenMode.ReadOnly))
+            using (var command = check.CreateCommand())
+            {
+                command.CommandText = "PRAGMA integrity_check";
+                if (!Equals(command.ExecuteScalar(), "ok"))
+                    throw new InvalidDataException("데이터베이스 백업의 무결성 검사에 실패했습니다.");
+                command.CommandText = "PRAGMA user_version";
+                if (Convert.ToInt32(command.ExecuteScalar()) != version)
+                    throw new InvalidDataException("백업의 스키마 버전이 원본과 다릅니다.");
+            }
+            File.Move(staging, final);
+        }
+        finally { ClearStaging(); }
+    }
+
+    private static SqliteConnection OpenSnapshot(string path, SqliteOpenMode mode)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            { DataSource = path, Mode = mode, Pooling = false }.ToString());
+        try { connection.Open(); return connection; }
+        catch { connection.Dispose(); throw; }
     }
 
     private static void MigrateToV1(SqliteCommand command)

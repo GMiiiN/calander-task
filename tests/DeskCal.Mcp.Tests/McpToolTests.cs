@@ -89,6 +89,27 @@ public sealed class McpToolTests : IAsyncLifetime
     private static string Id(JsonElement value, string field = "event_id") => value.GetProperty(field).GetString()!;
 
     [Fact]
+    public async Task TwoServerProcessesPublishOneVerifiedBackupOnUpgrade()
+    {
+        using var connection = _database.OpenConnection();
+        using var schema = connection.CreateCommand();
+        schema.CommandText = "ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
+        schema.ExecuteNonQuery();
+        var path = Path.Combine(_directory, "nested", "deskcal.db");
+        var clients = await Task.WhenAll(StartServer(path), StartServer(path));
+        try
+        {
+            Assert.Single(Directory.GetFiles(path + ".backups"));
+            schema.CommandText = "PRAGMA user_version";
+            Assert.Equal((long)Database.LatestVersion, schema.ExecuteScalar());
+        }
+        finally
+        {
+            foreach (var client in clients) await client.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task LockedDatabaseReturnsSqliteCodesAndRetryGuidance()
     {
         using var connection = _database.OpenConnection();

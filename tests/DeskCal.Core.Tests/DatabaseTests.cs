@@ -116,6 +116,93 @@ public sealed class DatabaseTests
         var value = db.Events.Get(created.EventUid);
         Assert.Equal("기존 일정", value.Title);
         Assert.Empty(value.Checklist);
+        var backup = Assert.Single(Directory.GetFiles(db.Path + ".backups"));
+        using var old = new Database(backup).OpenConnection();
+        using var read = old.CreateCommand();
+        read.CommandText = "PRAGMA user_version";
+        Assert.Equal(1L, read.ExecuteScalar());
+        read.CommandText = "SELECT title FROM event";
+        Assert.Equal("기존 일정", read.ExecuteScalar());
+        db.Database.Initialize();
+        Assert.Single(Directory.GetFiles(db.Path + ".backups", "*.db"));
+    }
+
+    private static SqliteConnection BackupDestination(string path)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString());
+        connection.Open();
+        return connection;
+    }
+
+    private static void UnusedMigration(SqliteCommand _) => throw new InvalidOperationException("이미 적용한 마이그레이션");
+
+    [Fact]
+    public void FutureUpgradeBacksUpCommittedWalAndRecoversAfterInterruptedStaging()
+    {
+        using var db = new TestDatabase();
+        Assert.False(Directory.Exists(db.Path + ".backups"));
+        using var writer = db.Database.OpenConnection(); // keep WAL pages uncheckpointed
+        using var sql = writer.CreateCommand();
+        sql.CommandText = "PRAGMA wal_autocheckpoint=0; PRAGMA wal_checkpoint(TRUNCATE);";
+        sql.ExecuteNonQuery();
+        var todo = db.Todos.Create([new("WAL 할 일")])[0];
+        var ev = db.Events.Create([new("체크리스트", "2026-11-02")])[0];
+        db.Events.AddChecklistItems(ev.EventUid, false, ["복구 확인"]);
+        Assert.True(new FileInfo(db.Path + "-wal").Length > 32);
+        var folder = Directory.CreateDirectory(db.Path + ".backups").FullName;
+        File.WriteAllText(Path.Combine(folder, "snapshot.partial"), "interrupted");
+        db.Database.Initialize([UnusedMigration, UnusedMigration, cmd =>
+        {
+            cmd.CommandText = "DELETE FROM todo; DELETE FROM event;";
+            cmd.ExecuteNonQuery();
+        }], BackupDestination);
+        Assert.Equal(3, db.Scalar("PRAGMA user_version"));
+        Assert.Empty(db.Todos.List("all"));
+        var restorePath = Path.Combine(folder, "restored.db");
+        File.Copy(Assert.Single(Directory.GetFiles(folder)), restorePath);
+        var backup = new Database(restorePath);
+        backup.Initialize(); // restore the copy with the previous executable
+        Assert.Equal("WAL 할 일", new TodoRepository(backup).Get(todo.TodoUid).Title);
+        Assert.Contains(new EventRepository(backup).Get(ev.EventUid).Checklist, i => i.Text == "복구 확인");
+    }
+
+    [Fact]
+    public void InterruptedMigrationRollsBackAfterBackupPublication()
+    {
+        using var db = new TestDatabase();
+        var todo = db.Todos.Create([new("중단 전")])[0];
+        Assert.Throws<OperationCanceledException>(() => db.Database.Initialize([UnusedMigration, UnusedMigration, cmd =>
+        {
+            cmd.CommandText = "DELETE FROM todo";
+            cmd.ExecuteNonQuery();
+            throw new OperationCanceledException();
+        }], BackupDestination));
+        Assert.Equal(2, db.Scalar("PRAGMA user_version"));
+        Assert.Equal("중단 전", db.Todos.Get(todo.TodoUid).Title);
+        var backup = new Database(Assert.Single(Directory.GetFiles(db.Path + ".backups")));
+        Assert.Equal(todo.TodoUid, Assert.Single(new TodoRepository(backup).List()).TodoUid);
+    }
+
+    [Fact]
+    public void FullBackupDestinationPreservesVersionAndDataAndCanRetry()
+    {
+        using var db = new TestDatabase();
+        var todo = db.Todos.Create([new("보존")])[0];
+        Action<SqliteCommand>[] migrations = [UnusedMigration, UnusedMigration, _ => { }];
+        var error = Assert.Throws<SqliteException>(() => db.Database.Initialize(migrations, path =>
+        {
+            var destination = BackupDestination(path);
+            using var limit = destination.CreateCommand();
+            limit.CommandText = "PRAGMA max_page_count=1";
+            limit.ExecuteNonQuery();
+            return destination;
+        }));
+        Assert.Equal(13, error.SqliteErrorCode); // SQLITE_FULL during the actual sqlite3_backup
+        Assert.Equal(2, db.Scalar("PRAGMA user_version"));
+        Assert.Equal("보존", db.Todos.Get(todo.TodoUid).Title);
+        Assert.Empty(Directory.GetFiles(db.Path + ".backups"));
+        db.Database.Initialize(migrations, BackupDestination);
+        Assert.Single(Directory.GetFiles(db.Path + ".backups"));
     }
 
     [Fact]

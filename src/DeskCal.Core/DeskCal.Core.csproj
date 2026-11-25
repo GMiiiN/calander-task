@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="DeskCal.Core.Tests" />
     <EmbeddedResource Include="SchemaV1.sql" />
     <PackageReference Include="Google.Apis.Calendar.v3" Version="1.77.0.4285" />
     <PackageReference Include="Google.Apis.Drive.v3" Version="1.77.0.4301" />
