@@ -278,6 +278,24 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.False(remote.InsertCancelled);
     }
 
+    // 리뷰 B-L1: get_agenda는 list_events처럼 시작 시각순이다. 앱에서 저장한 날짜별 순서나 완료 여부로 바뀌지 않는다.
+    [Fact]
+    public async Task AgendaListsEventsOfADayInStartTimeOrder()
+    {
+        var day = DateOnly.FromDateTime(DateTime.Now).AddDays(1);
+        var date = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var afternoon = Events.Create([new("오후", date) { StartTime = "15:00" }]).Single();
+        var morning = Events.Create([new("오전", date) { StartTime = "09:00" }]).Single();
+        Events.Update(morning.EventUid, new() { IsDone = true });
+        var noon = Events.Create([new("정오", date) { StartTime = "12:00" }]).Single();
+        Assert.True(DayEventOrder.Move(Events, day, noon.EventUid, afternoon.EventUid)); // 앱에서 정오를 맨 위로 옮겼다
+
+        var args = JsonSerializer.SerializeToElement(new { start_date = date, end_date = date });
+        var body = (await new CalendarTools(_database).InvokeAsync("get_agenda", args, default)).StructuredContent!.Value;
+        var group = body.GetProperty("groups").EnumerateArray().Single(g => g.GetProperty("date").GetString() == date);
+        Assert.Equal(new[] { "오전", "정오", "오후" }, group.GetProperty("events").EnumerateArray().Select(e => e.GetProperty("title").GetString()));
+    }
+
     // 생성 요청이 문을 열어 줄 때까지 응답하지 않는 가짜 Google Tasks. 받은 토큰이 취소되면 요청도 취소된다.
     private sealed class GatedTasks : ITasksRemote
     {

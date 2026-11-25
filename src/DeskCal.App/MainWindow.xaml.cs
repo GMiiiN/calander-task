@@ -252,7 +252,8 @@ public partial class MainWindow : Window
         OpenEditorAt(e);
     }
 
-    private sealed record OrderItem(DateOnly Day, string Key);
+    // 완료한 일정은 늘 미완료 아래에 있으므로 완료 상태가 같은 항목끼리만 순서를 바꾼다(DayEventOrder.Move와 같은 규칙).
+    private sealed record OrderItem(DateOnly Day, string Key, bool IsDone);
     private OrderItem? _pressedEvent;
     private OrderItem? _draggingEvent;
     private Point _pressPoint;
@@ -274,9 +275,9 @@ public partial class MainWindow : Window
             switch (element.DataContext)
             {
                 case ChipModel { OrderDate: { } day, EventId: { } id } chip:
-                    return new(day, chip.OccurrenceId ?? id);
+                    return new(day, chip.OccurrenceId ?? id, chip.IsDone);
                 case SidebarItemViewModel { OrderDate: { } day, EventId: { } id } row:
-                    return new(day, row.OccurrenceId ?? id);
+                    return new(day, row.OccurrenceId ?? id, row.IsDone);
             }
         }
         return null;
@@ -310,7 +311,8 @@ public partial class MainWindow : Window
     {
         if (_draggingEvent is not { } source) return;
         var target = OrderItemAt(e.OriginalSource as DependencyObject);
-        e.Effects = source.Day == target?.Day && source != target ? DragDropEffects.Move : DragDropEffects.None;
+        e.Effects = target is not null && source.Day == target.Day && source.IsDone == target.IsDone && source.Key != target.Key
+            ? DragDropEffects.Move : DragDropEffects.None;
         e.Handled = true;
     }
 

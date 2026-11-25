@@ -15,6 +15,26 @@ public sealed class AgendaTests
         Assert.Single(agenda.Groups[1].Events);
     }
 
+    // 리뷰 B-L1: get_agenda도 날짜별 저장 순서를 써서 list_events(시간순)와 달랐다.
+    // 기본값(MCP)은 시작 시각순이고, 앱 우측만 공통 순서(완료는 아래, 생성순)를 고른다.
+    [Fact]
+    public void AgendaDefaultsToStartTimeOrderAndDayOrderIsOptIn()
+    {
+        using var db = new TestDatabase();
+        db.Events.Create([new("늦은", "2026-10-30") { StartTime = "14:00" }]);
+        db.Clock.Now = db.Clock.Now.AddMinutes(1);
+        var early = db.Events.Create([new("이른", "2026-10-30") { StartTime = "09:00" }]).Single();
+        db.Clock.Now = db.Clock.Now.AddMinutes(1);
+        db.Events.Create([new("종일", "2026-10-30")]);
+        db.Events.Update(early.EventUid, new() { IsDone = true });
+        var day = new DateOnly(2026, 10, 30);
+        var service = new AgendaService(db.Events, db.Todos, TestDatabase.Seoul, () => day);
+        string[] Titles(bool dayOrder) => service.GetAgenda(day, day, dayOrder: dayOrder).Groups.Single(g => g.Date == day).Events.Select(o => o.Event.Title).ToArray();
+
+        Assert.Equal(["종일", "이른", "늦은"], Titles(false));
+        Assert.Equal(["늦은", "종일", "이른"], Titles(true));
+    }
+
     [Fact]
     public void LaterEventsAreAddedOnlyWhenAsked()
     {

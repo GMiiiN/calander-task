@@ -161,7 +161,7 @@ public sealed class MainViewModel : ObservableObject
 
     private void BuildSidebar()
     {
-        var agenda = new AgendaService(_events, _todos, today: () => _today).GetAgenda(laterEventsUntil: _today.AddDays(LATER_EVENT_DAYS));
+        var agenda = new AgendaService(_events, _todos, today: () => _today).GetAgenda(laterEventsUntil: _today.AddDays(LATER_EVENT_DAYS), dayOrder: true);
         var categories = ReadCategories();
         Ddays = agenda.Ddays.Where(d => d.DaysRemaining >= 0)
             .Select(d => new DdayChipViewModel(d.Occurrence.Event.Title, d.DaysRemaining == 0 ? "D-day" : $"D-{d.DaysRemaining}", d.DaysRemaining == 0))

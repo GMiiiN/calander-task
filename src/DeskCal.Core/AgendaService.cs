@@ -10,14 +10,18 @@ public sealed class AgendaService(EventRepository events, TodoRepository todos, 
 
     /// <param name="laterEventsUntil">주면 기간 다음 날부터 이 날짜까지의 일정도 "later" 묶음에 넣는다(사이드바, feedback 3-6).
     /// 주지 않으면 지금처럼 later에는 할 일만 있다(MCP get_agenda).</param>
-    public Agenda GetAgenda(DateOnly? startDate = null, DateOnly? endDate = null, DateOnly? laterEventsUntil = null)
+    /// <param name="dayOrder">true면 날짜 안의 일정을 달력과 같은 공통 순서(여러 날 일정 → 단일 일정, 완료는 아래, 사용자 순서)로 낸다(앱 우측).
+    /// false면 시작 시각순이다(MCP get_agenda, list_events와 같은 순서).</param>
+    public Agenda GetAgenda(DateOnly? startDate = null, DateOnly? endDate = null, DateOnly? laterEventsUntil = null, bool dayOrder = false)
     {
         var current = today?.Invoke() ?? DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, _zone).DateTime);
         var start = startDate ?? current;
         var end = endDate ?? start.AddDays(13);
         Validation.Range(start, end, 366);
         var occurrences = events.List(start, end);
-        var order = DayEventOrder.Read(events.Database, start, laterEventsUntil ?? end);
+        var order = dayOrder ? DayEventOrder.Read(events.Database, start, laterEventsUntil > end ? laterEventsUntil.Value : end) : null;
+        // events.List는 시작 시각순이다.
+        IEnumerable<EventOccurrence> Arrange(DateOnly day, IEnumerable<EventOccurrence> items) => order?.Sort(day, items) ?? items;
         var visibleTodos = todos.List("all").Where(t => !t.IsDone || CompletedToday(t, current)).ToArray();
         var groups = new List<AgendaGroup>
         {
@@ -30,12 +34,12 @@ public sealed class AgendaService(EventRepository events, TodoRepository todos, 
             var lower = day.ToDateTime(TimeOnly.MinValue);
             var upper = lower.AddDays(1);
             groups.Add(new("date", day,
-                order.Sort(day, occurrences.Where(o => o.Start < upper && o.End > lower && placed.Add(DayEventOrder.Key(o)))).ToArray(),
+                Arrange(day, occurrences.Where(o => o.Start < upper && o.End > lower && placed.Add(DayEventOrder.Key(o)))).ToArray(),
                 visibleTodos.Where(t => t.IsDone ? day == current : t.DueDate == day.ToString("yyyy-MM-dd")).ToArray()));
         }
         // 기간에 이미 나온 여러 날 일정(placed)은 다시 넣지 않는다.
         var laterEvents = laterEventsUntil is { } until && until > end
-            ? events.List(end.AddDays(1), until).Where(o => placed.Add(o.OccurrenceId ?? o.Event.EventUid)).GroupBy(o => DateOnly.FromDateTime(o.Start)).OrderBy(g => g.Key).SelectMany(g => order.Sort(g.Key, g)).ToArray()
+            ? events.List(end.AddDays(1), until).Where(o => placed.Add(o.OccurrenceId ?? o.Event.EventUid)).GroupBy(o => DateOnly.FromDateTime(o.Start)).OrderBy(g => g.Key).SelectMany(g => Arrange(g.Key, g)).ToArray()
             : [];
         groups.Add(new("later", null, laterEvents, visibleTodos.Where(t => !t.IsDone && t.DueDate is not null && Validation.Date(t.DueDate) > end).ToArray()));
         groups.Add(new("anytime", null, [], visibleTodos.Where(t => !t.IsDone && t.DueDate is null).ToArray()));

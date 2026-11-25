@@ -81,7 +81,7 @@ public sealed class CalendarModelBuilderTests : IDisposable
     [InlineData(100)]
     [InlineData(115)]
     [InlineData(130)]
-    public void MonthLimitsChipsAndOrdersEventsByCreationThenTodosByCompletion(int textSize)
+    public void MonthLimitsChipsAndOrdersOpenEventsThenDoneEventsThenTodos(int textSize)
     {
         var settings = new SettingStore(database);
         Assert.Equal(100, settings.TextSizePercent); // an existing DB has no text-size setting
@@ -100,13 +100,15 @@ public sealed class CalendarModelBuilderTests : IDisposable
         var tasks = todos.Create([new("done todo", "2026-10-30"), new("todo", "2026-10-30"), new("undated")]);
         todos.Update(tasks[0].TodoUid, new() { IsDone = true });
         var cell = Cell(Builder().BuildMonth(2026, 10, TODAY), TODAY);
-        Assert.Equal(created.OrderBy(e => e.CreatedAt, StringComparer.Ordinal).ThenBy(e => e.EventUid, StringComparer.Ordinal).Select(e => e.Title)
-            .Concat(["todo", "done todo"]), cell.AllItems.Select(c => c.Title));
+        // 완료한 일정은 미완료 아래(v0.8.2와 같음), 각각의 안에서는 생성순이다.
+        Assert.Equal(created.OrderBy(e => e.Title.StartsWith("done ")).ThenBy(e => e.CreatedAt, StringComparer.Ordinal).ThenBy(e => e.EventUid, StringComparer.Ordinal)
+            .Select(e => e.Title).Concat(["todo", "done todo"]), cell.AllItems.Select(c => c.Title));
+        Assert.DoesNotContain(cell.Chips, c => c.IsDone);
         Assert.Equal(cell.AllItems.Take(2), cell.Chips);
         Assert.Equal(5, cell.OverflowCount);
         Assert.True(cell.IsToday);
         Assert.Equal("09:00", cell.AllItems.Single(c => c.Title == "early").TimeText);
-        Assert.Null(cell.AllItems[0].TimeText);
+        Assert.Null(cell.AllItems.Single(c => c.Title == "done all day").TimeText);
         Assert.Null(cell.AllItems[5].TimeText);
         reopened.TextSizePercent = 100;
         Assert.Equal(100, settings.TextSizePercent);
@@ -491,11 +493,42 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.Equal(expected, cell.AllItems.Select(Key));
         Assert.Equal(expected.Take(2), cell.Chips.Select(Key));
         Assert.Equal(expected, builder.BuildWeek(TODAY, TODAY).Days[4].AllDay.Select(Key));
-        var agenda = new AgendaService(ev, todos).GetAgenda(TODAY, TODAY);
+        var agenda = new AgendaService(ev, todos).GetAgenda(TODAY, TODAY, dayOrder: true);
         Assert.Equal(expected, agenda.Groups.Single(g => g.Date == TODAY).Events.Select(DayEventOrder.Key));
+        // MCP get_agenda(기본값)는 저장한 순서와 상관없이 list_events와 같은 시작 시각순이다.
+        Assert.Equal(ev.List(TODAY, TODAY).Select(DayEventOrder.Key),
+            new AgendaService(ev, todos).GetAgenda(TODAY, TODAY).Groups.Single(g => g.Date == TODAY).Events.Select(DayEventOrder.Key));
         ev.Delete(values[1].EventUid);
         var added = ev.Create([new("추가", "2026-10-30")]).Single();
         Assert.Equal(added.EventUid, Key(Cell(builder.BuildMonth(2026, 10, TODAY), TODAY).AllItems.Last()));
+    }
+
+    // 리뷰 B-L1: 같은 날 먼저 만든 일정을 완료하면 두 칩에 남고 미완료 일정이 +N으로 숨었다. v0.8.2는 완료한 일정을 아래로 보냈다.
+    // 달력·+N·우측이 같은 규칙이다. 순서 바꾸기는 완료 상태가 같은 일정끼리만 받는다.
+    [Fact]
+    public void DoneEventsSinkBelowOpenOnesAndReorderStaysWithinTheGroup()
+    {
+        var a = events.Create([new("A", "2026-10-30") { StartTime = "10:00" }]).Single();
+        var b = events.Create([new("B", "2026-10-30") { StartTime = "09:00" }]).Single();
+        var c = events.Create([new("C", "2026-10-30") { StartTime = "14:00" }]).Single();
+        events.Update(a.EventUid, new() { IsDone = true });
+        string[] Titles(IEnumerable<ChipModel> chips) => chips.Select(x => x.Title).ToArray();
+        string[] Sidebar() => new AgendaService(events, todos, today: () => TODAY).GetAgenda(TODAY, TODAY, dayOrder: true)
+            .Groups.Single(g => g.Date == TODAY).Events.Select(o => o.Event.Title).ToArray();
+
+        var cell = Cell(Builder().BuildMonth(2026, 10, TODAY), TODAY);
+        Assert.Equal(new[] { "B", "C", "A" }, Titles(cell.AllItems));
+        Assert.Equal(new[] { "B", "C" }, Titles(cell.Chips));
+        Assert.Equal(new[] { "B", "C", "A" }, Sidebar());
+
+        Assert.False(DayEventOrder.Move(events, TODAY, a.EventUid, b.EventUid)); // 완료한 A를 미완료 위로 옮기지 않는다
+        Assert.True(DayEventOrder.Move(events, TODAY, c.EventUid, b.EventUid));
+        Assert.Equal(new[] { "C", "B", "A" }, Titles(Cell(Builder().BuildMonth(2026, 10, TODAY), TODAY).AllItems));
+        Assert.Equal(new[] { "C", "B", "A" }, Sidebar());
+
+        events.Update(a.EventUid, new() { IsDone = false });
+        events.Update(c.EventUid, new() { IsDone = true });
+        Assert.Equal(new[] { "B", "A", "C" }, Titles(Cell(Builder().BuildMonth(2026, 10, TODAY), TODAY).AllItems));
     }
 
     private static DayCellModel Cell(MonthModel model, DateOnly date) => model.Weeks.SelectMany(w => w).Single(d => d.Date == date);
