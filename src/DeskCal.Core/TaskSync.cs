@@ -286,6 +286,11 @@ public sealed class TaskSync(Database database, ITasksRemote remote, TimeProvide
             if (!seen.Contains(googleId) && !justPushed.Contains(googleId) && !local.Pending && local.DeletedAt is null)
                 MarkDeleted(connection, transaction, local.Id, now);
         cancellationToken.ThrowIfCancellationRequested();
+        using var stamp = Sql.Command(connection, transaction, """
+            INSERT INTO sync_state(sync_key,last_synced_at) VALUES ('tasks_default',$now)
+            ON CONFLICT(sync_key) DO UPDATE SET last_synced_at=excluded.last_synced_at
+            """, ("$now", now));
+        stamp.ExecuteNonQuery();
         transaction.Commit();
     }
 

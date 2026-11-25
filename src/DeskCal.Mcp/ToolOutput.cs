@@ -14,13 +14,86 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
     // Capture the optional receipt metadata before mutating. A failed metadata read must never
     // turn a committed create into an error response that the caller could retry.
     private readonly bool? _appRunning = isWrite ? AppPresence.IsRunning(database) : null;
-    private readonly DateTimeOffset? _lastCalendarSync = isWrite ? LastCalendarSync(database) : null;
+    private readonly JsonObject? _lastSync = isWrite ? SyncTimes(database) : null;
+    private readonly Dictionary<string, (string Table, long Id, long Revision, string Uid)> _writes = [];
+    private readonly long _conflictBefore = isWrite ? LatestConflict(database) : 0;
+    public bool ShouldSend => _appRunning == false && _signedIn;
     private Dictionary<string, EventRecord>? _parents;
 
-    private static DateTimeOffset? LastCalendarSync(Database database)
+    private static JsonObject SyncTimes(Database database)
     {
-        try { return EventSync.LastSyncedAt(database); }
-        catch (FormatException) { return null; }
+        var times = new JsonObject { ["calendar"] = null, ["tasks"] = null };
+        using var connection = database.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT sync_key,last_synced_at FROM sync_state WHERE sync_key IN ('calendar_primary','tasks_default')";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            if (!reader.IsDBNull(1) && DateTimeOffset.TryParse(reader.GetString(1), out var at))
+                times[reader.GetString(0) == "tasks_default" ? "tasks" : "calendar"] = at.UtcDateTime;
+        return times;
+    }
+
+    private static long LatestConflict(Database database)
+    {
+        using var connection = database.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COALESCE(MAX(conflict_id),0) FROM sync_conflict";
+        return (long)cmd.ExecuteScalar()!;
+    }
+
+    // 커밋 뒤 전송이나 상태 조회가 실패해도 클라이언트에는 기존 로컬 영수증을 반환한다.
+    public async Task<JsonObject> SendAndVerifyAsync(JsonObject receipt, Func<CancellationToken, Task<bool>> send, CancellationToken token)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        var budget = deadline.Token;
+        var result = (JsonObject)receipt.DeepClone();
+        try
+        {
+            return await Task.Run(VerifyAsync, budget).WaitAsync(budget);
+        }
+        catch (Exception ex)
+        {
+            var reason = ex is OperationCanceledException ? "sync_timeout" : "sync_unavailable";
+            foreach (var item in ReceiptItems(receipt))
+                if ((string?)item["reason"] == "app_not_running") item["reason"] = reason;
+            return receipt;
+        }
+
+        async Task<JsonObject> VerifyAsync()
+        {
+            var sent = await send(budget);
+            result["last_verified_sync"] = SyncTimes(database);
+            var signedIn = PendingChanges.HasToken(database);
+            using var connection = database.OpenConnection();
+            foreach (var item in ReceiptItems(result))
+            {
+                budget.ThrowIfCancellationRequested();
+                var key = (string?)(item["occurrence_id"] ?? item["event_id"] ?? item["todo_id"]);
+                if (key is null || !_writes.TryGetValue(key, out var row)) continue;
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = $"SELECT push_state, local_revision, EXISTS(SELECT 1 FROM sync_conflict WHERE item_uid=$uid AND conflict_id>$before) FROM {row.Table} WHERE {row.Table}_id=$id";
+                cmd.Parameters.AddWithValue("$id", row.Id);
+                cmd.Parameters.AddWithValue("$uid", row.Uid);
+                cmd.Parameters.AddWithValue("$before", _conflictBefore);
+                using var reader = cmd.ExecuteReader();
+                if (!reader.Read()) continue;
+                var state = reader.GetString(0);
+                var reason = reader.GetBoolean(2) ? "conflict" : reader.GetInt64(1) != row.Revision ? "newer_revision"
+                    : PendingChanges.Reason(state, signedIn);
+                if (reason is null && state == "synced") { item["sync"] = "synced"; item.Remove("reason"); }
+                else { item["sync"] = "pending"; item["reason"] = reason ?? (sent ? "retry_pending" : "sync_deferred"); }
+            }
+            return result;
+        }
+    }
+
+    private static IEnumerable<JsonObject> ReceiptItems(JsonObject receipt)
+    {
+        foreach (var field in new[] { "event", "todo", "events", "todos" })
+            if (receipt[field] is JsonObject item) yield return item;
+            else if (receipt[field] is JsonArray items)
+                foreach (var value in items.OfType<JsonObject>()) yield return value;
     }
 
     public void AddReceipt(JsonObject body)
@@ -28,7 +101,7 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
         body["saved_locally"] = true;
         body["app_running"] = _appRunning;
         if (_appRunning == false) body["app_reason"] = "app_not_running";
-        body["last_verified_sync"] = new JsonObject { ["calendar"] = _lastCalendarSync?.UtcDateTime, ["tasks"] = null };
+        body["last_verified_sync"] = _lastSync;
     }
 
 
@@ -49,6 +122,7 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
 
     public JsonObject Event(EventRecord value, string? occurrenceId = null)
     {
+        if (isWrite) _writes[occurrenceId ?? value.EventUid] = ("event", value.EventId, value.LocalRevision, value.EventUid);
         var parent = value;
         var eventUid = value.EventUid;
         if (occurrenceId is not null)
@@ -70,11 +144,15 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
         return AddSync(output, value.PushState);
     }
     public JsonObject Occurrence(EventOccurrence value) => Event(value.Event, value.OccurrenceId);
-    public JsonObject Todo(TodoRecord value) => AddSync(Object(new
+    public JsonObject Todo(TodoRecord value)
     {
-        TodoId = value.TodoUid, value.Title, value.Memo, value.DueDate, value.IsDone, value.CompletedAt,
-        value.CreatedBy, IsDeleted = value.DeletedAt is not null
-    }), value.PushState);
+        if (isWrite) _writes[value.TodoUid] = ("todo", value.TodoId, value.LocalRevision, value.TodoUid);
+        return AddSync(Object(new
+        {
+            TodoId = value.TodoUid, value.Title, value.Memo, value.DueDate, value.IsDone, value.CompletedAt,
+            value.CreatedBy, IsDeleted = value.DeletedAt is not null
+        }), value.PushState);
+    }
 
     // SyncEngine records each row's push outcome in push_state; report it as is (§7.3).
     // Anything not yet on Google is "pending"; reason says why, when there is something to fix.

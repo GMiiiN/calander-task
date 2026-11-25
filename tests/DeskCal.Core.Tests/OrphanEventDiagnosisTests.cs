@@ -122,6 +122,39 @@ public sealed class OrphanEventDiagnosisTests
         Assert.True(JsonNode.DeepEquals(item["end"], updated["end"]));
     }
 
+    [Fact]
+    public async Task SenderHandoffPatchesOriginalGoogleEventAfterLostResponse()
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeCalendar { LoseInsertResponse = true };
+        var tasks = new TaskSyncTests.FakeTasks();
+        var coordinator = new SyncCoordinator(db.Database, new(db.Database, "unused"), _ => { });
+        var ev = db.Events.Create([new("이전", "2026-11-10")]).Single();
+        db.Todos.Create([new("독립 전송")]);
+        async Task<bool> Run() { await coordinator.SyncDataAsync(remote, tasks, default); return true; }
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var owner = SyncCoordinator.WithSenderAsync(db.Database, async () =>
+        {
+            entered.SetResult();
+            await resume.Task;
+            return await Run();
+        }, default);
+        await entered.Task;
+        try { Assert.False(await SyncCoordinator.WithSenderAsync(new Database(db.Path), Run, default)); }
+        finally { resume.SetResult(); await owner; }
+        Assert.Null(EventSync.LastSyncedAt(db.Database));
+        Assert.Equal(1, db.Scalar("SELECT count(*) FROM sync_state WHERE sync_key='tasks_default' AND last_synced_at IS NOT NULL"));
+        Assert.Single(tasks.Items);
+        db.Events.Update(ev.EventUid, new() { Title = "변경" });
+        remote.LoseInsertResponse = false;
+        Assert.True(await SyncCoordinator.WithSenderAsync(db.Database, Run, default));
+        Assert.True(await SyncCoordinator.WithSenderAsync(db.Database, Run, default));
+        var actual = Assert.Single(remote.Items);
+        Assert.Equal(ev.GoogleEventId, actual.Key);
+        Assert.Equal("변경", actual.Value.Summary);
+    }
+
     private static EventPatch SwitchTimeType(bool originallyAllDay) => originallyAllDay
         ? new() { StartTime = "11:00", EndTime = "12:00" }
         : new() { StartTime = new(true, null), EndTime = new(true, null) };

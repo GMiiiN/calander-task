@@ -124,7 +124,7 @@ internal static class ToolCatalog
         {
             cancellationToken.ThrowIfCancellationRequested();
             var arguments = JsonSerializer.SerializeToElement(request.Params?.Arguments ?? new Dictionary<string, JsonElement>());
-            return ValueTask.FromResult(service.Invoke(definition.Name, arguments));
+            return new ValueTask<CallToolResult>(service.InvokeAsync(definition.Name, arguments, cancellationToken));
         }
     }
 }

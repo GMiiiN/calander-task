@@ -9,12 +9,12 @@ using ModelContextProtocol.Protocol;
 
 namespace DeskCal.Mcp;
 
-public sealed class CalendarTools(Database database)
+public sealed class CalendarTools(Database database, Func<CancellationToken, Task<bool>>? send = null)
 {
     private readonly EventRepository _events = new(database);
     private readonly TodoRepository _todos = new(database);
 
-    internal CallToolResult Invoke(string name, JsonElement arguments)
+    internal async Task<CallToolResult> InvokeAsync(string name, JsonElement arguments, CancellationToken cancellationToken)
     {
         using var operation = new Activity(name).Start();
         var today = DateOnly.FromDateTime(DateTime.Now);
@@ -53,6 +53,8 @@ public sealed class CalendarTools(Database database)
             {
                 ChangeSignal.Notify();
                 output.AddReceipt(body);
+                if (send is not null && output.ShouldSend && name != "rename_category")
+                    body = await output.SendAndVerifyAsync(body, send, cancellationToken);
             }
         }
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or InvalidOperationException or FormatException or JsonException or SqliteException)

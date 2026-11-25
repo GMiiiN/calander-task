@@ -32,7 +32,7 @@ public sealed class McpToolTests : IAsyncLifetime
     private Task<McpClient> StartServer(string path) => McpClient.CreateAsync(new StdioClientTransport(new()
     {
         Command = "dotnet", Arguments = [typeof(CalendarTools).Assembly.Location],
-        EnvironmentVariables = new Dictionary<string, string?> { ["DESKCAL_DB"] = path }
+        EnvironmentVariables = new Dictionary<string, string?> { ["DESKCAL_DB"] = path, ["DESKCAL_CLIENT_SECRET"] = Path.Combine(_directory, "offline-secret.json") }
     }), cancellationToken: _timeout.Token);
 
     public async Task DisposeAsync()
@@ -185,7 +185,7 @@ public sealed class McpToolTests : IAsyncLifetime
         cmd.ExecuteNonQuery();
         var update = new { todo_id = uid, title = "변경" };
         var waiting = await Call("update_todo", update);
-        Assert.Equal("app_not_running", waiting.GetProperty("todo").GetProperty("reason").GetString());
+        Assert.Equal("sync_deferred", waiting.GetProperty("todo").GetProperty("reason").GetString());
         using (AppPresence.Register(_database))
         {
             var on = await Call("update_todo", update);
@@ -203,6 +203,33 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Equal("app_not_running", unknown.GetProperty("app_reason").GetString());
         await Call("create_todos", new { todos = new[] { new { title = "셋째" }, new { title = " " } } }, error: true);
         Assert.Equal(2, Todos.List().Count);
+    }
+
+    [Fact]
+    public async Task ClosedAppWriteReportsOnlyVerifiedRowsAndPreservesReceiptOnTimeout()
+    {
+        using var connection = _database.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+        cmd.ExecuteNonQuery();
+        var tools = new CalendarTools(_database, _ =>
+        {
+            cmd.CommandText = "UPDATE todo SET push_state='synced',is_dirty=0 WHERE title='확인됨';";
+            cmd.ExecuteNonQuery();
+            return Task.FromResult(true);
+        });
+        var args = JsonSerializer.SerializeToElement(new { todos = new[] { new { title = "확인됨" }, new { title = "대기" } } });
+        var response = (await tools.InvokeAsync("create_todos", args, default)).StructuredContent!.Value;
+        Assert.True(response.GetProperty("saved_locally").GetBoolean());
+        Assert.Equal("synced", response.GetProperty("todos")[0].GetProperty("sync").GetString());
+        Assert.Equal("pending", response.GetProperty("todos")[1].GetProperty("sync").GetString());
+
+        tools = new CalendarTools(_database, async ct => { await Task.Delay(Timeout.Infinite, ct); return true; });
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        response = (await tools.InvokeAsync("create_todos", args, deadline.Token)).StructuredContent!.Value;
+        Assert.True(response.GetProperty("saved_locally").GetBoolean());
+        Assert.Equal("sync_timeout", response.GetProperty("todos")[0].GetProperty("reason").GetString());
+        Assert.Equal(4, Todos.List().Count);
     }
 
     [Fact]

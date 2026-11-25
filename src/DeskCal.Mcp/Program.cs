@@ -30,6 +30,34 @@ Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
 var database = new Database(path, Console.Error.WriteLine);
 Console.Error.WriteLine($"MCP {database.DiagnosticIdentity}");
 database.Initialize();
-var tools = new CalendarTools(database);
+var secret = Environment.GetEnvironmentVariable("DESKCAL_CLIENT_SECRET") ??
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskCal", "client_secret.json");
+var coordinator = new SyncCoordinator(database, new GoogleAccount(database, secret), Console.Error.WriteLine);
+var tools = new CalendarTools(database, ct => coordinator.RunAsync(false, ct));
 builder.Services.AddMcpServer().WithStdioServerTransport().WithTools(ToolCatalog.Create(tools));
-await builder.Build().RunAsync();
+using var host = builder.Build();
+var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+lifetime.ApplicationStarted.Register(() => _ = ResumeAsync());
+await host.RunAsync();
+
+async Task ResumeAsync()
+{
+    try
+    {
+        // 마지막 쓰기 때 앱이 켜져 있었어도 전송 전에 종료될 수 있다. 살아 있는 MCP가 다음 차례에 인계한다.
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(2));
+        do
+        {
+            try
+            {
+                if (!AppPresence.IsRunning(database) && PendingChanges.HasToken(database) && PendingChanges.HasUnsent(database))
+                    await coordinator.RunAsync(false, lifetime.ApplicationStopping);
+            }
+            catch (Exception ex) when (!lifetime.ApplicationStopping.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"동기화 재개 실패 ({ex.GetType().Name})");
+            }
+        } while (await timer.WaitForNextTickAsync(lifetime.ApplicationStopping));
+    }
+    catch (OperationCanceledException) when (lifetime.ApplicationStopping.IsCancellationRequested) { }
+}

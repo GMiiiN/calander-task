@@ -13,6 +13,14 @@ public static class PendingChanges
         _ => null
     };
 
+    public static bool HasUnsent(Database database)
+    {
+        using var connection = database.OpenConnection();
+        using var cmd = Sql.Command(connection, null,
+            "SELECT EXISTS(SELECT 1 FROM event WHERE is_dirty=1) OR EXISTS(SELECT 1 FROM todo WHERE is_dirty=1)");
+        return (long)cmd.ExecuteScalar()! != 0;
+    }
+
     public static bool HasToken(Database database)
     {
         using var connection = database.OpenConnection();

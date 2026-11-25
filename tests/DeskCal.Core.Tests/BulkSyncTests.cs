@@ -6,6 +6,28 @@ namespace DeskCal.Core.Tests;
 public class BulkSyncTests(ITestOutputHelper output)
 {
     [Fact]
+    public async Task CrashedSenderReleasesDatabaseLease()
+    {
+        using var db = new TestDatabase();
+        var start = new System.Diagnostics.ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-Command");
+        start.ArgumentList.Add("$f=[IO.File]::Open($env:DESKCAL_TEST_LOCK,'OpenOrCreate','ReadWrite','None'); [Console]::WriteLine('ready'); Start-Sleep 60");
+        start.Environment["DESKCAL_TEST_LOCK"] = db.Path + ".sync-lock";
+        using var child = System.Diagnostics.Process.Start(start)!;
+        try
+        {
+            Assert.Equal("ready", await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.False(await SyncCoordinator.WithSenderAsync(db.Database, () => Task.FromResult(true), default));
+        }
+        finally { if (!child.HasExited) child.Kill(); await child.WaitForExitAsync(); }
+        // Windows가 종료된 다른 프로세스의 파일 핸들을 실제로 해제할 때까지 기다린다.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!await SyncCoordinator.WithSenderAsync(db.Database, () => Task.FromResult(true), deadline.Token))
+            await Task.Delay(25, deadline.Token);
+    }
+
+    [Fact]
     public async Task InterruptedPullKeepsPreviousTokenAndRetries()
     {
         using var db = new TestDatabase();

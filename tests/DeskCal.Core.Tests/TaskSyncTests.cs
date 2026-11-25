@@ -308,7 +308,7 @@ public sealed class TaskSyncTests
         Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", item.Completed);
     }
 
-    private sealed class FakeTasks : ITasksRemote
+    internal sealed class FakeTasks : ITasksRemote
     {
         private int _next;
         public List<GoogleTask> Items { get; } = [];
