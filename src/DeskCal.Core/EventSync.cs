@@ -216,7 +216,27 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 }
                 else if (snapshot.Etag is null)
                 {
-                    await InsertRemoteAsync(snapshot, cancellationToken);
+                    if (snapshot.Base is null && value.CreatedBy != "google" && value.GoogleEventId == value.EventUid)
+                        await InsertRemoteAsync(snapshot, cancellationToken);
+                    else
+                    {
+                        remoteId = value.GoogleEventId!;
+                        Event current;
+                        try { current = await remote.GetAsync(remoteId, cancellationToken); }
+                        catch (GoogleApiException error) when (error.HttpStatusCode == HttpStatusCode.NotFound
+                            && value.CreatedBy != "google" && remoteId == value.EventUid)
+                        {
+                            // 전송 전에 지운 로컬 일정을 복원한 경우에는 아직 Google 행이 없다.
+                            await InsertRemoteAsync(snapshot, cancellationToken);
+                            continue;
+                        }
+                        if (current.Status == "cancelled")
+                        {
+                            var restored = await remote.PatchAsync(remoteId, ToRemote(value, isInstance: false), current.ETag, cancellationToken);
+                            Apply(snapshot, restored.Id, restored.ETag, restored);
+                        }
+                        else await ResolveConflictAsync(snapshot, remoteId, cancellationToken, current);
+                    }
                 }
                 else
                 {
@@ -336,8 +356,11 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
                 DeletedAt = null, Checklist = Checklist.ReadProperties(current.ExtendedProperties?.Private__)
             };
             AcceptRemote(snapshot, kept, current, "local");
+            return;
         }
-        else if (snapshot.Record.ParentEventId is null)
+        using (var connection = database.OpenConnection())
+            if (CurrentRevision(connection, null, snapshot.Record.EventId) != snapshot.Record.LocalRevision) return;
+        if (snapshot.Record.ParentEventId is null)
         {
             await DeleteRemoteAsync(current.Id, current.ETag, cancellationToken);
             Apply(snapshot, current.Id, null);
@@ -771,7 +794,7 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         return result;
     }
 
-    private static long CurrentRevision(SqliteConnection connection, SqliteTransaction transaction, long eventId)
+    private static long CurrentRevision(SqliteConnection connection, SqliteTransaction? transaction, long eventId)
     {
         using var command = Sql.Command(connection, transaction, "SELECT local_revision FROM event WHERE event_id=$id;", ("$id", eventId));
         return (long)command.ExecuteScalar()!;

@@ -114,6 +114,14 @@ public sealed class EventRepository
         using var transaction = connection.BeginTransaction(deferred: false);
         var value = Get(connection, transaction, uid);
         if (value.ParentEventId is not null) throw new ArgumentException("Use occurrence ID for occurrence changes.");
+        if (!deleted && value.DeletedAt is not null && !value.IsDirty)
+        {
+            // 이미 받은 삭제는 ETag가 없어도 새 일정과 구별한다. 예전 DB는 취소의 기준값이 NULL이다.
+            using var known = Sql.Command(connection, transaction, """
+                UPDATE event SET sync_base='{"status":"cancelled"}' WHERE event_id=$id AND sync_base IS NULL
+                """, ("$id", value.EventId));
+            known.ExecuteNonQuery();
+        }
         value = Save(connection, transaction, value with { DeletedAt = deleted ? value.DeletedAt ?? Validation.Timestamp(_clock) : null });
         transaction.Commit();
         return value;

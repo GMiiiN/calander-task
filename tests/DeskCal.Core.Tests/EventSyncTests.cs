@@ -397,6 +397,45 @@ public sealed class EventSyncTests
         Assert.Single(Checklist.Visible(events.Get(created.EventUid).Checklist));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RestoringAnImportedEventUsesItsLinkedGoogleId(bool duringDeleteLookup)
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeCalendar();
+        const string id = "google-native";
+        remote.Put(new Event { Id = id, Summary = "회의", Status = "confirmed",
+            Start = new() { Date = "2026-11-15" }, End = new() { Date = "2026-11-16" } });
+        await Sync(db, remote);
+        var uid = db.Events.GetRecords().Single().EventUid;
+        db.Events.Delete(uid);
+        void Restore()
+        {
+            remote.BeforeGet = null;
+            db.Events.Restore(uid);
+            db.Events.Update(uid, new() { Memo = "최신 메모" });
+        }
+        if (duringDeleteLookup)
+        {
+            remote.Edit(id, _ => { });
+            remote.BeforeGet = Restore;
+        }
+        await Sync(db, remote);
+        Assert.Single(remote.DeleteAttempts);
+        if (!duringDeleteLookup)
+        {
+            Assert.Equal("cancelled", remote.Items[id].Status);
+            db.Execute("UPDATE event SET google_etag=NULL, sync_base=NULL");
+            Restore();
+        }
+        await Sync(db, remote);
+        await Sync(db, remote);
+        Assert.Empty(remote.InsertAttempts);
+        Assert.Equal(("confirmed", "최신 메모"), (remote.Items[id].Status, remote.Items[id].Description));
+        Assert.False(db.Events.Get(uid).IsDirty);
+    }
+
     internal sealed class FakeCalendar : ICalendarRemote
     {
         private int _version;
@@ -410,6 +449,7 @@ public sealed class EventSyncTests
         public bool ExpireTokens { get; set; }
         public bool LoseInsertResponse { get; set; }
         public Action? BeforeListReturns { get; set; }
+        public Action? BeforeGet { get; set; }
         public Action? BeforePatch { get; set; }
         public List<string?> ListTokens { get; } = [];
         // Google은 만들 때 created를 붙인다. 시험마다 같은 값이 나오도록 만든 순서로 1초씩 늘린다.
@@ -457,6 +497,7 @@ public sealed class EventSyncTests
 
         public Task<Event> GetAsync(string eventId, CancellationToken cancellationToken)
         {
+            BeforeGet?.Invoke();
             GetAttempts.Add(eventId);
             if (FailGet.Contains(eventId)) throw new HttpRequestException("조회 실패");
             return Task.FromResult(Items.TryGetValue(eventId, out var value) ? Copy(value) : Instance(eventId));
