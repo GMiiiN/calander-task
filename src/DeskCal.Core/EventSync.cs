@@ -314,7 +314,8 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
         if (current.Record.LocalRevision == snapshot.Record.LocalRevision)
         {
             Sql.Update(connection, transaction, "event", merged.EventId,
-                Values(merged with { IsDirty = false, PushState = "synced", UpdatedAt = now }, response.ETag, EventFields.Of(response).ToJsonString()));
+                Values(merged with { GoogleEventId = response.Id, IsDirty = false, PushState = "synced", UpdatedAt = now },
+                    response.ETag, EventFields.Of(response).ToJsonString()));
             using var reset = Sql.Command(connection, transaction, "UPDATE event SET attempt_count=0, last_error=NULL WHERE event_id=$id;", ("$id", merged.EventId));
             reset.ExecuteNonQuery();
         }
@@ -325,7 +326,8 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
             var adopted = (JsonObject)latest.DeepClone();
             foreach (var field in result.FromTheirs.Where(f => EventFields.Same(f, latest[f], before[f])))
                 adopted[field] = result.Values[field]?.DeepClone();
-            Sql.Update(connection, transaction, "event", current.Record.EventId, Values(EventFields.Apply(current.Record, adopted, _time), current.Etag, current.Base));
+            var pending = EventFields.Apply(current.Record, adopted, _time) with { GoogleEventId = response.Id };
+            Sql.Update(connection, transaction, "event", pending.EventId, Values(pending, current.Etag, current.Base));
         }
         if (result.Conflicts.Count > 0) InsertConflict(connection, transaction, snapshot.Record, FieldMerge.Detail(result.Conflicts), now);
         transaction.Commit();
