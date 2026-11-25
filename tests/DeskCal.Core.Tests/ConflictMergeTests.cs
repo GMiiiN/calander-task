@@ -416,6 +416,37 @@ public sealed class ConflictMergeTests
         Assert.Equal("local", Assert.Single(ConflictLog.Unseen(a.Database)).Deleted);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LegacyChecklistMergeLinksTheResponseBeforePull(bool editDuringMerge)
+    {
+        using var db = new TestDatabase();
+        var remote = new EventSyncTests.FakeCalendar();
+        var day = new DateOnly(2026, 11, 15);
+        db.Events.Create([new EventInput("시리즈", "2026-11-08") { Repeat = new RecurrenceInput("weekly", Weekdays: [DayOfWeek.Sunday]) }]);
+        await Sync(db, remote);
+        var occurrence = db.Events.List(day, day).Single().OccurrenceId!;
+        db.Events.AddChecklistItems(occurrence, true, ["처음"]);
+        await Sync(db, remote);
+        var id = remote.Items.Keys.Single(key => key.Contains('_'));
+        db.Execute("UPDATE event SET google_event_id=NULL, sync_base=NULL WHERE parent_event_id IS NOT NULL");
+        db.Events.AddChecklistItems(occurrence, true, ["전송할 항목"]);
+        remote.Edit(id, e => e.Description = "원격 메모");
+        var patches = 0;
+        remote.BeforePatch = () =>
+        {
+            if (++patches == 2 && editDuringMerge) db.Events.AddChecklistItems(occurrence, true, ["전송 중 편집"]);
+        };
+        remote.BeforeListReturns = () =>
+        {
+            var saved = db.Events.GetRecords().Single(e => e.ParentEventId is not null);
+            Assert.Equal(id, saved.GoogleEventId);
+            Assert.Equal(editDuringMerge, saved.IsDirty);
+        };
+        await Sync(db, remote);
+    }
+
     private static Task Sync(TestDatabase db, EventSyncTests.FakeCalendar remote) =>
         new EventSync(db.Database, remote, TestDatabase.Seoul, db.Clock).SyncAsync(CancellationToken.None);
 

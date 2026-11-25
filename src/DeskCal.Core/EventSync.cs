@@ -353,16 +353,17 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
     private async Task ResolveWithoutBaseAsync(Stored snapshot, Event current, CancellationToken cancellationToken)
     {
         var value = snapshot.Record;
-        if (value.Checklist.Count == 0 || value.DeletedAt is not null || value.Status == "cancelled")
+        if (value.Checklist.Count == 0)
         {
-            Discard(snapshot);
+            Discard(snapshot, responseId: current.Id);
             return;
         }
         var merged = Checklist.Merge(value.Checklist, Checklist.ReadProperties(current.ExtendedProperties?.Private__));
         var properties = new Dictionary<string, string>();
         Checklist.WriteProperties(merged, properties);
-        await remote.PatchAsync(current.Id, new Event { ExtendedProperties = new Event.ExtendedPropertiesData { Private__ = properties } }, current.ETag, cancellationToken);
-        Discard(snapshot, merged);
+        var response = await remote.PatchAsync(current.Id, new Event { ExtendedProperties = new Event.ExtendedPropertiesData { Private__ = properties } },
+            current.ETag, cancellationToken);
+        Discard(snapshot, merged, responseId: response.Id);
     }
 
     // GET으로 확인한 원격 상태와 버려진 로컬 원본을 함께 저장한다. 응답을 기다리던 중 편집된 행은 다음 차례에 다시 판단한다.
@@ -481,15 +482,25 @@ public sealed class EventSync(Database database, ICalendarRemote remote, TimeZon
     }
 
     // deleted: local(이 PC 삭제가 Google 수정에 밀림) | remote(이 PC 변경이 Google 삭제에 밀림). 둘 다 아니면 예전 원격 우선(기준값 없음).
-    private void Discard(Stored snapshot, IReadOnlyList<ChecklistItem>? merged = null, string? deleted = null)
+    private void Discard(Stored snapshot, IReadOnlyList<ChecklistItem>? merged = null, string? deleted = null, string? responseId = null)
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction(deferred: false);
         // 보내는 사이에 또 고쳤으면 그 최신 내용을 남긴다(버리는 것은 지금 행이다).
         var isCurrent = CurrentRevision(connection, transaction, snapshot.Record.EventId) == snapshot.Record.LocalRevision;
         var discarded = isCurrent ? snapshot.Record : ReadStored(connection, transaction, "WHERE event_id=$id", ("$id", snapshot.Record.EventId)).Single().Record;
-        // 체크리스트를 또 고쳤으면 dirty로 남겨 다음 동기화에서 합친다. 여기서 풀면 이어지는 pull이 그 변경을 덮는다.
-        if (!isCurrent && discarded.Checklist.Count > 0) return;
+        if (responseId is not null && discarded.GoogleEventId != responseId)
+        {
+            using var link = Sql.Command(connection, transaction, "UPDATE event SET google_event_id=$id WHERE event_id=$event;",
+                ("$id", responseId), ("$event", discarded.EventId));
+            link.ExecuteNonQuery();
+        }
+        // 체크리스트를 또 고쳤으면 ID 연결만 확정하고 dirty로 남겨 다음 동기화에서 합친다.
+        if (!isCurrent && discarded.Checklist.Count > 0)
+        {
+            transaction.Commit();
+            return;
+        }
         if (merged is not null)
         {
             using var save = Sql.Command(connection, transaction, "UPDATE event SET checklist=$checklist WHERE event_id=$event;",
