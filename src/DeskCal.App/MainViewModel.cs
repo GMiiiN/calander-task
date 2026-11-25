@@ -84,7 +84,10 @@ public sealed class MainViewModel : ObservableObject
         TodayCommand = new RelayCommand(_ => { _anchor = _today; SaveView(); Refresh(); });
         ShowMonthCommand = new RelayCommand(_ => { IsMonthView = true; SaveView(); Refresh(); });
         ShowWeekCommand = new RelayCommand(_ => { IsMonthView = false; SaveView(); Refresh(); });
-        ToggleDoneCommand = new RelayCommand(p => ToggleDone((SidebarItemViewModel)p!));
+        ToggleDoneCommand = new RelayCommand(p =>
+        {
+            if (p is SidebarItemViewModel item) SetDone(item.EventId, item.OccurrenceId, item.TodoId, !item.IsDone);
+        });
         ToggleChecklistCommand = new RelayCommand(p => ToggleChecklist((SidebarItemViewModel)p!));
         ToggleChecklistItemCommand = new RelayCommand(p => ToggleChecklistItem((ChecklistItemViewModel)p!));
         AddTodoCommand = new RelayCommand(_ => AddTodo());
@@ -216,12 +219,18 @@ public sealed class MainViewModel : ObservableObject
         _ => group.Date!.Value.ToString("M월 d일 ddd", Korean)
     };
 
-    private void ToggleDone(SidebarItemViewModel item)
+    internal void SetDone(string? eventId, string? occurrenceId, string? todoId, bool done)
     {
-        var done = !item.IsDone;
-        if (item.TodoId is not null) _todos.Update(item.TodoId, new TodoPatch { IsDone = new(true, done) });
-        else if (item.OccurrenceId is not null) _events.SetOccurrenceDone(item.OccurrenceId, done);
-        else _events.Update(item.EventId!, new EventPatch { IsDone = new(true, done) });
+        try
+        {
+            if (todoId is not null) _todos.Update(todoId, new TodoPatch { IsDone = done });
+            else if (occurrenceId is not null) _events.SetOccurrenceDone(occurrenceId, done);
+            else if (eventId is not null) _events.Update(eventId, new EventPatch { IsDone = done });
+        }
+        catch (Exception error) when (error is KeyNotFoundException or InvalidOperationException)
+        {
+            // 메뉴를 연 사이 다른 곳에서 삭제한 항목은 새 목록에서 빠진다.
+        }
         Refresh();
     }
 

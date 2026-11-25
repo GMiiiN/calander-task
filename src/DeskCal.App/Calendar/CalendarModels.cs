@@ -14,6 +14,7 @@ public sealed record ChipModel(
     public string? DetailText { get; init; }
     // 위 줄의 막대 높이를 맞추려고 비워 두는 자리.
     public bool IsPlaceholder { get; init; }
+    public string DoneMenuText => (OccurrenceId is null ? "" : "이 회차 ") + (IsDone ? "완료 취소" : "완료");
 
     public static readonly ChipModel Placeholder =
         new("", null, "#00000000", false, false, false, null, null, null, "user") { IsPlaceholder = true };

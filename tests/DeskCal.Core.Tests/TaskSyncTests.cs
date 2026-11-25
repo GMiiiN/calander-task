@@ -8,6 +8,28 @@ namespace DeskCal.Core.Tests;
 public sealed class TaskSyncTests
 {
     [Fact]
+    public async Task CompletingAndReopeningPushesBothStatusesToTheSameGoogleTask()
+    {
+        using var db = new TestDatabase();
+        var todo = db.Todos.Create([new TodoInput("제출", "2026-11-15")])[0];
+        var remote = new FakeTasks();
+        var sync = new TaskSync(db.Database, remote);
+        await sync.SyncAsync(CancellationToken.None);
+        var id = Assert.Single(remote.Items).Id;
+
+        foreach (var done in new[] { true, false })
+        {
+            db.Todos.Update(todo.TodoUid, new TodoPatch { IsDone = done });
+            await sync.SyncAsync(CancellationToken.None);
+            var item = Assert.Single(remote.Items);
+            Assert.Equal(id, item.Id);
+            Assert.Equal(done ? "completed" : "needsAction", item.Status);
+            Assert.Equal(done, item.Completed is not null);
+            Assert.False(db.Todos.Get(todo.TodoUid).IsDirty);
+        }
+    }
+
+    [Fact]
     public async Task PushesNewTodoOnceAndPullDoesNotDuplicateIt()
     {
         using var db = new TestDatabase();

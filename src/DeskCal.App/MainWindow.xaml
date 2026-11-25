@@ -20,9 +20,12 @@
             </ToolTip.ContentTemplate>
         </ToolTip>
 
+        <ContextMenu x:Key="ChipMenu" x:Shared="False" />
+
         <!-- 날짜 칸·종일 줄 일정 칩 (Figma Event chip) -->
         <DataTemplate x:Key="ChipTemplate" DataType="{x:Type cal:ChipModel}">
             <Border x:Name="Chip" Height="20" CornerRadius="{Binding Converter={StaticResource BarShape}}" Padding="4,0" Margin="0,4,0,0"
+                    ContextMenu="{StaticResource ChipMenu}" ContextMenuOpening="OnChipMenuOpening"
                     Background="{Binding ColorHex, Converter={StaticResource HexBrush}, ConverterParameter=0.14}"
                     ToolTip="{Binding PeriodText}">
                 <DockPanel>
@@ -60,6 +63,7 @@
         <!-- +N 목록 항목(feedback 3-7). 칸 칩과 달리 제목을 줄바꿈해 전부 보여 주고, 아래 줄에 시간·기간을 쓴다. -->
         <DataTemplate x:Key="OverflowItemTemplate" DataType="{x:Type cal:ChipModel}">
             <Border x:Name="Item" CornerRadius="6" Padding="8,6,8,7" Margin="0,6,0,0"
+                    ContextMenu="{StaticResource ChipMenu}" ContextMenuOpening="OnChipMenuOpening"
                     Background="{Binding ColorHex, Converter={StaticResource HexBrush}, ConverterParameter=0.14}">
                 <DockPanel>
                     <Border x:Name="Bar" Width="3" CornerRadius="1.5" Margin="0,1,8,1" DockPanel.Dock="Left"
@@ -150,6 +154,7 @@
              잘린 내용은 1초 머무르면 툴팁으로 전부 보인다. -->
         <DataTemplate x:Key="WeekBlockTemplate" DataType="{x:Type cal:WeekBlockModel}">
             <Border x:Name="Block" CornerRadius="4" ClipToBounds="True" ToolTipService.InitialShowDelay="1000"
+                    ContextMenu="{StaticResource ChipMenu}" ContextMenuOpening="OnChipMenuOpening"
                     Background="{Binding Chip.ColorHex, Converter={StaticResource HexBrush}, ConverterParameter=0.18}">
                 <Border.ToolTip>
                     <ToolTip>

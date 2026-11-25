@@ -381,6 +381,57 @@ public partial class MainWindow : Window
         : eventId is not null ? EditorModel.FromEvent(_events.Get(eventId), null)
         : null;
 
+    private void OnChipMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        var target = (FrameworkElement)sender;
+        var chip = target.DataContext is WeekBlockModel block ? block.Chip : target.DataContext as ChipModel;
+        if (chip is null || chip.IsPlaceholder)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var menu = target.ContextMenu;
+        var done = new MenuItem { Header = chip.DoneMenuText, StaysOpenOnClick = true };
+        var edit = new MenuItem { Header = "편집…", StaysOpenOnClick = true };
+        menu.Items.Clear();
+        menu.Items.Add(done);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(edit);
+
+        var editRequested = false;
+        done.Click += (_, _) =>
+        {
+            menu.IsOpen = false;
+            _viewModel.SetDone(chip.EventId, chip.OccurrenceId, chip.TodoId, !chip.IsDone);
+        };
+        edit.Click += (_, _) =>
+        {
+            editRequested = true;
+            menu.IsOpen = false;
+        };
+        // 메뉴가 마우스 캡처를 가져가기 전에 +N 목록의 바깥 클릭 닫기를 잠시 끈다.
+        var popup = _overflow is { } list && ContainerOf(list.Items, target) is not null ? list.Popup : null;
+        if (popup is not null) popup.StaysOpen = true;
+        BeginDialogEditing();
+        menu.Closed += OnClosed;
+
+        void OnClosed(object? sender, RoutedEventArgs args)
+        {
+            menu.Closed -= OnClosed;
+            if (popup?.IsOpen == true)
+            {
+                if (editRequested) popup.IsOpen = false;
+                else popup.StaysOpen = false;
+            }
+            EndEditing();
+
+            // 닫힘 애니메이션까지 끝난 뒤 더블클릭과 같은 경로로 편집을 시작한다.
+            if (editRequested && Open(chip.EventId, chip.OccurrenceId, chip.TodoId) is { } editor)
+                Dispatcher.BeginInvoke(() => ShowEditor(editor));
+        }
+    }
+
     // 편집 창이 떠 있는 동안은 Z순서 고정을 멈춘다(§3.3 Editing). 저장·삭제했으면 바로 다시 그린다.
     private void ShowEditor(EditorModel editor)
     {
