@@ -442,6 +442,8 @@ Core 검증 계약 (로컬 생성·수정 시):
 - 권한·API: `drive.appdata`는 처음 연결(M4)부터 요청해 왔으므로 기존 사용자에게 새 동의가 필요 없다. 동의 화면에서 이 권한만 뺐으면 공유하지 않고 이 PC 변경을 남긴 채 상태줄·상태 상세에 알리고, 트레이에서 같은 계정으로 다시 연결해 더할 수 있다. Drive API가 꺼진 Cloud 프로젝트도 같은 방식으로 알린다.
 - 두 PC는 같은 OAuth 클라이언트(같은 Cloud 프로젝트의 `client_secret.json`)를 써야 같은 `appDataFolder`를 본다.
 
+v0.19.5부터 MCP가 별칭이나 하루 순서 전송을 확인할 때 요청값과 채택값도 비교한다. 다른 기기의 값이 이겼으면 `sync=pending`, `reason=conflict`와 함께 채택된 `category.name` 또는 `events`를 반환한다. 요청 원본은 `requested_name` 또는 `requested_event_ids`에서 확인한다.
+
 #### 5.5.1 하루 안 일정 순서 (S8, v0.17.0)
 - 키 `day_order:<YYYY-MM-DD>`, 값은 그날 단일 일정의 **원격 키** 배열이다. 원격 키는 두 PC에서 같은 일정을 가리킨다.
   - 단일 일정: Google 일정 ID. 이 PC에서 만든 일정은 올리기 전에 미리 정한 ID(= `event_uid`)라 올리기 전에도 같다.

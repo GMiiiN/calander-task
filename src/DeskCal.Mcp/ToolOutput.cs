@@ -98,55 +98,86 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
             if (reason is null && state == "synced") { item["sync"] = "synced"; item.Remove("reason"); }
             else { item["sync"] = "pending"; item["reason"] = reason ?? waiting; }
         }
-        // 공유 설정(S6 카테고리 별칭, S8 하루 순서): Drive 앱 전용 공간에 올렸는지 다시 읽는다.
-        if (result["category"] is JsonObject category && (string?)category["color_id"] is { } colorId)
-            VerifyShared(category, SharedSettings.CategoryPrefix + colorId, signedIn, waiting);
-        if (_orderDate is { } day) VerifyShared(result, OrderKey(day), signedIn, waiting);
+        if (_renamed is not null) result["category"] = CategoryReceipt(_renamed, signedIn, waiting);
+        if (_reordered is { } order) VerifyOrder(result, order.Day, order.Items, signedIn, waiting);
         return result;
     }
 
-    private void VerifyShared(JsonObject item, string key, bool signedIn, string waiting)
+    private CategoryRecord? _renamed;
+    public JsonObject CategoryOutput(CategoryRecord value)
     {
-        if (SharedState(database, key) == "synced")
-        {
-            item["sync"] = "synced";
-            item.Remove("reason");
-            return;
-        }
-        item["sync"] = "pending";
-        item["reason"] = PendingChanges.Reason("pending", signedIn) ?? SharedSettingsSync.UnavailableReason(database) ?? waiting;
+        _renamed = value;
+        return CategoryReceipt(value, _signedIn, null);
     }
 
-    // 카테고리 별칭. 이 PC에서 바꾸고 아직 다른 기기용으로 올리지 않았으면 pending이다.
-    public JsonObject CategoryOutput(CategoryRecord value) =>
-        AddSync(Object(new { value.ColorId, value.Name, value.ColorHex }), SharedState(database, SharedSettings.CategoryPrefix + value.ColorId));
+    private JsonObject CategoryReceipt(CategoryRecord requested, bool signedIn, string? waiting)
+    {
+        var state = SharedState(SharedSettings.CategoryPrefix + requested.ColorId, requested.ColorId);
+        var actual = state.Name ?? requested.Name;
+        var item = Object(new { requested.ColorId, Name = actual, requested.ColorHex });
+        if (actual != requested.Name) item["requested_name"] = requested.Name;
+        SetSharedSync(item, state, actual != requested.Name, signedIn, waiting);
+        return item;
+    }
 
-    // reorder_events 결과. 그날 순서는 공유 항목 하나라 sync도 위에 한 번만 둔다. 일정 자체는 바뀌지 않았다.
-    private DateOnly? _orderDate;
+    private (DateOnly Day, IReadOnlyList<EventOccurrence> Items)? _reordered;
     public JsonObject OrderOutput(DateOnly date, IReadOnlyList<EventOccurrence> ordered)
     {
-        _orderDate = date;
-        var result = new JsonObject
-        {
-            ["date"] = date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
-            ["events"] = new JsonArray(ordered.Select(o => (JsonNode)Object(new
-            {
-                EventId = o.OccurrenceId is { } id ? OccurrenceId.Parse(id).EventUid : o.Event.EventUid, o.OccurrenceId, o.Event.Title,
-                o.Event.StartTime, o.Event.IsDone
-            })).ToArray())
-        };
-        return AddSync(result, SharedState(database, OrderKey(date)));
+        _reordered = (date, ordered);
+        var result = new JsonObject { ["date"] = date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) };
+        VerifyOrder(result, date, ordered, _signedIn, null);
+        return result;
     }
 
-    private static string OrderKey(DateOnly date) => DayEventOrder.Prefix + date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+    private void VerifyOrder(JsonObject item, DateOnly date, IReadOnlyList<EventOccurrence> requested, bool signedIn, string? waiting)
+    {
+        var state = SharedState(DayEventOrder.Prefix + (string?)item["date"]);
+        var keys = JsonSerializer.SerializeToNode(requested.Select(DayEventOrder.RemoteKey));
+        var differs = !JsonNode.DeepEquals(keys, state.Value);
+        IEnumerable<EventOccurrence> actual = requested;
+        if (differs)
+        {
+            item["requested_event_ids"] = JsonSerializer.SerializeToNode(requested.Select(DayEventOrder.Key));
+            actual = DayEventOrder.Read(database, date, date).Sort(date, events.List(date, date).Where(o => !DayEventOrder.IsPeriod(o)));
+        }
+        else item.Remove("requested_event_ids");
+        item["events"] = new JsonArray(actual.Select(o => (JsonNode)Object(new
+        {
+            EventId = o.OccurrenceId is { } id ? OccurrenceId.Parse(id).EventUid : o.Event.EventUid, o.OccurrenceId, o.Event.Title,
+            o.Event.StartTime, o.Event.IsDone
+        })).ToArray());
+        SetSharedSync(item, state, differs, signedIn, waiting);
+    }
 
-    private static string SharedState(Database database, string key)
+    private sealed record SharedReceiptState(bool Dirty, JsonNode? Value, string? Name, bool Conflict);
+
+    private SharedReceiptState SharedState(string key, string? colorId = null)
     {
         using var connection = database.OpenConnection();
         using var cmd = connection.CreateCommand();
-        cmd.CommandText = "SELECT is_dirty FROM shared_entry WHERE entry_key=$key";
+        cmd.CommandText = """
+            SELECT s.is_dirty, s.value_json, c.name,
+                   EXISTS(SELECT 1 FROM sync_conflict WHERE item_kind='settings' AND item_uid=$key AND conflict_id>$before)
+            FROM (SELECT 1) LEFT JOIN shared_entry s ON s.entry_key=$key LEFT JOIN category c ON c.color_id=$color
+            """;
         cmd.Parameters.AddWithValue("$key", key);
-        return cmd.ExecuteScalar() is long dirty && dirty != 0 ? "pending" : "synced";
+        cmd.Parameters.AddWithValue("$color", (object?)colorId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$before", _conflictBefore);
+        using var reader = cmd.ExecuteReader();
+        reader.Read();
+        return new(!reader.IsDBNull(0) && reader.GetBoolean(0), reader.IsDBNull(1) ? null : JsonNode.Parse(reader.GetString(1)),
+            reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetBoolean(3));
+    }
+
+    private void SetSharedSync(JsonObject item, SharedReceiptState state, bool differs, bool signedIn, string? waiting)
+    {
+        item["sync"] = state.Dirty || differs ? "pending" : "synced";
+        string? reason = null;
+        if (differs) reason = state.Conflict ? "conflict" : "newer_revision";
+        else if (state.Dirty) reason = PendingChanges.Reason("pending", signedIn, waiting is null ? _appRunning : null)
+            ?? SharedSettingsSync.UnavailableReason(database) ?? waiting;
+        if (reason is null) item.Remove("reason");
+        else item["reason"] = reason;
     }
 
     private static IEnumerable<JsonObject> ReceiptItems(JsonObject receipt)

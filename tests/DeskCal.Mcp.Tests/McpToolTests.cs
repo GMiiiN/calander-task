@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using DeskCal.Core;
 using DeskCal.Mcp;
 using ModelContextProtocol.Client;
@@ -69,6 +70,66 @@ public sealed class McpToolTests : IAsyncLifetime
             Assert.DoesNotContain(" at DeskCal", text);
         }
         return body;
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public async Task SharedWriteReceiptReportsTheAdoptedValue(bool rename, bool different)
+    {
+        using var connection = _database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+        command.ExecuteNonQuery();
+        const string day = "2026-11-26";
+        var ids = Events.Create([new("A", day), new("B", day)]).Select(e => e.EventUid).ToArray();
+        var requested = ids.Reverse().ToArray();
+        var adopted = different ? ids : requested;
+        var name = different ? "원격 별칭" : "요청 별칭";
+        var key = rename ? "category_name:1" : "day_order:" + day;
+        var drive = new ReceiptDrive(key, rename ? JsonSerializer.SerializeToNode(name)! : JsonSerializer.SerializeToNode(adopted)!);
+        var tools = new CalendarTools(_database, async () =>
+        {
+            await new SharedSettingsSync(_database, drive).SyncAsync(default);
+            return SyncOutcome.Completed;
+        });
+        var result = rename
+            ? await tools.InvokeAsync("rename_category", JsonSerializer.SerializeToElement(new { color_id = "1", name = "요청 별칭" }), default)
+            : await tools.InvokeAsync("reorder_events", JsonSerializer.SerializeToElement(new { date = day, event_ids = requested }), default);
+        Assert.False(result.IsError == true);
+        var receipt = rename ? result.StructuredContent!.Value.GetProperty("category") : result.StructuredContent!.Value;
+        Assert.Equal(different ? "pending" : "synced", receipt.GetProperty("sync").GetString());
+        Assert.Equal(different, receipt.TryGetProperty("reason", out var reason));
+        if (different) Assert.Equal("conflict", reason.GetString());
+        if (rename)
+        {
+            Assert.Equal(name, receipt.GetProperty("name").GetString());
+            if (different) Assert.Equal("요청 별칭", receipt.GetProperty("requested_name").GetString());
+        }
+        else
+        {
+            Assert.Equal(adopted, receipt.GetProperty("events").EnumerateArray().Select(e => Id(e)));
+            if (different) Assert.Equal(requested, receipt.GetProperty("requested_event_ids").EnumerateArray().Select(e => e.GetString()));
+        }
+    }
+
+    private sealed class ReceiptDrive(string key, JsonNode value) : IAppDataStore
+    {
+        public Task<IReadOnlyList<AppDataFile>> ListAsync(CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<AppDataFile>>([new("remote", "deskcal-shared-other.json", null, null, "1")]);
+
+        public Task<string?> ReadAsync(string id, CancellationToken token)
+        {
+            var entries = new JsonObject { [key] = new JsonObject { ["rev"] = 1, ["by"] = "other", ["value"] = value.DeepClone() } };
+            return Task.FromResult<string?>(new JsonObject { ["entries"] = entries }.ToJsonString());
+        }
+
+        public Task<AppDataFile> CreateAsync(string name, string content, CancellationToken token) =>
+            Task.FromResult(new AppDataFile("mine", name, null, null, "1"));
+        public Task<AppDataFile> UpdateAsync(string id, string content, CancellationToken token) => throw new NotSupportedException();
+        public Task DeleteAsync(string id, CancellationToken token) => throw new NotSupportedException();
     }
 
     private static void AssertSnakeCase(JsonElement value)
