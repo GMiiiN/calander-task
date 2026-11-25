@@ -29,7 +29,9 @@ internal static class ToolCatalog
         var eventPatch = EventFields(true);
         eventPatch["event_id"] = String();
         eventPatch["occurrence_id"] = String();
-        yield return Define("update_event", "Update an event. Omitted fields are unchanged; null clears nullable fields; end_time null resets the end to one hour after start. For occurrence_id only is_done is allowed. Supply exactly one ID." + SERIES_GUIDANCE,
+        yield return Define("update_event", "Update an event. Omitted fields are unchanged; null clears nullable fields; end_time null resets the end to one hour after start. For occurrence_id only is_done is allowed. Supply exactly one ID."
+            + """ To move an event, reuse its event_id and shift both dates by the same number of days. To move Nov 9–10 to Nov 12–13, send {"event_id":"<event_id>","start_date":"2026-11-12","end_date":"2026-11-13"}. The end date is inclusive."""
+            + SERIES_GUIDANCE,
             WithIds(Object(eventPatch)), idempotent: true);
         yield return Define("delete_event", "Soft-delete an event series or a single occurrence. Supply exactly one ID." + DELETE_GUIDANCE + SERIES_GUIDANCE, Ids(), destructive: true);
         yield return Define("restore_event", "Restore a series (keeping individually cancelled occurrences) or restore only one occurrence. Supply exactly one ID.", Ids());

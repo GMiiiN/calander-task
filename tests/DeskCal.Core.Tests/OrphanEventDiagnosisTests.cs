@@ -43,17 +43,19 @@ public sealed class OrphanEventDiagnosisTests
         Assert.Equal("2026-11-10T11:00:00+09:00", (string?)moved["start"]!["dateTime"]);
         Assert.Equal("8", (string?)(await Edit(new() { ColorId = "8" }))["colorId"]);
         var cleared = await Edit(new() { ColorId = new(true, null) });
-        Assert.False(cleared.ContainsKey("colorId"));
-        Assert.Equal("8", (string?)Assert.Single(http.Items.Values)["colorId"]);
+        Assert.True(cleared.ContainsKey("colorId"));
+        Assert.Null(cleared["colorId"]);
+        Assert.False(Assert.Single(http.Items.Values).ContainsKey("colorId"));
         Assert.Null(db.Events.Get(local.EventUid).ColorId);
-        Assert.Empty(http.InsertIds);
         Assert.Single(db.Events.GetRecords());
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task SwitchingTimeTypeLeavesOldEventAfter400AndSeparateCreateAddsASecondId(bool originallyAllDay)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task SwitchingTimeTypeSyncsTheOriginalIdInOnePatch(bool originallyAllDay, bool previouslyFailed)
     {
         using var db = new TestDatabase();
         var http = new CalendarHandler(allDay: originallyAllDay);
@@ -62,75 +64,62 @@ public sealed class OrphanEventDiagnosisTests
         await sync.SyncAsync(CancellationToken.None);
         var original = Assert.Single(db.Events.GetRecords());
         db.Events.Update(original.EventUid, SwitchTimeType(originallyAllDay));
-        db.Clock.Now = db.Clock.Now.AddMinutes(2);
-        await sync.SyncAsync(CancellationToken.None);
-
-        var patch = Assert.Single(http.Patches);
-        var obsoleteField = originallyAllDay ? "date" : "dateTime";
-        var desiredField = originallyAllDay ? "dateTime" : "date";
-        foreach (var field in new[] { "start", "end" })
+        if (previouslyFailed)
         {
-            Assert.True(patch[field]!.AsObject().ContainsKey(desiredField));
-            Assert.False(patch[field]!.AsObject().ContainsKey(obsoleteField));
-            Assert.NotNull(Assert.Single(http.Items.Values)[field]![obsoleteField]);
+            // 구버전이 400을 받고 종료한 DB 상태에서, 사용자 재편집 없이 다시 시작한다.
+            db.Execute("UPDATE event SET push_state='failed', last_error='Invalid start time.', attempt_count=3 WHERE event_id=$id;",
+                ("$id", original.EventId));
+            Assert.True(db.Events.Get(original.EventUid).IsDirty);
+            Assert.Equal("failed", db.Events.Get(original.EventUid).PushState);
+            sync = new EventSync(new Database(db.Path), new GoogleCalendarRemote(service), TestDatabase.Seoul, db.Clock);
         }
-        Assert.Empty(http.InsertIds);
-        var local = db.Events.Get(original.EventUid);
-        Assert.True(local.IsDirty);
-        Assert.Equal("failed", local.PushState);
-        Assert.Equal(1, db.Scalar("SELECT count(*) FROM event WHERE last_error LIKE '%Invalid start time%' AND attempt_count=1;"));
-        Assert.Equal(db.Clock.Now, EventSync.LastSyncedAt(db.Database));
 
-        // 같은 수정만 재시도하면 옛 원격 하나가 남는다. 별도 생성 호출을 하는 경우를 이어서 비교한다.
         await sync.SyncAsync(CancellationToken.None);
-        Assert.Equal(2, db.Scalar("SELECT attempt_count FROM event;"));
-        Assert.Empty(http.InsertIds);
-        var replacement = db.Events.Create([new(local.Title, local.StartDate)
+        var patch = Assert.Single(http.Patches);
+        var (id, item) = Assert.Single(http.Items);
+        Assert.Equal(original.GoogleEventId, id);
+        Assert.Equal("confirmed", (string?)item["status"]);
+        var expectedStart = originallyAllDay ? "2026-11-09T11:00:00+09:00" : "2026-11-09";
+        var expectedEnd = originallyAllDay ? "2026-11-09T12:00:00+09:00" : "2026-11-10";
+        foreach (var (field, expected) in new[] { ("start", expectedStart), ("end", expectedEnd) })
         {
-            EndDate = local.EndDate, StartTime = local.StartTime, EndTime = local.EndTime
-        }]).Single();
-        await sync.SyncAsync(CancellationToken.None);
-        Assert.Equal([replacement.EventUid], http.InsertIds);
-        Assert.NotEqual(original.GoogleEventId, replacement.GoogleEventId);
-        Assert.Equal(2, http.Items.Count);
-        Assert.NotNull(http.Items[original.GoogleEventId!]["start"]![obsoleteField]);
-        Assert.NotNull(http.Items[replacement.GoogleEventId!]["start"]![desiredField]);
-        Assert.DoesNotContain(http.Patches, p => (string?)p["status"] == "cancelled");
-        Assert.All(http.Items.Values, item => Assert.Equal("confirmed", (string?)item["status"]));
+            var time = patch[field]!.AsObject();
+            var desired = originallyAllDay ? "dateTime" : "date";
+            var obsolete = originallyAllDay ? "date" : "dateTime";
+            Assert.Equal(expected, (string?)time[desired]);
+            Assert.True(time.ContainsKey(obsolete));
+            Assert.Null(time[obsolete]);
+            Assert.True(time.ContainsKey("timeZone"));
+            Assert.Equal(originallyAllDay ? "Asia/Seoul" : null, (string?)time["timeZone"]);
+            Assert.Equal(expected, (string?)item[field]![desired]);
+            Assert.False(item[field]!.AsObject().ContainsKey(obsolete));
+        }
+        var local = Assert.Single(db.Events.GetRecords());
+        Assert.Equal(original.EventUid, local.EventUid);
+        Assert.Equal(id, local.GoogleEventId);
+        Assert.False(local.IsDirty);
+        Assert.Equal("synced", local.PushState);
+        Assert.Equal(1, db.Scalar("SELECT count(*) FROM event WHERE last_error IS NULL AND attempt_count=0;"));
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ExplicitNullForTheOldTimeFieldsConvertsTheSameId(bool originallyAllDay)
+    [Fact]
+    public async Task ChecklistOnlyPatchLeavesRemoteTimeAndColorIntact()
     {
-        using var db = new TestDatabase();
-        var http = new CalendarHandler(originallyAllDay);
+        var http = new CalendarHandler(allDay: false);
+        var (id, item) = Assert.Single(http.Items);
+        item["colorId"] = "8";
         using var service = OfflineService(http);
-        var sync = new EventSync(db.Database, new GoogleCalendarRemote(service), TestDatabase.Seoul);
-        await sync.SyncAsync(CancellationToken.None);
-        var original = Assert.Single(db.Events.GetRecords());
-        db.Events.Update(original.EventUid, SwitchTimeType(originallyAllDay));
-        await sync.SyncAsync(CancellationToken.None);
-        var body = Assert.Single(http.Patches).DeepClone().AsObject();
-        var obsolete = originallyAllDay ? "date" : "dateTime";
-        body["start"]![obsolete] = null;
-        body["end"]![obsolete] = null;
+        var properties = new Dictionary<string, string>();
+        Checklist.WriteProperties(Checklist.Add([], ["예약 확인"]), properties);
+        var changes = new Event { ExtendedProperties = new() { Private__ = properties } };
+        await new GoogleCalendarRemote(service).PatchAsync(id, changes, (string?)item["etag"], CancellationToken.None);
 
-        // 같은 실패 본문에서 두 키만 명시적으로 지워 같은 ID와 etag로 대조한다.
-        var request = service.Events.Patch(new Event(), "primary", original.GoogleEventId);
-        request.ModifyRequest = message =>
-        {
-            message.Headers.TryAddWithoutValidation("If-Match", (string?)http.Items[original.GoogleEventId!]["etag"]);
-            message.Content?.Dispose();
-            message.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-        };
-        var converted = await request.ExecuteAsync();
-        Assert.Equal(original.GoogleEventId, converted.Id);
-        Assert.Equal(originallyAllDay, converted.Start.DateTimeRaw is not null);
-        Assert.Equal(!originallyAllDay, converted.Start.Date is not null);
-        Assert.Single(http.Items);
-        Assert.Empty(http.InsertIds);
+        var patch = Assert.Single(http.Patches);
+        Assert.Equal("extendedProperties", Assert.Single(patch).Key);
+        var updated = http.Items[id];
+        Assert.Equal("8", (string?)updated["colorId"]);
+        Assert.True(JsonNode.DeepEquals(item["start"], updated["start"]));
+        Assert.True(JsonNode.DeepEquals(item["end"], updated["end"]));
     }
 
     private static EventPatch SwitchTimeType(bool originallyAllDay) => originallyAllDay
@@ -367,7 +356,6 @@ public sealed class OrphanEventDiagnosisTests
         private readonly HashSet<string> _changed = [RemoteId];
         private int _version;
         public Dictionary<string, JsonObject> Items { get; } = [];
-        public List<string> InsertIds { get; } = [];
         public List<JsonObject> Patches { get; } = [];
 
         public CalendarHandler(bool allDay)
@@ -393,31 +381,18 @@ public sealed class OrphanEventDiagnosisTests
                 _changed.Clear();
                 return Reply(HttpStatusCode.OK, new JsonObject { ["items"] = items, ["nextSyncToken"] = "cursor" });
             }
-            Assert.True(request.Method == HttpMethod.Patch || request.Method == HttpMethod.Post, request.Method.ToString());
+            // 편집은 기존 리소스에만 PATCH한다. POST와 DELETE를 포함한 다른 쓰기는 테스트 실패다.
+            Assert.Equal(HttpMethod.Patch, request.Method);
+            Assert.Equal(Collection + "/" + RemoteId, uri.AbsolutePath);
+            Assert.Equal((string?)Items[RemoteId]["etag"], Assert.Single(request.Headers.IfMatch).ToString());
             var content = request.Content!;
             using var stream = await content.ReadAsStreamAsync(token);
             using var gzip = content.Headers.ContentEncoding.Contains("gzip")
                 ? new GZipStream(stream, CompressionMode.Decompress, leaveOpen: true) : null;
             var patch = (await JsonNode.ParseAsync(gzip ?? stream, cancellationToken: token))!.AsObject();
-            string id;
-            JsonObject result;
-            if (request.Method == HttpMethod.Post)
-            {
-                Assert.Equal(Collection, uri.AbsolutePath);
-                id = (string)patch["id"]!;
-                Assert.False(Items.ContainsKey(id));
-                InsertIds.Add(id);
-                result = patch;
-            }
-            else
-            {
-                Assert.Equal(Collection + "/" + RemoteId, uri.AbsolutePath);
-                id = RemoteId;
-                Assert.Equal((string?)Items[id]["etag"], Assert.Single(request.Headers.IfMatch).ToString());
-                Patches.Add(patch);
-                result = Items[id].DeepClone().AsObject();
-                Merge(result, patch);
-            }
+            Patches.Add(patch);
+            var result = Items[RemoteId].DeepClone().AsObject();
+            Merge(result, patch);
             foreach (var field in new[] { "start", "end" })
             {
                 var time = result[field]!;
@@ -428,8 +403,8 @@ public sealed class OrphanEventDiagnosisTests
                     });
             }
             result["etag"] = $"\"e{++_version}\"";
-            Items[id] = result;
-            _changed.Add(id);
+            Items[RemoteId] = result;
+            _changed.Add(RemoteId);
             return Reply(HttpStatusCode.OK, result);
         }
 
