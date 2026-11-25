@@ -26,7 +26,11 @@ public sealed record DayCellModel(
     public bool IsHoliday => HolidayName is not null;
 }
 
-public sealed record MonthModel(int Year, int Month, IReadOnlyList<IReadOnlyList<DayCellModel>> Weeks);
+public sealed record MonthModel(int Year, int Month, IReadOnlyList<IReadOnlyList<DayCellModel>> Weeks)
+{
+    // 열린 +N 목록이 다시 그린 달력에서 같은 날짜의 칸을 찾는다. 앞뒤 달의 흐린 칸도 포함한다.
+    public DayCellModel? CellOn(DateOnly date) => Weeks.SelectMany(week => week).FirstOrDefault(cell => cell.Date == date);
+}
 
 public sealed record WeekBlockModel(ChipModel Chip, int StartMinute, int EndMinute, int Column, int ColumnCount)
 {
