@@ -438,17 +438,36 @@ public sealed class EventSyncTests
             return Task.FromResult(Items.TryGetValue(eventId, out var value) ? Copy(value) : Instance(eventId));
         }
 
+        // 고치지 않은 회차는 시리즈 값을 물려받는다(제목·메모·색·DeskCal 값). 시각은 회차 키에 시리즈 길이를 더한다.
         private Event Instance(string eventId)
         {
             var split = eventId.LastIndexOf('_');
-            if (split < 0 || !Items.ContainsKey(eventId[..split]) || MissingInstances.Contains(eventId)) throw NotFound();
+            if (split < 0 || !Items.TryGetValue(eventId[..split], out var series) || MissingInstances.Contains(eventId)) throw NotFound();
             var suffix = eventId[(split + 1)..];
+            EventDateTime start, end, original;
+            if (suffix.Length == 8)
+            {
+                var day = DateOnly.ParseExact(suffix, "yyyyMMdd", CultureInfo.InvariantCulture);
+                var days = series.Start?.Date is { } s && series.End?.Date is { } e ? DateOnly.Parse(e, CultureInfo.InvariantCulture).DayNumber - DateOnly.Parse(s, CultureInfo.InvariantCulture).DayNumber : 1;
+                original = new EventDateTime { Date = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) };
+                start = original;
+                end = new EventDateTime { Date = day.AddDays(days).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) };
+            }
+            else
+            {
+                var at = DateTime.SpecifyKind(DateTime.ParseExact(suffix, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture), DateTimeKind.Utc);
+                var length = series.Start?.DateTimeRaw is { } s && series.End?.DateTimeRaw is { } e
+                    ? DateTimeOffset.Parse(e, CultureInfo.InvariantCulture) - DateTimeOffset.Parse(s, CultureInfo.InvariantCulture) : TimeSpan.FromHours(1);
+                original = new EventDateTime { DateTimeRaw = at.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture) };
+                start = new EventDateTime { DateTimeRaw = original.DateTimeRaw, TimeZone = series.Start?.TimeZone };
+                end = new EventDateTime { DateTimeRaw = (at + length).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture), TimeZone = series.Start?.TimeZone };
+            }
             return new Event
             {
-                Id = eventId, RecurringEventId = eventId[..split],
-                OriginalStartTime = suffix.Length == 8
-                    ? new EventDateTime { Date = DateOnly.ParseExact(suffix, "yyyyMMdd", CultureInfo.InvariantCulture).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) }
-                    : new EventDateTime { DateTimeRaw = DateTime.ParseExact(suffix, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture) },
+                Id = eventId, RecurringEventId = eventId[..split], OriginalStartTime = original, Start = start, End = end, Status = "confirmed",
+                Summary = series.Summary, Description = series.Description, ColorId = series.ColorId, Transparency = series.Transparency,
+                ExtendedProperties = series.ExtendedProperties?.Private__ is { } p
+                    ? new Event.ExtendedPropertiesData { Private__ = new Dictionary<string, string>(p) } : null,
             };
         }
 
@@ -477,12 +496,19 @@ public sealed class EventSyncTests
             {
                 throw new GoogleApiException("calendar", "precondition") { HttpStatusCode = HttpStatusCode.PreconditionFailed };
             }
+            var timeBefore = TimeKey(stored);
             stored.Summary = value.Summary ?? stored.Summary;
             stored.Description = value.Description ?? stored.Description;
             stored.Status = value.Status ?? stored.Status;
             stored.Start = value.Start ?? stored.Start;
             stored.End = value.End ?? stored.End;
             stored.Recurrence = value.Recurrence ?? stored.Recurrence;
+            stored.ColorId = value.ColorId ?? stored.ColorId;
+            stored.Transparency = value.Transparency ?? stored.Transparency;
+            // Google은 예외가 있는 시리즈의 시각·반복을 바꾸면 예외를 모두 버리고, 옛 인스턴스 ID를 ID와 취소 상태만으로 보낸다(M0.5).
+            if (stored.Recurrence is { Count: > 0 } && TimeKey(stored) != timeBefore)
+                foreach (var instance in Items.Keys.Where(id => id.StartsWith(eventId + "_", StringComparison.Ordinal)).ToList())
+                    Put(new Event { Id = instance, Status = "cancelled" });
             // Google patch는 보내지 않은 키를 그대로 둔다.
             if (value.ExtendedProperties?.Private__ is { } properties)
             {
@@ -503,6 +529,19 @@ public sealed class EventSyncTests
         }
 
         private static GoogleApiException NotFound() => new("calendar", "not found") { HttpStatusCode = HttpStatusCode.NotFound };
+
+        private static string TimeKey(Event e) =>
+            $"{e.Start?.Date}{e.Start?.DateTimeRaw}|{e.End?.Date}{e.End?.DateTimeRaw}|{string.Join(';', e.Recurrence ?? [])}";
+
+        // 폰에서 시리즈 시각·반복을 바꾼 것을 흉내 낸다. 그 시리즈의 예외는 모두 취소 표시(ID와 상태만)가 된다.
+        public void ShiftSeries(string id, Action<Event> change)
+        {
+            var before = TimeKey(Items[id]);
+            Edit(id, change);
+            if (TimeKey(Items[id]) == before) return;
+            foreach (var instance in Items.Keys.Where(key => key.StartsWith(id + "_", StringComparison.Ordinal)).ToList())
+                Put(new Event { Id = instance, Status = "cancelled" });
+        }
 
         private static Event Copy(Event e) => new()
         {

@@ -13,11 +13,13 @@ public static class ConflictLog
     public sealed record Field(string Name, string Label, string Mine, string Kept, bool CanReapply);
 
     // Deleted: local(이 PC 삭제가 Google 수정에 밀려 취소됨) | remote(이 PC 변경이 Google 삭제에 밀림) | null
-    public sealed record Entry(long Id, string Kind, string Uid, string Title, string OccurredAt, IReadOnlyList<Field> Fields, string? Deleted)
+    // Orphan: 반복 일정의 시각이 바뀌어 이 회차 기록을 새 회차로 옮기지 못하고 옛 회차로 보관했다(S5).
+    public sealed record Entry(long Id, string Kind, string Uid, string Title, string OccurredAt, IReadOnlyList<Field> Fields, string? Deleted,
+        bool Orphan = false)
     {
-        public bool CanReapply => Deleted == "local" || (Deleted is null && Fields.Any(f => f.CanReapply));
+        public bool CanReapply => !Orphan && (Deleted == "local" || (Deleted is null && Fields.Any(f => f.CanReapply)));
 
-        public string Summary => Deleted switch
+        public string Summary => Orphan ? "반복 일정 시각이 바뀌어 이 회차 기록을 새 회차로 옮기지 못함(옛 회차로 보관)" : Deleted switch
         {
             "local" => "이 PC에서 지웠지만 다른 곳에서 고쳐 남겨 둠",
             "remote" => "다른 곳에서 지워 이 PC의 변경은 버림",
@@ -179,7 +181,7 @@ public static class ConflictLog
             };
             return new Field(name, Label(name), Display(field["mine"], name), Display(field["kept"], name), reapply);
         }).ToArray();
-        return new(id, kind, uid, title, at, fields, detail?["deleted"]?.GetValue<string>());
+        return new(id, kind, uid, title, at, fields, detail?["deleted"]?.GetValue<string>(), detail?["orphan"] is not null);
     }
 
     private static string Label(string field) => field switch

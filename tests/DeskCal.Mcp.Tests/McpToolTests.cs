@@ -582,8 +582,9 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Equal("", Todos.Get(todo.TodoUid).Memo);
     }
 
+    // S5: 회차에 체크리스트가 있어도 같은 날 시간만 옮기면 그 회차로 따라간다. 요일이 바뀌어 대응이 없으면 예전처럼 거부한다.
     [Fact]
-    public async Task SeriesStartTimeCanChangeUntilAnOccurrenceHasItsOwnState()
+    public async Task SeriesStartTimeChangeKeepsTheChecklistOnTheSameDay()
     {
         var created = await Call("create_events", """{"events":[{"title":"주간","start_date":"2026-11-02","start_time":"09:00","repeat":{"frequency":"weekly","weekdays":["monday"]}}]}""");
         var uid = Id(created.GetProperty("events")[0]);
@@ -591,11 +592,14 @@ public sealed class McpToolTests : IAsyncLifetime
         var date = new { start_date = "2026-11-09", end_date = "2026-11-09" };
         var id = Id((await Call("list_events", date)).GetProperty("events")[0], "occurrence_id");
         await Call("add_checklist_items", new { occurrence_id = id, items = new[] { "준비" } });
-        var result = await Call("update_event", new { event_id = uid, start_time = "12:00", end_time = "13:00" }, error: true);
+        await Call("update_event", new { event_id = uid, start_time = "12:00", end_time = "13:00" });
+        var moved = Assert.Single((await Call("list_events", date)).GetProperty("events").EnumerateArray());
+        Assert.NotEqual(id, Id(moved, "occurrence_id"));
+        Assert.Equal("12:00", moved.GetProperty("start_time").GetString());
+        Assert.Equal("준비", moved.GetProperty("checklist")[0].GetProperty("text").GetString());
+        var result = await Call("update_event", new { event_id = uid, start_date = "2026-11-03", end_date = "2026-11-03",
+            repeat = new { frequency = "weekly", weekdays = new[] { "tuesday" } } }, error: true);
         Assert.Contains("occurrence", result.GetProperty("error").GetString());
-        var same = Assert.Single((await Call("list_events", date)).GetProperty("events").EnumerateArray());
-        Assert.Equal(id, Id(same, "occurrence_id"));
-        Assert.Equal("준비", same.GetProperty("checklist")[0].GetProperty("text").GetString());
     }
 
     [Fact]

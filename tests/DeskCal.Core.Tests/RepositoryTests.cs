@@ -57,34 +57,52 @@ public sealed class RepositoryTests
         db.Execute("UPDATE event SET is_dirty=0, push_state='synced'");
         if (unlinked) db.Execute("UPDATE event SET parent_event_id=NULL WHERE google_recurring_id IS NOT NULL");
 
-        Assert.Throws<InvalidOperationException>(() => db.Events.Update(original.EventUid, new()
+        var change = new EventPatch { Title = "바꾼 제목", StartTime = allDay ? null : "11:00", EndTime = allDay ? null : "12:00" };
+        if (unlinked)
         {
-            Title = "저장되면 안 됨", StartTime = allDay ? null : "11:00", EndTime = allDay ? null : "12:00"
-        }));
-        var reopened = new EventRepository(new Database(db.Path), TestDatabase.Seoul);
-        var saved = reopened.Get(original.EventUid);
-        Assert.Equal(original.Title, saved.Title);
-        Assert.Equal(original.GoogleStartRaw, saved.GoogleStartRaw);
-        Assert.Equal(original.LocalRevision, saved.LocalRevision);
-        Assert.False(saved.IsDirty);
-        var children = reopened.GetRecords().Where(e => e.GoogleRecurringId == original.GoogleEventId).ToArray();
-        Assert.Equal(2, children.Length);
-        Assert.True(Assert.Single(children.Single(e => e.OriginalStartKey == exception.OriginalStartKey).Checklist).IsDone);
-        Assert.Single(children, e => e.Status == "cancelled");
-        Assert.Equal("제목 변경", reopened.Update(original.EventUid, new() { Title = "제목 변경" }).Title);
-        Assert.Equal("12:00", reopened.Update(original.EventUid, new() { EndTime = "12:00" }).EndTime);
+            // 시리즈에 아직 잇지 못한 예외가 있으면 대응을 확인할 수 없어 예전처럼 거부한다(D3).
+            Assert.Throws<InvalidOperationException>(() => db.Events.Update(original.EventUid, change));
+            var reopened = new EventRepository(new Database(db.Path), TestDatabase.Seoul);
+            var saved = reopened.Get(original.EventUid);
+            Assert.Equal((original.Title, original.GoogleStartRaw, original.LocalRevision, false), (saved.Title, saved.GoogleStartRaw, saved.LocalRevision, saved.IsDirty));
+            var children = reopened.GetRecords().Where(e => e.GoogleRecurringId == original.GoogleEventId).ToArray();
+            Assert.Equal(2, children.Length);
+            Assert.True(Assert.Single(children.Single(e => e.OriginalStartKey == exception.OriginalStartKey).Checklist).IsDone);
+            Assert.Single(children, e => e.Status == "cancelled");
+            Assert.Equal("제목 변경", reopened.Update(original.EventUid, new() { Title = "제목 변경" }).Title);
+            Assert.Equal("12:00", reopened.Update(original.EventUid, new() { EndTime = "12:00" }).EndTime);
+            return;
+        }
+        // S5: 같은 날 시간만 바뀌거나(11:00) 종일로 바뀌면 회차마다 같은 날 새 회차가 하나다. 바꾸게 하고 체크리스트·회차 삭제를 그날 새 회차로 옮긴다.
+        db.Events.Update(original.EventUid, change);
+        var after = new EventRepository(new Database(db.Path), TestDatabase.Seoul);
+        Assert.Equal("바꾼 제목", after.Get(original.EventUid).Title);
+        var days = after.List(new(2026, 11, 2), new(2026, 11, 4));
+        Assert.Equal(2, days.Count); // 셋째 날 회차는 계속 지워져 있다
+        var second = days.Single(o => o.Start.Date == new DateTime(2026, 11, 3));
+        Assert.Equal(allDay ? null : "11:00", second.Event.StartTime);
+        Assert.True(Assert.Single(second.Event.Checklist).IsDone);
+        var movedKeys = after.GetRecords().Where(e => e.ParentEventId is not null).Select(e => e.OriginalStartKey).ToArray();
+        Assert.DoesNotContain(exception.OriginalStartKey, movedKeys);
+        Assert.All(after.GetRecords().Where(e => e.ParentEventId is not null), e => Assert.True(e.IsDirty)); // 새 인스턴스에 다시 올린다
     }
 
+    // 첫 UTC 시작은 같아도 서머타임 뒤 회차 키가 달라진다(LA → 피닉스). S5: 그 회차도 같은 수요일의 새 회차 하나로 대응하므로 완료를 옮겨 바꾸게 한다.
     [Fact]
-    public void SeriesEditProtectsFutureDstKeysEvenWhenFirstUtcStartMatches()
+    public void SeriesEditMovesFutureDstKeysToTheSameDay()
     {
         using var db = new TestDatabase();
         var la = new EventRepository(db.Database, TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles"));
         var phoenix = new EventRepository(db.Database, TimeZoneInfo.FindSystemTimeZoneById("America/Phoenix"));
         var series = la.Create([new("DST", "2026-07-01") { StartTime = "09:00", Repeat = new("weekly", Weekdays: [DayOfWeek.Wednesday]) }])[0];
-        la.SetOccurrenceDone(la.List(new(2026, 11, 4), new(2026, 11, 4)).Single().OccurrenceId!, true);
-        Assert.Throws<InvalidOperationException>(() => phoenix.Update(series.EventUid, new() { StartTime = "09:00" }));
-        Assert.Equal("America/Los_Angeles", la.Get(series.EventUid).TimeZone);
+        var before = la.List(new(2026, 11, 4), new(2026, 11, 4)).Single();
+        la.SetOccurrenceDone(before.OccurrenceId!, true);
+        phoenix.Update(series.EventUid, new() { StartTime = "09:00" });
+        Assert.Equal("America/Phoenix", la.Get(series.EventUid).TimeZone);
+        var after = phoenix.List(new(2026, 11, 4), new(2026, 11, 4)).Single();
+        Assert.NotEqual(before.OccurrenceId, after.OccurrenceId);
+        Assert.True(after.Event.IsDone);
+        Assert.False(phoenix.List(new(2026, 11, 11), new(2026, 11, 11)).Single().Event.IsDone);
     }
 
     [Fact]
@@ -238,10 +256,13 @@ public sealed class RepositoryTests
         Assert.True(restored.IsDone);
         Assert.Equal(3, restored.LocalRevision);
         Assert.Equal(3, db.Events.List(new(2026, 10, 30), new(2026, 11, 1)).Count);
+        // 토요일(10/31) 회차가 없어지는 규칙 변경은 대응할 새 회차가 없어 거부한다(D3).
         Assert.Throws<InvalidOperationException>(() => db.Events.Update(series.EventUid, new() { Repeat = new RecurrenceInput("weekly", Weekdays: [DayOfWeek.Friday]) }));
-        Assert.Throws<InvalidOperationException>(() => db.Events.Update(series.EventUid, new() { StartDate = "2026-10-29" }));
         Assert.Throws<KeyNotFoundException>(() => db.Events.DeleteOccurrence(OccurrenceId.Create(series.EventUid, "2026-11-02")));
         Assert.Equal(2, db.Events.GetRecords().Count);
+        // S5: 시작일을 하루 당겨도 10/31 회차는 그대로 있다(같은 날 하나). 완료가 그 회차에 남는다.
+        db.Events.Update(series.EventUid, new() { StartDate = "2026-10-29", EndDate = "2026-10-29" });
+        Assert.True(db.Events.List(new(2026, 10, 31), new(2026, 10, 31)).Single().Event.IsDone);
     }
 
     [Fact]
