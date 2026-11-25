@@ -29,11 +29,7 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
             {
                 var date = start.AddDays(offset + day);
                 var items = ItemsForDay(date, occurrences, dueTodos);
-                var chips = row[day].Take(2).ToList();
-                // 고정 막대의 빈 레인 때문에 실제로 보여 줄 수 있는 두 칩이 모두 밀리는 경우만 압축한다.
-                if (chips.Count(c => !c.IsPlaceholder) < Math.Min(2, items.Count))
-                    chips = row[day].Where(c => !c.IsPlaceholder).Take(2).ToList();
-                while (chips.Count > 0 && chips[^1].IsPlaceholder) chips.RemoveAt(chips.Count - 1);
+                var chips = VisibleChips(row[day].Bars, row[day].Singles);
                 week.Add(new(date, date.Month == month && date.Year == year, date == today,
                     date.DayOfWeek, chips, items.Count - chips.Count(c => !c.IsPlaceholder), items, holidays.GetValueOrDefault(date)));
             }
@@ -52,7 +48,8 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         var days = new List<WeekDayModel>();
         // 종일 줄에는 종일 일정, 하루(24시간) 이상 이어지는 시간 일정, 할 일을 둔다. 나머지 시간 일정은 시간표에 그린다.
         // 금 18시~일 12시 같은 일정을 시간표에 그리면 가운데 날 열 전체를 덮어 다른 일정을 가린다.
-        var allDay = LayOutRow(start, occurrences.Where(IsWeekBar).ToArray(), dueTodos);
+        var allDay = LayOutRow(start, occurrences.Where(IsWeekBar).ToArray(), dueTodos)
+            .Select(d => (IReadOnlyList<ChipModel>)d.Bars.Select(c => c ?? ChipModel.Placeholder).Concat(d.Singles).ToArray()).ToArray();
         for (var offset = 0; offset < 7; offset++)
         {
             var date = start.AddDays(offset);
@@ -82,9 +79,11 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
             .ToArray();
     }
 
-    // 한 줄(월~일)의 칸별 칩. 여러 날 일정은 줄 안에서 같은 높이(lane)를 지켜 막대로 이어지고,
-    // 하루짜리 항목은 그날의 마지막 막대 아래에 둔다. 막대 사이의 빈 자리는 자리 표시로 남긴다.
-    private IReadOnlyList<ChipModel>[] LayOutRow(DateOnly rowStart, IReadOnlyList<EventOccurrence> occurrences, IReadOnlyList<TodoRecord> dueTodos)
+    // 한 줄(월~일)의 칸별 막대 레인과 하루짜리 항목. 여러 날 일정은 줄 안에서 한 레인을 지켜 막대로 이어진다.
+    // 막대는 시작일순(같은 날 시작하면 긴 것 먼저)으로 그 기간이 모두 비어 있는 가장 위 레인에 넣는다(v0.8.2와 같다).
+    // 레인 사이의 빈 자리는 null로 남기고, 하루짜리 항목은 그날의 마지막 막대 아래에 둔다.
+    private (IReadOnlyList<ChipModel?> Bars, IReadOnlyList<ChipModel> Singles)[] LayOutRow(DateOnly rowStart,
+        IReadOnlyList<EventOccurrence> occurrences, IReadOnlyList<TodoRecord> dueTodos)
     {
         var rowEnd = rowStart.AddDays(6);
         var spans = _order.Sort(rowStart, occurrences.Where(o => LastDate(o) > FirstDate(o) && FirstDate(o) <= rowEnd && LastDate(o) >= rowStart)).ToArray();
@@ -93,23 +92,38 @@ public sealed class CalendarModelBuilder(EventRepository events, TodoRepository 
         {
             var from = Math.Max(0, FirstDate(occurrence).DayNumber - rowStart.DayNumber);
             var to = Math.Min(6, LastDate(occurrence).DayNumber - rowStart.DayNumber);
-            var lane = lanes.FindLastIndex(l => l.Skip(from).Take(to - from + 1).Any(c => c is not null)) + 1;
-            if (lane == lanes.Count)
+            var lane = lanes.FindIndex(l => l.Skip(from).Take(to - from + 1).All(c => c is null));
+            if (lane < 0)
             {
+                lane = lanes.Count;
                 lanes.Add(new ChipModel?[7]);
             }
             for (var day = from; day <= to; day++) lanes[lane][day] = BarChip(occurrence, rowStart.AddDays(day), rowStart);
         }
         var singles = occurrences.Where(o => !spans.Contains(o)).ToArray();
-        var result = new IReadOnlyList<ChipModel>[7];
+        var result = new (IReadOnlyList<ChipModel?>, IReadOnlyList<ChipModel>)[7];
         for (var day = 0; day < 7; day++)
         {
-            var slots = lanes.Select(l => l[day]).ToList();
-            while (slots.Count > 0 && slots[^1] is null) slots.RemoveAt(slots.Count - 1);
-            slots.AddRange(ItemsForDay(rowStart.AddDays(day), singles, dueTodos));
-            result[day] = slots.Select(c => c ?? ChipModel.Placeholder).ToArray();
+            var bars = lanes.Select(l => l[day]).ToList();
+            while (bars.Count > 0 && bars[^1] is null) bars.RemoveAt(bars.Count - 1);
+            result[day] = (bars, ItemsForDay(rowStart.AddDays(day), singles, dueTodos));
         }
         return result;
+    }
+
+    // 월간 칸에는 두 줄만 보인다. 막대는 제 레인(옆 날과 같은 줄)을 지키고 하루짜리 항목은 막대 아래에 둔다.
+    // 막대 사이의 빈 레인 때문에 하루짜리 항목이 두 줄 밖으로 밀릴 때만 그 빈 자리로 올린다. 막대는 압축하지 않는다.
+    private const int VISIBLE_CHIPS = 2;
+
+    private static IReadOnlyList<ChipModel> VisibleChips(IReadOnlyList<ChipModel?> bars, IReadOnlyList<ChipModel> singles)
+    {
+        var visible = bars.Take(VISIBLE_CHIPS).ToList();
+        var next = 0;
+        while (visible.Count < VISIBLE_CHIPS && next < singles.Count) visible.Add(singles[next++]);
+        for (var slot = 0; slot < visible.Count && next < singles.Count; slot++)
+            if (visible[slot] is null) visible[slot] = singles[next++];
+        while (visible.Count > 0 && visible[^1] is null) visible.RemoveAt(visible.Count - 1);
+        return visible.Select(c => c ?? ChipModel.Placeholder).ToArray();
     }
 
     // 이름은 시작일에 쓴다. 줄의 첫날(월요일)에는 일정이 그 주를 넘어 계속되거나 14일 이상일 때만 다시 쓰고,

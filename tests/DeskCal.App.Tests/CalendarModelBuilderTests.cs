@@ -204,8 +204,10 @@ public sealed class CalendarModelBuilderTests : IDisposable
         Assert.Equal("", Assert.Single(Cell(model, new(2026, 11, 8)).Chips).Title);
     }
 
+    // 리뷰 B-M1: 같은 막대가 날짜마다 줄을 바꿔 계단처럼 끊겼다(v0.8.2 대비 회귀).
+    // 인접한 날의 같은 막대는 같은 줄이다. C는 비어 있는 첫 레인에 들어가고 B는 제 줄에 남는다.
     [Fact]
-    public void BarsKeepTheirLaneAndSinglesStayBelowOverlappingPeriods()
+    public void AdjacentDaysShowTheSameBarOnTheSameRow()
     {
         events.Create([
             new("A", "2026-11-02") { EndDate = "2026-11-04" },
@@ -217,13 +219,61 @@ public sealed class CalendarModelBuilderTests : IDisposable
         var model = Builder().BuildMonth(2026, 11, TODAY);
         string[] Titles(int day) => Cell(model, new(2026, 11, day)).Chips.Select(c => c.IsPlaceholder ? "_" : c.Title).ToArray();
 
+        AssertBarsKeepTheirRow(model);
         Assert.Equal(new[] { "A" }, Titles(2));
         Assert.Equal(new[] { "", "B" }, Titles(3));
-        Assert.Equal(1, Cell(model, new(2026, 11, 3)).OverflowCount); // solo는 세 번째 줄 → +1
+        Assert.Equal(1, Cell(model, new(2026, 11, 3)).OverflowCount); // solo는 막대 아래 세 번째 줄 → +1
         Assert.Equal(new[] { "", "" }, Titles(4)); // 같은 주에 끝나므로 마감 표시 없음
-        Assert.Equal(new[] { "", "C" }, Titles(5)); // B보다 늦게 시작한 C는 B 아래에 둔다
+        Assert.Equal(new[] { "C", "" }, Titles(5));
         Assert.Equal(new[] { "", "late" }, Titles(6));
         Assert.Equal(new[] { "C", "late" }, Cell(model, new(2026, 11, 6)).AllItems.Select(i => i.Title));
+    }
+
+    // 리뷰 B의 재현: 먼저 만든 짧은 여행과 한 주 과제가 같은 날 시작하고 수요일에 단일 일정이 있다.
+    // v0.8.2처럼 긴 막대가 월~금 내내 첫 줄이고, 수요일의 단일 일정은 그 아래다.
+    [Fact]
+    public void LongerBarStartingTheSameDayStaysOnTopAllWeek()
+    {
+        events.Create([new("짧은 여행", "2026-11-02") { EndDate = "2026-11-03" }]);
+        var week = events.Create([new("한 주 과제", "2026-11-02") { EndDate = "2026-11-06" }, new("수요 단일", "2026-11-04")])[0];
+        var model = Builder().BuildMonth(2026, 11, TODAY);
+
+        AssertBarsKeepTheirRow(model);
+        foreach (var day in new[] { 2, 3, 4, 5, 6 })
+            Assert.Equal(week.EventUid, Cell(model, new(2026, 11, day)).Chips[0].EventId);
+        Assert.Equal(new[] { "", "수요 단일" }, Cell(model, new(2026, 11, 4)).Chips.Select(c => c.Title));
+        Assert.Equal(new[] { "한 주 과제", "짧은 여행" }, Cell(model, new(2026, 11, 2)).AllItems.Select(c => c.Title));
+    }
+
+    // 막대 사이의 빈 레인 때문에 단일 일정이 두 줄 밖으로 밀릴 때는 그 빈 자리로만 올린다. 막대는 그대로다.
+    [Fact]
+    public void HiddenSingleFillsALaneGapWithoutMovingTheBar()
+    {
+        events.Create([new("X", "2026-11-02") { EndDate = "2026-11-03" }]);
+        var bar = events.Create([new("Y", "2026-11-03") { EndDate = "2026-11-06" }, new("단일", "2026-11-04")])[0];
+        var model = Builder().BuildMonth(2026, 11, TODAY);
+
+        AssertBarsKeepTheirRow(model);
+        foreach (var day in new[] { 3, 4, 5, 6 })
+            Assert.Equal(bar.EventUid, Cell(model, new(2026, 11, day)).Chips[1].EventId);
+        Assert.Equal("단일", Cell(model, new(2026, 11, 4)).Chips[0].Title);
+        Assert.Equal(0, Cell(model, new(2026, 11, 4)).OverflowCount);
+        Assert.True(Cell(model, new(2026, 11, 5)).Chips[0].IsPlaceholder);
+    }
+
+    // 앞날에서 이어지는 막대(JoinsLeft)는 앞날의 같은 줄에 같은 일정으로 있어야 한다.
+    private static void AssertBarsKeepTheirRow(MonthModel model)
+    {
+        foreach (var week in model.Weeks)
+            for (var day = 1; day < 7; day++)
+                for (var row = 0; row < week[day].Chips.Count; row++)
+                {
+                    var chip = week[day].Chips[row];
+                    if (chip.IsPlaceholder || !chip.JoinsLeft) continue;
+                    var before = week[day - 1].Chips.ElementAtOrDefault(row);
+                    Assert.True(before is not null && before.EventId == chip.EventId && before.OccurrenceId == chip.OccurrenceId,
+                        $"{week[day].Date}: '{chip.EventId}' row {row} differs from the previous day");
+                }
     }
 
     [Fact]

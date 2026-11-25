@@ -28,9 +28,11 @@ public sealed class DayEventOrder
         return result;
     }
 
+    // 여러 날 일정이 먼저다. 시작일순이고 같은 날 시작하면 긴 것이 먼저다(달력 막대 레인과 같은 순서). 사용자 순서는 단일 일정에만 쓴다.
     public IOrderedEnumerable<EventOccurrence> Sort(DateOnly date, IEnumerable<EventOccurrence> items) =>
         items.OrderBy(o => IsPeriod(o) ? 0 : 1)
             .ThenBy(o => IsPeriod(o) ? o.Start.Date : DateTime.MinValue)
+            .ThenByDescending(o => IsPeriod(o) ? o.End.AddTicks(-1).Date : DateTime.MinValue)
             .ThenBy(o => IsPeriod(o) ? 0 : _positions.GetValueOrDefault((date, Key(o)), int.MaxValue))
             .ThenBy(o => o.Event.CreatedAt, StringComparer.Ordinal)
             .ThenBy(Key, StringComparer.Ordinal);
