@@ -254,14 +254,13 @@ public sealed class SharedSettingsTests
 
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            if (damage == "transport") await Assert.ThrowsAsync<HttpRequestException>(() => Sync(db, drive));
-            else await Sync(db, drive);
-            Assert.Equal(duplicate ? good : damaged, drive.Files[first].Content);
+            await Sync(db, drive);
+            if (duplicate) Assert.Contains("보낼 별칭", drive.Files[first].Content);
+            else Assert.Equal(damaged, drive.Files[first].Content);
             Assert.Equal(duplicate ? damaged : good, drive.Files[second].Content);
-            Assert.Equal(0, drive.Updates);
-            Assert.True(PendingChanges.HasUnsent(db.Database));
-            var error = damage == "transport" ? nameof(HttpRequestException) : "unreadable_device_file";
-            Assert.Equal(error, SharedSettingsSync.LastError(db.Database));
+            Assert.Equal(duplicate ? 1 : 0, drive.Updates);
+            Assert.Equal(!duplicate, PendingChanges.HasUnsent(db.Database));
+            Assert.Equal(SharedSettingsSync.UnreadableDeviceFile, SharedSettingsSync.LastError(db.Database));
         }
         drive.Unreadable.Clear();
         drive.FailedRead = null;
@@ -287,9 +286,75 @@ public sealed class SharedSettingsTests
         Assert.Equal(0, drive.Updates);
         Assert.True(PendingChanges.HasUnsent(db.Database));
         drive.Unreadable.Clear();
+        db.Clock.Now = db.Clock.Now.AddMinutes(16);
         await Sync(db, drive);
         Assert.Equal(1, drive.Updates);
         Assert.False(PendingChanges.HasUnsent(db.Database));
+    }
+
+    [Theory]
+    [InlineData("category_name:1", "null")]
+    [InlineData("day_order:2026-11-26", "false")]
+    [InlineData("day_order:2026-11-26", "[null]")]
+    [InlineData("semester", """{"enabled":true,"weeks":16}""")]
+    public async Task InvalidKnownValueCannotDisplaceAValidSetting(string key, string malformed)
+    {
+        using var a = new TestDatabase();
+        using var b = new TestDatabase();
+        var drive = new FakeAppData();
+        Categories(a).Rename("1", "업무");
+        SemesterSettings.Write(a.Database, new(true, new(2026, 9, 2), 16));
+        DayEventOrder.Reorder(a.Events, new(2026, 11, 26), []);
+        await Sync(a, drive);
+        var canonical = Assert.Single(drive.Files);
+        var writer = Device(a);
+        // 구버전이 로컬에 이미 채택한 잘못된 높은 revision도 정상 정본을 읽으면 복구된다.
+        a.Execute("UPDATE shared_entry SET value_json=$value, rev=99 WHERE entry_key=$key", ("$key", key), ("$value", malformed));
+        var bad = Document(writer, (key, malformed, 99, writer));
+        var duplicate = drive.Put(canonical.Value.Name, bad);
+        await Sync(a, drive);
+        await Sync(b, drive);
+        Assert.Equal(bad, drive.Files[duplicate].Content);
+        Assert.Equal(canonical.Value.Content, drive.Files[canonical.Key].Content);
+        foreach (var db in new[] { a, b })
+        {
+            Assert.Equal("업무", Name(db, "1"));
+            Assert.True(SemesterSettings.Read(db.Database).Enabled);
+            Assert.Equal(0, db.Scalar("SELECT COUNT(*) FROM shared_entry WHERE rev=99"));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedFileWaitsWhileHealthyFilesContinueToSync(bool canonicalFails)
+    {
+        using var a = new TestDatabase();
+        using var b = new TestDatabase();
+        var drive = new FakeAppData();
+        await Sync(a, drive);
+        var canonical = Assert.Single(drive.Files);
+        var duplicate = drive.Put(canonical.Value.Name, Document(Device(a)));
+        drive.FailedRead = canonicalFails ? canonical.Key : duplicate;
+        Categories(a).Rename("1", "보낼 별칭");
+        Categories(b).Rename("2", "다른 PC 별칭");
+        await Sync(b, drive);
+        drive.ReadIds.Clear();
+        for (var n = 0; n < 6; n++)
+        {
+            await Sync(a, drive);
+            Assert.Equal("다른 PC 별칭", Name(a, "2"));
+            Assert.Equal(canonicalFails, PendingChanges.HasUnsent(a.Database));
+            Assert.True(drive.Files.ContainsKey(duplicate));
+            a.Clock.Now = a.Clock.Now.AddMinutes(2);
+        }
+        Assert.Single(drive.ReadIds, id => id == drive.FailedRead);
+        drive.FailedRead = null;
+        a.Clock.Now = a.Clock.Now.AddMinutes(5);
+        await Sync(a, drive);
+        Assert.False(drive.Files.ContainsKey(duplicate));
+        Assert.Contains("보낼 별칭", drive.Files[canonical.Key].Content);
+        Assert.Null(SharedSettingsSync.LastError(a.Database));
     }
 
     // 색 ID 계약: 별칭이 바뀌어도 일정의 color_id와 Google에 보내는 colorId는 그대로이고 일정이 다시 올라가지 않는다.
@@ -408,6 +473,7 @@ public sealed class SharedSettingsTests
         private int _next;
         private int _tick;
         public Dictionary<string, (string Name, string Content, DateTimeOffset Created, DateTimeOffset Modified)> Files { get; } = [];
+        public List<string> ReadIds { get; } = [];
         public string? FailedRead { get; set; }
         public HashSet<string> Unreadable { get; } = [];
         public HashSet<string> Hidden { get; } = [];
@@ -439,6 +505,7 @@ public sealed class SharedSettingsTests
         {
             Call();
             Reads++;
+            ReadIds.Add(fileId);
             if (fileId == FailedRead) throw new HttpRequestException("download failed");
             return Task.FromResult(!Unreadable.Contains(fileId) && Files.TryGetValue(fileId, out var file) ? file.Content : null);
         }

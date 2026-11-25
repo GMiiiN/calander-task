@@ -169,28 +169,22 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         var cache = ReadCache();
         var read = new Dictionary<string, Document?>();
         var ownName = FileName(me);
-        var holdWrites = false;
+        var canonical = own.FirstOrDefault();
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            // 지난번 이후 바뀌지 않은 파일은 이미 합쳤다(합치기는 여러 번 해도 같다).
             var isOwn = file.Name == ownName;
-            if ((!isOwn || own.Count == 1) && (file.Md5Checksum is not null || file.ModifiedTime is not null)
-                && cache.TryGetValue(file.Id, out var seen) && seen == Token(file, isOwn)) continue;
-            var text = await store.ReadAsync(file.Id, cancellationToken);
-            var document = text is null ? null : Document.Parse(text);
-            if (isOwn && (document?.CanRewrite(me, account) != true || file != own[0] && document.Extra.Count > 0))
+            if (cache.TryGetValue(file.Id, out var cached) && cached.Token == Token(file, isOwn))
             {
-                holdWrites = true;
-                continue;
+                if (cached.RetryAfter > _clock.GetUtcNow())
+                {
+                    read[file.Id] = null;
+                    continue;
+                }
+                if (cached.RetryAfter is null && (!isOwn || own.Count == 1)
+                    && (file.Md5Checksum is not null || file.ModifiedTime is not null)) continue;
             }
-            if (document is null) log?.Invoke($"settings: 읽을 수 없는 공유 설정 파일을 건너뛴다 ({file.Name})");
-            else if (document.Account is { } other && account.Length > 0 && other != account)
-            {
-                log?.Invoke($"settings: 다른 Google 계정의 공유 설정 파일을 건너뛴다 ({file.Name})");
-                document = null;
-            }
-            read[file.Id] = document;
+            read[file.Id] = await ReadDocumentAsync(file, me, account, isOwn && file != canonical, cancellationToken);
         }
 
         var now = Validation.Timestamp(_clock);
@@ -214,9 +208,9 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             transaction.Commit();
         }
 
-        if (holdWrites)
+        if (canonical is not null && read.TryGetValue(canonical.Id, out var checkedFile) && checkedFile is null)
         {
-            HoldDeviceFile();
+            RecordError(database, UnreadableDeviceFile);
             return;
         }
         await PublishAsync(me, account, own, read, cancellationToken);
@@ -227,7 +221,8 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         CancellationToken cancellationToken)
     {
         List<SharedSettings.Row> rows;
-        using (var connection = database.OpenConnection()) rows = SharedSettings.ReadAll(connection, null);
+        using (var connection = database.OpenConnection())
+            rows = SharedSettings.ReadAll(connection, null).Where(r => SharedSettings.ValidValue(r.Key, JsonNode.Parse(r.ValueJson))).ToList();
         var canonical = own.FirstOrDefault();
         var entries = new JsonObject();
         foreach (var row in rows)
@@ -249,15 +244,19 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             // 새 버전이 넣은 모르는 최상위 필드는 그대로 둔다. 이번에 읽지 않았으면 덮어쓰기 전에 한 번 읽는다.
             if (canonical is not null && !wasRead)
             {
-                var existing = await store.ReadAsync(canonical.Id, cancellationToken);
-                current = existing is null ? null : Document.Parse(existing);
-                if (current?.CanRewrite(me, account) != true || Hash(current.Raw) != remoteHash)
+                current = await ReadDocumentAsync(canonical, me, account, false, cancellationToken);
+                if (current is null)
+                {
+                    RecordError(database, UnreadableDeviceFile);
+                    return;
+                }
+                if (Hash(current.Raw) != remoteHash)
                 {
                     // 목록의 버전과 실제 다운로드가 엇갈렸다. 다음 차례에 원문을 다시 합치도록 캐시를 비운다.
                     using var connection = database.OpenConnection();
                     using var forget = Sql.Command(connection, null, "DELETE FROM sync_state WHERE sync_key=$key", ("$key", CachePrefix + canonical.Id));
                     forget.ExecuteNonQuery();
-                    HoldDeviceFile();
+                    RecordError(database, UnreadableDeviceFile);
                     return;
                 }
             }
@@ -273,15 +272,16 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
             SharedSettings.MarkPublished(connection, transaction, rows);
             if ((uploaded ?? canonical) is { } verified) WriteCache(connection, transaction, verified, own: true);
             using var save = Sql.Command(connection, transaction, """
-                INSERT INTO sync_state(sync_key, remote_id, sync_token, last_synced_at, last_error) VALUES ($key, $file, $hash, $now, NULL)
+                INSERT INTO sync_state(sync_key, remote_id, sync_token, last_synced_at, last_error) VALUES ($key, $file, $hash, $now, $error)
                 ON CONFLICT(sync_key) DO UPDATE SET remote_id=excluded.remote_id, sync_token=excluded.sync_token,
-                    last_synced_at=excluded.last_synced_at, last_error=NULL
-                """, ("$key", SyncKey), ("$file", uploaded?.Id ?? canonical?.Id), ("$hash", hash), ("$now", Validation.Timestamp(_clock)));
+                    last_synced_at=excluded.last_synced_at, last_error=excluded.last_error
+                """, ("$key", SyncKey), ("$file", uploaded?.Id ?? canonical?.Id), ("$hash", hash), ("$now", Validation.Timestamp(_clock)),
+                ("$error", own.Skip(1).Any(f => read.GetValueOrDefault(f.Id) is null) ? UnreadableDeviceFile : null));
             save.ExecuteNonQuery();
             transaction.Commit();
         }
         // 정본이 아닌 이 기기 파일은 이미 합쳤으므로 지운다. 실패하면 다음 동기화에서 다시 한다.
-        foreach (var duplicate in own.Skip(1))
+        foreach (var duplicate in own.Skip(1).Where(f => read.GetValueOrDefault(f.Id) is not null))
         {
             try { await store.DeleteAsync(duplicate.Id, cancellationToken); }
             catch (Exception error) when (error is not OperationCanceledException) { log?.Invoke($"settings: 중복 파일 정리 보류 ({error.GetType().Name})"); }
@@ -299,31 +299,54 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToJsonString())));
     }
 
-    private void HoldDeviceFile()
+    private async Task<Document?> ReadDocumentAsync(AppDataFile file, string me, string account, bool duplicate, CancellationToken token)
     {
-        RecordError(database, UnreadableDeviceFile);
-        log?.Invoke("settings: 이 기기의 공유 파일을 확인할 수 없어 업로드와 중복 파일 정리를 보류합니다.");
+        var own = file.Name == FileName(me);
+        try
+        {
+            var text = await store.ReadAsync(file.Id, token);
+            var doc = text is null ? null : Document.Parse(text);
+            if (doc is not null && (account.Length == 0 || doc.Account is null || doc.Account == account)
+                && (!own || doc.CanRewrite(me, account) && (!duplicate || doc.Extra.Count == 0))) return doc;
+        }
+        catch (Exception error) when (!token.IsCancellationRequested && (error is HttpRequestException or IOException or OperationCanceledException
+            || error is GoogleApiException api && api.HttpStatusCode != HttpStatusCode.Unauthorized && Unavailable(api) is null && !GoogleAccount.IsRevoked(api)))
+        {
+            // 개별 파일 다운로드 실패는 다른 파일의 읽기·전송을 막지 않는다.
+        }
+        using var connection = database.OpenConnection();
+        WriteCache(connection, null, file, own, _clock.GetUtcNow().AddMinutes(15));
+        log?.Invoke($"settings: 공유 파일 읽기 보류 ({file.Name}, {file.Id})");
+        return null;
     }
 
-    // 예전 버전은 읽지 못한 파일도 캐시했다. 자기 파일은 검증을 거친 토큰만 재사용한다.
-    private static string Token(AppDataFile file, bool own) => $"{(own ? "verified:" : "")}{file.Md5Checksum}|{file.ModifiedTime?.UtcDateTime:O}";
+    // 이전 버전이 값 형식까지 확인하지 않은 파일은 다시 읽는다.
+    private static string Token(AppDataFile file, bool own) => $"v2:{(own ? "own:" : "")}{file.Md5Checksum}|{file.ModifiedTime?.UtcDateTime:O}";
 
-    private Dictionary<string, string> ReadCache()
+    private sealed record CachedFile(string Token, DateTimeOffset? RetryAfter);
+
+    private Dictionary<string, CachedFile> ReadCache()
     {
         using var connection = database.OpenConnection();
-        using var command = Sql.Command(connection, null, "SELECT sync_key, sync_token FROM sync_state WHERE sync_key LIKE 'shared_file:%'");
+        using var command = Sql.Command(connection, null, "SELECT sync_key, sync_token, last_error, last_synced_at FROM sync_state WHERE sync_key LIKE 'shared_file:%'");
         using var reader = command.ExecuteReader();
-        var cache = new Dictionary<string, string>();
-        while (reader.Read()) cache[reader.GetString(0)[CachePrefix.Length..]] = reader.IsDBNull(1) ? "" : reader.GetString(1);
+        var cache = new Dictionary<string, CachedFile>();
+        while (reader.Read())
+        {
+            DateTimeOffset? retry = !reader.IsDBNull(2) && !reader.IsDBNull(3) && DateTimeOffset.TryParse(reader.GetString(3), out var until) ? until : null;
+            cache[reader.GetString(0)[CachePrefix.Length..]] = new(reader.IsDBNull(1) ? "" : reader.GetString(1), retry);
+        }
         return cache;
     }
 
-    private static void WriteCache(SqliteConnection connection, SqliteTransaction transaction, AppDataFile file, bool own = false)
+    private static void WriteCache(SqliteConnection connection, SqliteTransaction? transaction, AppDataFile file, bool own = false, DateTimeOffset? retryAfter = null)
     {
         using var command = Sql.Command(connection, transaction, """
-            INSERT INTO sync_state(sync_key, sync_token, remote_id) VALUES ($key, $token, $id)
-            ON CONFLICT(sync_key) DO UPDATE SET sync_token=excluded.sync_token, remote_id=excluded.remote_id
-            """, ("$key", CachePrefix + file.Id), ("$token", Token(file, own)), ("$id", file.Id));
+            INSERT INTO sync_state(sync_key, sync_token, remote_id, last_error, last_synced_at) VALUES ($key, $token, $id, $error, $retry)
+            ON CONFLICT(sync_key) DO UPDATE SET sync_token=excluded.sync_token, remote_id=excluded.remote_id,
+                last_error=excluded.last_error, last_synced_at=excluded.last_synced_at
+            """, ("$key", CachePrefix + file.Id), ("$token", Token(file, own)), ("$id", file.Id),
+            ("$error", retryAfter.HasValue ? "read_failed" : null), ("$retry", retryAfter?.ToString("O")));
         command.ExecuteNonQuery();
     }
 
@@ -382,7 +405,8 @@ public sealed class SharedSettingsSync(Database database, IAppDataStore store, T
                     if (node is not JsonObject item || item["rev"] is not JsonValue rev || !rev.TryGetValue<long>(out var number) || number < 1
                         || item["by"] is not JsonValue by || !by.TryGetValue<string>(out var writer) || writer.Length == 0) continue;
                     var at = item["at"] is JsonValue written && written.TryGetValue<string>(out var time) ? time : "";
-                    list.Add(new(key, item["value"]?.DeepClone(), new(number, writer), at));
+                    if (!item.TryGetPropertyValue("value", out var value) || !SharedSettings.ValidValue(key, value)) continue;
+                    list.Add(new(key, value?.DeepClone(), new(number, writer), at));
                 }
                 var extra = new JsonObject();
                 foreach (var (name, value) in root)

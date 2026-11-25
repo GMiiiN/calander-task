@@ -93,6 +93,21 @@ public static class SharedSettings
                 Edit(connection, transaction, CategoryPrefix + category.ColorId, JsonValue.Create(category.Name), now);
     }
 
+    internal static bool ValidValue(string key, JsonNode? value)
+    {
+        if (key.StartsWith(SharedSettings.CategoryPrefix, StringComparison.Ordinal)) return IsNonEmptyString(value);
+        if (key.StartsWith(DayEventOrder.Prefix, StringComparison.Ordinal))
+            return value is JsonArray order && order.All(IsNonEmptyString)
+                && order.Select(id => id!.GetValue<string>()).Distinct(StringComparer.Ordinal).Count() == order.Count;
+        if (key == SemesterSettings.SharedKey)
+            return value is JsonObject term && SemesterSettings.FromShared(term.ToJsonString()) is not null
+                && (!term.ContainsKey("enabled") || term["enabled"] is JsonValue flag && flag.TryGetValue<bool>(out _));
+        return true;
+
+        static bool IsNonEmptyString(JsonNode? node) =>
+            node is JsonValue text && text.TryGetValue<string>(out var name) && !string.IsNullOrWhiteSpace(name);
+    }
+
     /// <summary>
     /// 다른 기기들의 항목을 합친다. 키마다 가장 큰 버전이 이긴다.
     /// 이 PC에서 바꾸고 아직 올리지 않은 값은, 바꿀 때 알던 버전보다 새 값이 먼저 올라왔으면 버리고(원격 우선) 충돌 기록에 남긴다.
@@ -109,8 +124,9 @@ public static class SharedSettings
         {
             var row = Read(connection, transaction, key);
             var json = Serialize(incoming.Value);
-            if (row is null)
+            if (row is null || !ValidValue(key, JsonNode.Parse(row.ValueJson)))
             {
+                // 이전 버전이 보관한 잘못된 높은 revision은 정상 원본으로 복구한다.
                 Store(connection, transaction, incoming, json);
                 changed.Add(key);
             }
