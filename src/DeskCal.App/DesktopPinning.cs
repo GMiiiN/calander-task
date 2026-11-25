@@ -46,6 +46,7 @@ public sealed class DesktopPinning : IDisposable
     private readonly Func<IntPtr>? _underlay;
 
     public PinState State { get; private set; } = PinState.Normal;
+    public bool AllowsKeyboardNavigation => State == PinState.Editing && _window.IsActive;
     public event Action<PinState>? StateChanged;
 
     // 방식 D로 바탕화면에 붙었는지. 방식 C(Z순서 상태 머신)에서는 false.
