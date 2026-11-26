@@ -47,6 +47,8 @@ public sealed class ProtectedTokenStoreTests
             else Assert.True(await run);
 
             Assert.Equal(kept, PendingChanges.HasToken(db.Database));
+            // S4: invalid_grant가 아닌 4xx(429 제외)는 다시 연결이 필요한 인증 오류로 남긴다. 트레이가 "연결됨"으로 두지 않는다.
+            Assert.Equal(status is >= 400 and < 500 and not 429 && error != "invalid_grant" ? error : null, GoogleAccount.ReadAuthError(db.Database));
             Assert.NotEmpty(endpoint.Requests);
             Assert.All(endpoint.Requests, uri => Assert.EndsWith("/token", uri.AbsolutePath));
             if (error != "invalid_grant") Assert.Contains(log, line => line.StartsWith("events failed"));

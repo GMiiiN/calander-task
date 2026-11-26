@@ -397,6 +397,45 @@ public sealed class EventSyncTests
         Assert.Single(Checklist.Visible(events.Get(created.EventUid).Checklist));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RestoringAnImportedEventUsesItsLinkedGoogleId(bool duringDeleteLookup)
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeCalendar();
+        const string id = "google-native";
+        remote.Put(new Event { Id = id, Summary = "회의", Status = "confirmed",
+            Start = new() { Date = "2026-11-15" }, End = new() { Date = "2026-11-16" } });
+        await Sync(db, remote);
+        var uid = db.Events.GetRecords().Single().EventUid;
+        db.Events.Delete(uid);
+        void Restore()
+        {
+            remote.BeforeGet = null;
+            db.Events.Restore(uid);
+            db.Events.Update(uid, new() { Memo = "최신 메모" });
+        }
+        if (duringDeleteLookup)
+        {
+            remote.Edit(id, _ => { });
+            remote.BeforeGet = Restore;
+        }
+        await Sync(db, remote);
+        Assert.Single(remote.DeleteAttempts);
+        if (!duringDeleteLookup)
+        {
+            Assert.Equal("cancelled", remote.Items[id].Status);
+            db.Execute("UPDATE event SET google_etag=NULL, sync_base=NULL");
+            Restore();
+        }
+        await Sync(db, remote);
+        await Sync(db, remote);
+        Assert.Empty(remote.InsertAttempts);
+        Assert.Equal(("confirmed", "최신 메모"), (remote.Items[id].Status, remote.Items[id].Description));
+        Assert.False(db.Events.Get(uid).IsDirty);
+    }
+
     internal sealed class FakeCalendar : ICalendarRemote
     {
         private int _version;
@@ -410,7 +449,11 @@ public sealed class EventSyncTests
         public bool ExpireTokens { get; set; }
         public bool LoseInsertResponse { get; set; }
         public Action? BeforeListReturns { get; set; }
+        public Action? BeforeGet { get; set; }
         public Action? BeforePatch { get; set; }
+        public List<string?> ListTokens { get; } = [];
+        // Google은 만들 때 created를 붙인다. 시험마다 같은 값이 나오도록 만든 순서로 1초씩 늘린다.
+        public DateTimeOffset NextCreated { get; set; } = DateTimeOffset.Parse("2026-11-20T00:00:00Z", CultureInfo.InvariantCulture);
 
         public void Put(Event value)
         {
@@ -430,6 +473,7 @@ public sealed class EventSyncTests
 
         public Task<(IReadOnlyList<Event> Items, string? NextSyncToken)> ListAsync(string? syncToken, CancellationToken cancellationToken)
         {
+            ListTokens.Add(syncToken);
             if (syncToken is not null && ExpireTokens)
             {
                 ExpireTokens = false;
@@ -448,8 +492,16 @@ public sealed class EventSyncTests
         }
 
         // 고치지 않은 회차는 저장하지 않고, 물으면 시리즈 ID와 꼬리로 만들어 준다(Google도 회차 ID로 조회된다).
-        public Task<Event> GetAsync(string eventId, CancellationToken cancellationToken) =>
-            Task.FromResult(Items.TryGetValue(eventId, out var value) ? Copy(value) : Instance(eventId));
+        public HashSet<string> FailGet { get; } = [];
+        public List<string> GetAttempts { get; } = [];
+
+        public Task<Event> GetAsync(string eventId, CancellationToken cancellationToken)
+        {
+            BeforeGet?.Invoke();
+            GetAttempts.Add(eventId);
+            if (FailGet.Contains(eventId)) throw new HttpRequestException("조회 실패");
+            return Task.FromResult(Items.TryGetValue(eventId, out var value) ? Copy(value) : Instance(eventId));
+        }
 
         private Event Instance(string eventId)
         {
@@ -471,6 +523,8 @@ public sealed class EventSyncTests
             if (Items.ContainsKey(value.Id)) throw new GoogleApiException("calendar", "conflict") { HttpStatusCode = HttpStatusCode.Conflict };
             var stored = Copy(value);
             stored.Status ??= "confirmed";
+            stored.CreatedDateTimeOffset ??= NextCreated;
+            NextCreated = NextCreated.AddSeconds(1);
             Put(stored);
             if (LoseInsertResponse) throw new HttpRequestException("connection reset");
             return Task.FromResult(Copy(stored));
@@ -519,7 +573,7 @@ public sealed class EventSyncTests
         {
             Id = e.Id, ETag = e.ETag, Summary = e.Summary, Description = e.Description, Status = e.Status, Start = e.Start, End = e.End,
             Recurrence = e.Recurrence, RecurringEventId = e.RecurringEventId, OriginalStartTime = e.OriginalStartTime, ColorId = e.ColorId,
-            Transparency = e.Transparency, ExtendedProperties = e.ExtendedProperties, UpdatedRaw = e.UpdatedRaw,
+            Transparency = e.Transparency, ExtendedProperties = e.ExtendedProperties, UpdatedRaw = e.UpdatedRaw, CreatedRaw = e.CreatedRaw,
         };
     }
 }

@@ -520,7 +520,7 @@
                     <DockPanel SizeChanged="OnFooterSizeChanged">
                         <StackPanel x:Name="SyncStatusPanel" DockPanel.Dock="Right" HorizontalAlignment="Right" Orientation="Horizontal">
                             <Ellipse Width="5" Height="5" Fill="{DynamicResource MutedBrush}" VerticalAlignment="Center" />
-                            <Button Style="{StaticResource BareButton}" Click="OnSyncDetails" ToolTip="전송 대기 항목 보기">
+                            <Button Style="{StaticResource BareButton}" Click="OnSyncDetails" ToolTip="전송 대기·충돌 기록 보기">
                             <TextBlock x:Name="SyncStatusText" Text="Google 연결 전 · 이 PC에만 저장" Style="{StaticResource BaseText}"
                                        Foreground="{DynamicResource SubtleBrush}" Margin="5,0,12,0" VerticalAlignment="Center" />
                             </Button>

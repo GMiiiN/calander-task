@@ -1,4 +1,4 @@
-﻿using DeskCal.Core;
+using DeskCal.Core;
 using DeskCal.Mcp;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -35,7 +35,7 @@ database.Initialize();
 var coordinator = new SyncCoordinator(database, new GoogleAccount(database, GoogleAccount.ClientSecretPathFor(path)), Console.Error.WriteLine);
 // 쓰기 직후 전송은 MCP가 끝날 때만 멈춘다. 영수증의 5초 마감은 기다림에만 쓴다(ToolOutput.SendAndVerifyAsync).
 using var stopping = new CancellationTokenSource();
-var tools = new CalendarTools(database, () => coordinator.RunAsync(false, stopping.Token));
+var tools = new CalendarTools(database, () => coordinator.RunWithOutcomeAsync(false, stopping.Token));
 builder.Services.AddMcpServer().WithStdioServerTransport().WithTools(ToolCatalog.Create(tools));
 using var host = builder.Build();
 var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
@@ -53,7 +53,7 @@ async Task ResumeAsync()
         {
             try
             {
-                if (!AppPresence.IsRunning(database) && PendingChanges.HasToken(database) && PendingChanges.HasUnsent(database))
+                if (PendingChanges.ShouldResumeStandaloneSync(database))
                     await coordinator.RunAsync(false, lifetime.ApplicationStopping);
             }
             catch (Exception ex) when (!lifetime.ApplicationStopping.IsCancellationRequested)

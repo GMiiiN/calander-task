@@ -35,10 +35,16 @@ public sealed class TrayIcon : IDisposable
         {
             adjust.Checked = isAdjusting();
             startup.Checked = AutoStart.IsEnabled;
+            // 연결은 됐어도 동의 화면에서 Drive 앱 전용 공간 권한만 뺐으면 기기 사이 설정 공유(S6)가 안 된다. 같은 계정으로 다시 연결해 더한다.
+            var missingDrive = !_isSigningIn && _google.MissingDriveScope;
+            // invalid_grant가 아닌 4xx로 토큰 갱신이 계속 실패하면(OAuth 클라이언트가 바뀜 등) "연결됨"으로 두지 않고 다시 연결하게 한다(S4).
+            var authError = !_isSigningIn && _google.IsSignedIn ? _google.AuthError : null;
             connect.Text = _isSigningIn ? "Google 연결 중… (브라우저에서 로그인)"
+                : authError is not null ? $"Google 연결 오류({authError}) · 다시 연결: {_google.Email}"
+                : missingDrive ? $"Google 다시 연결(Drive 권한 추가): {_google.Email}"
                 : _google.IsSignedIn ? $"Google 연결됨: {_google.Email}"
                 : _google.NeedsReconnect ? $"Google 다시 연결: {_google.Email}" : "Google 연결";
-            connect.Enabled = !_isSigningIn && !_google.IsSignedIn;
+            connect.Enabled = !_isSigningIn && (!_google.IsSignedIn || missingDrive || authError is not null);
         };
         _icon = new NotifyIcon { Icon = DrawIcon(), Text = VersionText, ContextMenuStrip = menu, Visible = true };
     }

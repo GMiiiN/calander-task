@@ -19,8 +19,23 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
     private const string User = "user";
 
     // openid·email은 계정 결합(sub)과 트레이 표시(email)에만 쓴다.
+    // drive.appdata는 기기 사이에 맞추는 설정(카테고리 별칭 등, S6)을 앱 전용 숨김 폴더에 둘 때 쓴다. 처음 연결(M4)부터 요청해 왔다.
     public static readonly string[] Scopes =
         ["openid", "email", CalendarService.Scope.CalendarEvents, TasksService.Scope.Tasks, DriveService.Scope.DriveAppdata];
+
+    /// <summary>
+    /// 저장된 토큰이 그 권한을 받았는지. Google은 동의 화면에서 일부 권한을 빼고 승인할 수 있다.
+    /// 토큰에 받은 권한 목록이 없으면(알 수 없음) null이다. 그때는 호출해 보고 403이면 그때 안다.
+    /// </summary>
+    public async Task<bool?> HasScopeAsync(string scope)
+    {
+        var token = await new ProtectedTokenStore(database).GetAsync<TokenResponse>(User);
+        if (token?.Scope is not { Length: > 0 } granted) return null;
+        return granted.Split(' ', StringSplitOptions.RemoveEmptyEntries).Contains(scope);
+    }
+
+    // 연결은 됐지만 Drive 앱 전용 공간 권한만 빠졌다. 트레이에서 같은 계정으로 다시 연결해 권한을 더한다.
+    public bool MissingDriveScope => IsSignedIn && HasScopeAsync(DriveService.Scope.DriveAppdata).GetAwaiter().GetResult() == false;
 
     // 앱과 MCP는 같은 DB(같은 토큰)를 쓰므로 OAuth 클라이언트 파일도 DB 옆의 같은 파일을 쓴다.
     // 토큰은 발급한 클라이언트로만 갱신할 수 있어서, 한쪽만 다른 파일을 쓰면 그쪽 갱신이 4xx로 실패한다.
@@ -69,6 +84,33 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
         _ => exception.InnerException is { } inner && IsRevoked(inner)
     };
 
+    public const string AuthErrorKey = "google_auth_error";
+
+    // 토큰은 남았지만 갱신이 invalid_grant가 아닌 4xx(invalid_client·unauthorized_client 등)로 계속 실패한다(S4). 다시 연결해야 한다.
+    public string? AuthError => ReadSetting(AuthErrorKey);
+
+    public static string? ReadAuthError(Database database) => new GoogleAccount(database, "").AuthError;
+
+    // 일시 오류(429·5xx·네트워크)는 인증 문제로 보지 않는다.
+    internal static string? AuthErrorOf(Exception exception) => exception switch
+    {
+        TokenResponseException { Error.Error: not "invalid_grant" } token
+            when token.StatusCode is { } status && (int)status is >= 400 and < 500 && (int)status != 429 => token.Error.Error ?? "token_error",
+        AggregateException aggregate => aggregate.InnerExceptions.Select(AuthErrorOf).FirstOrDefault(e => e is not null),
+        _ => exception.InnerException is { } inner ? AuthErrorOf(inner) : null
+    };
+
+    internal void RecordAuthError(string? error)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = error is null ? "DELETE FROM setting WHERE setting_key=$key;"
+            : "INSERT INTO setting(setting_key, setting_value) VALUES ($key, $value) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value;";
+        command.Parameters.AddWithValue("$key", AuthErrorKey);
+        command.Parameters.AddWithValue("$value", error ?? "");
+        command.ExecuteNonQuery();
+    }
+
     // 쓸 수 없는 토큰만 지운다. 그래야 "연결됨"으로 남지 않고 트레이에서 다시 연결할 수 있다.
     // 계정 결합 정보는 남겨 같은 계정으로만 다시 연결하게 한다. 앱의 동기화(invalid_grant)만 부른다(SyncCoordinator).
     public Task ForgetTokenAsync() => new ProtectedTokenStore(database).ClearAsync();
@@ -95,6 +137,9 @@ public sealed class GoogleAccount(Database database, string clientSecretPath)
             "ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value;";
         command.Parameters.AddWithValue("$id", payload.Subject);
         command.Parameters.AddWithValue("$email", payload.Email);
+        command.ExecuteNonQuery();
+        command.CommandText = "DELETE FROM setting WHERE setting_key = $error;"; // 다시 연결했으니 지난 인증 오류는 지운다
+        command.Parameters.AddWithValue("$error", AuthErrorKey);
         command.ExecuteNonQuery();
         ProtectedTokenStore.Write(command, credential.Token);
         transaction.Commit();

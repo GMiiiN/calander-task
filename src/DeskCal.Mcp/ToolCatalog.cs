@@ -14,7 +14,7 @@ internal static class ToolCatalog
 
     public static IEnumerable<McpServerTool> Create(CalendarTools service)
     {
-        yield return Define("get_agenda", "Use get_agenda for briefings and summaries. Returns sidebar groups and D-days. Events within each date are in start-time order." + RELATIVE_DATES,
+        yield return Define("get_agenda", "Use get_agenda for briefings and summaries. Returns sidebar groups and D-days. Events within each date are in start-time order; each date group's day_order lists that date's single-day events in the order the user sees in the DeskCal app (use it with reorder_events). When the user's student mode is on and today is within the semester, semester_week gives today's week number (current) and the semester length (total), based on today rather than the requested range." + RELATIVE_DATES,
             Object(new() { ["start_date"] = Date(), ["end_date"] = Date() }), true);
         yield return Define("list_events", "List expanded events, including overlaps. Defaults to today through +30 days; at most 366 days. Pages contain at most 200 events. Pass cursor with the same filters; restart if results change." + RELATIVE_DATES,
             Object(new() { ["start_date"] = Date(), ["end_date"] = Date(), ["keyword"] = String(), ["category"] = Category(), ["include_deleted"] = Boolean(), ["cursor"] = String() }), true);
@@ -24,7 +24,7 @@ internal static class ToolCatalog
         yield return Define("list_todos", "List todos, defaulting to open items. Deleted items are excluded unless requested.",
             Object(new() { ["status"] = Enum("open", "done", "all"), ["keyword"] = String(), ["include_deleted"] = Boolean() }), true);
         yield return Define("list_categories", "List category color IDs, names and colors.", Object(new()), true);
-        yield return Define("rename_category", "Rename a DeskCal category on this device. Its color ID and existing event assignments stay the same.",
+        yield return Define("rename_category", "Rename a DeskCal category. Its color ID and existing event assignments stay the same. When Google is connected, the name is shared with the user's other DeskCal devices through DeskCal's hidden app data in Google Drive; Google Calendar's own color names do not change. The result reports sync for that sharing.",
             Object(new() { ["color_id"] = String(), ["name"] = String() }, "color_id", "name"), idempotent: true);
         yield return Define("create_events", "Create 1–50 events atomically in the local database. Dates and HH:mm times are local. A missing end_time defaults to one hour after start, including midnight rollover; multi-day timed events require end_time. Sync is reported per item." + RELATIVE_DATES,
             Object(new() { ["events"] = Batch(Object(EventFields(false), "title", "start_date")) }, "events"));
@@ -35,6 +35,9 @@ internal static class ToolCatalog
             + """ To move an event, reuse its event_id and shift both dates by the same number of days. To move Nov 9–10 to Nov 12–13, send {"event_id":"<event_id>","start_date":"2026-11-12","end_date":"2026-11-13"}. The end date is inclusive."""
             + SERIES_GUIDANCE,
             WithIds(Object(eventPatch)), idempotent: true);
+        yield return Define("reorder_events", "Reorder the single-day events within one date, as the user sees them in the DeskCal calendar and sidebar (for example, \"put my study session at the top today\"). First call get_agenda for that date: its day_order lists every reorderable ID (event_id, or occurrence_id for an occurrence of a recurring event) in the current order. Send all of them, each exactly once, in the new order. Multi-day events stay fixed above and must be left out; completed events always stay below open ones. Only the order changes: event times and Google Calendar events are untouched. When Google is connected, the order is shared with the user's other DeskCal devices." + RELATIVE_DATES,
+            Object(new() { ["date"] = Date(), ["event_ids"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 200, ["items"] = String() } }, "date", "event_ids"),
+            idempotent: true);
         yield return Define("delete_event", "Soft-delete an event series or a single occurrence. Supply exactly one ID." + DELETE_GUIDANCE + SERIES_GUIDANCE, Ids(), destructive: true);
         yield return Define("restore_event", "Restore a series (keeping individually cancelled occurrences) or restore only one occurrence. Supply exactly one ID.", Ids());
         yield return Define("add_checklist_items", "Add items to the checklist of one occurrence (or of a non-recurring event). Use this when the user says what they plan to do at an event, even without naming it, e.g. \"I'll study chapter 3 this week\" for their weekly study session: find the occurrence with list_events first. If no event or several events match, ask which one. Recurring events need occurrence_id because each occurrence has its own checklist. Existing items appear as checklist in get_event." + RELATIVE_DATES,

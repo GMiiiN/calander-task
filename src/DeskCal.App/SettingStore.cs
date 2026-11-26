@@ -3,28 +3,18 @@ using DeskCal.Core;
 namespace DeskCal.App;
 
 // 이 PC 전용 설정(§4.2 setting 테이블). 보던 보기·날짜, 창 위치, 투명도처럼 동기화하지 않는 값.
+// 학기(학생 모드)만 Google 연결 시 다른 기기와 맞춘다(S7, Core SemesterSettings).
 public sealed class SettingStore(Database database)
 {
     public Semester Semester
     {
-        get
-        {
-            if (Get("semester") is { } json)
-            {
-                try
-                {
-                    if (System.Text.Json.JsonSerializer.Deserialize<Semester>(json) is { Weeks: > 0 } term)
-                        return term;
-                }
-                catch (System.Text.Json.JsonException) { }
-            }
-            return new(false, DateOnly.FromDateTime(DateTime.Today), 16);
-        }
-        set
-        {
-            if (value.Weeks < 1) throw new ArgumentOutOfRangeException(nameof(value));
-            Set("semester", System.Text.Json.JsonSerializer.Serialize(value));
-        }
+        get => SemesterSettings.Read(database);
+        set => SemesterSettings.Write(database, value);
+    }
+
+    internal void SaveSemesterEdit(Semester opened, Semester submitted)
+    {
+        if (submitted != opened) Semester = submitted;
     }
 
     public bool DetailedBars

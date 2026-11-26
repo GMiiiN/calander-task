@@ -224,8 +224,9 @@ public sealed class OrphanEventDiagnosisTests
         Assert.Equal("새 제목", Assert.Single(remote.Items.Values).Summary);
     }
 
+    // S4: 412가 나도 Google 일정은 하나다. 이 PC는 제목, 다른 기기는 메모를 고쳤으면(다른 필드) 둘 다 남고 충돌이 아니다.
     [Fact]
-    public async Task PatchConflictKeepsOneRemoteEventAndRecordsTheDiscardedEdit()
+    public async Task PatchConflictKeepsOneRemoteEventAndMergesDifferentFields()
     {
         using var db = new TestDatabase();
         var remote = new FakeCalendar();
@@ -235,12 +236,15 @@ public sealed class OrphanEventDiagnosisTests
         remote.Edit(original.GoogleEventId!, e => e.Description = "다른 기기에서 메모 수정");
         await Sync(db, remote);
 
-        Assert.Equal("옛 제목", Assert.Single(remote.Items.Values).Summary);
-        Assert.Equal("옛 제목", db.Events.Get(original.EventUid).Title);
-        Assert.False(db.Events.Get(original.EventUid).IsDirty);
-        Assert.Equal(1, db.Scalar("SELECT count(*) FROM sync_conflict WHERE item_kind='event' AND is_seen=0;"));
+        var item = Assert.Single(remote.Items.Values);
+        Assert.Equal(("새 제목", "다른 기기에서 메모 수정"), (item.Summary, item.Description));
+        var local = db.Events.Get(original.EventUid);
+        Assert.Equal(("새 제목", "다른 기기에서 메모 수정"), (local.Title, local.Memo));
+        Assert.False(local.IsDirty);
+        Assert.Equal(0, db.Scalar("SELECT count(*) FROM sync_conflict;"));
         Assert.Equal([original.EventUid], remote.InsertAttempts);
-        Assert.Equal(original.GoogleEventId, Assert.Single(remote.PatchAttempts).Id);
+        Assert.All(remote.PatchAttempts, patch => Assert.Equal(original.GoogleEventId, patch.Id)); // 412 한 번 + 합친 patch 한 번
+        Assert.Equal(2, remote.PatchAttempts.Count);
         Assert.Empty(remote.DeleteAttempts);
     }
 
@@ -375,10 +379,12 @@ public sealed class OrphanEventDiagnosisTests
         }
     }
 
+    // S4(지난 경계 사례): 성공한 쓰기 직후 전체 목록에서만 그 ID가 빠졌다. 지우기 전에 ID로 다시 물어 살아 있으면 그대로 둔다.
+    // 예전에는 숨겨졌고, 사용자가 다시 만들면 Google에 두 개가 남았다.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task MissingFromFullListHidesLiveRemoteAndRecreationLeavesTwoIds(bool afterTokenExpiry)
+    public async Task MissingFromFullListIsCheckedByIdAndStaysVisible(bool afterTokenExpiry)
     {
         using var db = new TestDatabase();
         var remote = new FakeCalendar();
@@ -389,24 +395,40 @@ public sealed class OrphanEventDiagnosisTests
             db.Events.Update(original.EventUid, new() { Memo = "메모 수정" });
             remote.ExpireTokens = true;
         }
-        // 가정은 한 가지다. 성공한 쓰기 직후 전체 목록에서만 해당 ID가 빠지고, GET으로는 살아 있다.
         remote.OmitFromNextFullList = original.GoogleEventId;
         await Sync(db, remote);
 
-        var hidden = db.Events.Get(original.EventUid);
-        Assert.NotNull(hidden.DeletedAt);
-        Assert.False(hidden.IsDirty);
-        Assert.Empty(db.Events.List(Monday, Monday));
-        Assert.Equal("confirmed", (await remote.GetAsync(original.GoogleEventId!, CancellationToken.None)).Status);
-
-        var replacement = db.Events.Create([new("바꾼 일정", "2026-11-10")]).Single();
-        await Sync(db, remote);
-        Assert.Equal([original.EventUid, replacement.EventUid], remote.InsertAttempts);
+        var kept = db.Events.Get(original.EventUid);
+        Assert.Null(kept.DeletedAt);
+        Assert.False(kept.IsDirty);
+        Assert.Single(db.Events.List(Monday, Monday));
+        Assert.Equal([original.EventUid], remote.InsertAttempts);
         Assert.Empty(remote.DeleteAttempts);
-        Assert.DoesNotContain(remote.PatchAttempts, call => call.Status == "cancelled");
-        Assert.Equal(2, remote.Items.Count);
-        Assert.All(remote.Items.Values, e => Assert.Equal("confirmed", e.Status));
-        Assert.NotNull(db.Events.Get(original.EventUid).DeletedAt);
+        Assert.Single(remote.Items);
+    }
+
+    // 전체 목록에서 빠진 일정 중 ID로도 없다고 확인된 것만 지운다. 조회가 실패한 것은 이번에는 지우지 않고 다음에 다시 묻는다.
+    [Fact]
+    public async Task FullListDeletesOnlyEventsConfirmedGoneById()
+    {
+        using var db = new TestDatabase();
+        var remote = new FakeCalendar();
+        var gone = db.Events.Create([new("지운 일정", "2026-11-09")]).Single();
+        var unsure = db.Events.Create([new("확인 실패", "2026-11-09")]).Single();
+        await Sync(db, remote);
+        remote.Items.Remove(gone.GoogleEventId!);
+        remote.FailGet.Add(unsure.GoogleEventId!);
+        remote.OmitFromNextFullList = unsure.GoogleEventId;
+        remote.ExpireTokens = true;
+        await Sync(db, remote);
+
+        Assert.NotNull(db.Events.Get(gone.EventUid).DeletedAt);
+        Assert.Null(db.Events.Get(unsure.EventUid).DeletedAt);
+        remote.FailGet.Clear();
+        remote.OmitFromNextFullList = unsure.GoogleEventId;
+        remote.ExpireTokens = true;
+        await Sync(db, remote);
+        Assert.Null(db.Events.Get(unsure.EventUid).DeletedAt);
     }
 
     private static Task Sync(TestDatabase db, FakeCalendar remote) =>

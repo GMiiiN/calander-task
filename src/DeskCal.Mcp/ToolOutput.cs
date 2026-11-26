@@ -47,13 +47,13 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
     // 커밋 뒤 전송이나 상태 조회가 실패해도 클라이언트에는 기존 로컬 영수증을 반환한다.
     // 마감·요청 취소는 기다림만 끊는다. 전송은 send가 쥔 MCP 수명 토큰으로 끝까지 간다.
     // 할 일 생성은 보내기 전에 결과 불명으로 표시하므로, 도중에 취소하면 Google에 닿지 않았어도 needs_review로 남는다.
-    public async Task<JsonObject> SendAndVerifyAsync(JsonObject receipt, Func<Task<bool>> send, CancellationToken token)
+    public async Task<JsonObject> SendAndVerifyAsync(JsonObject receipt, Func<Task<SyncOutcome>> send, CancellationToken token)
     {
         var sending = Task.Run(send);
         try
         {
-            var sent = await sending.WaitAsync(ReceiptWait, token);
-            return Verify((JsonObject)receipt.DeepClone(), sent);
+            var outcome = await sending.WaitAsync(ReceiptWait, token);
+            return Verify((JsonObject)receipt.DeepClone(), Waiting(outcome));
         }
         catch (Exception ex)
         {
@@ -61,13 +61,22 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
             _ = sending.ContinueWith(static t => t.Exception, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             var reason = ex is TimeoutException or OperationCanceledException ? "sync_timeout" : "sync_unavailable";
-            foreach (var item in ReceiptItems(receipt))
+            foreach (var item in ReceiptItems(receipt).Append(receipt))
                 if ((string?)item["reason"] == "app_not_running") item["reason"] = reason;
             return receipt;
         }
     }
 
-    private JsonObject Verify(JsonObject result, bool sent)
+    // 보내고도 남은 행의 이유(S4). 사용 중(다른 DeskCal이 보내는 중), 로그인 없음, 클라이언트 파일 없음, 인증 오류, 다음 차례 재시도를 구분한다.
+    private string Waiting(SyncOutcome outcome) => outcome switch
+    {
+        SyncOutcome.Busy => "sync_busy",
+        SyncOutcome.NotSignedIn => "not_signed_in",
+        SyncOutcome.NoClientFile => "client_file_missing",
+        _ => GoogleAccount.ReadAuthError(database) is not null ? "sign_in_error" : "retry_pending"
+    };
+
+    private JsonObject Verify(JsonObject result, string waiting)
     {
         result["last_verified_sync"] = SyncTimes(database);
         var signedIn = PendingChanges.HasToken(database);
@@ -87,14 +96,90 @@ internal sealed class ToolOutput(Database database, EventRepository events, bool
             var reason = reader.GetBoolean(2) ? "conflict" : reader.GetInt64(1) != row.Revision ? "newer_revision"
                 : PendingChanges.Reason(state, signedIn);
             if (reason is null && state == "synced") { item["sync"] = "synced"; item.Remove("reason"); }
-            else { item["sync"] = "pending"; item["reason"] = reason ?? (sent ? "retry_pending" : "sync_deferred"); }
+            else { item["sync"] = "pending"; item["reason"] = reason ?? waiting; }
         }
+        if (_renamed is not null) result["category"] = CategoryReceipt(_renamed, signedIn, waiting);
+        if (_reordered is { } order) VerifyOrder(result, order.Day, order.Items, signedIn, waiting);
         return result;
+    }
+
+    private CategoryRecord? _renamed;
+    public JsonObject CategoryOutput(CategoryRecord value)
+    {
+        _renamed = value;
+        return CategoryReceipt(value, _signedIn, null);
+    }
+
+    private JsonObject CategoryReceipt(CategoryRecord requested, bool signedIn, string? waiting)
+    {
+        var state = SharedState(SharedSettings.CategoryPrefix + requested.ColorId, requested.ColorId);
+        var actual = state.Name ?? requested.Name;
+        var item = Object(new { requested.ColorId, Name = actual, requested.ColorHex });
+        if (actual != requested.Name) item["requested_name"] = requested.Name;
+        SetSharedSync(item, state, actual != requested.Name, signedIn, waiting);
+        return item;
+    }
+
+    private (DateOnly Day, IReadOnlyList<EventOccurrence> Items)? _reordered;
+    public JsonObject OrderOutput(DateOnly date, IReadOnlyList<EventOccurrence> ordered)
+    {
+        _reordered = (date, ordered);
+        var result = new JsonObject { ["date"] = date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) };
+        VerifyOrder(result, date, ordered, _signedIn, null);
+        return result;
+    }
+
+    private void VerifyOrder(JsonObject item, DateOnly date, IReadOnlyList<EventOccurrence> requested, bool signedIn, string? waiting)
+    {
+        var state = SharedState(DayEventOrder.Prefix + (string?)item["date"]);
+        var keys = JsonSerializer.SerializeToNode(requested.Select(DayEventOrder.RemoteKey));
+        var differs = !JsonNode.DeepEquals(keys, state.Value);
+        if (differs) item["requested_event_ids"] = JsonSerializer.SerializeToNode(requested.Select(DayEventOrder.Key));
+        else item.Remove("requested_event_ids");
+        // Drive가 순서를 수락한 사이에도 Calendar가 일정을 삭제하거나 완료할 수 있다.
+        var actual = DayEventOrder.Read(database, date, date).Sort(date, events.List(date, date).Where(o => !DayEventOrder.IsPeriod(o)));
+        item["events"] = new JsonArray(actual.Select(o => (JsonNode)Object(new
+        {
+            EventId = o.OccurrenceId is { } id ? OccurrenceId.Parse(id).EventUid : o.Event.EventUid, o.OccurrenceId, o.Event.Title,
+            o.Event.StartTime, o.Event.IsDone
+        })).ToArray());
+        SetSharedSync(item, state, differs, signedIn, waiting);
+    }
+
+    private sealed record SharedReceiptState(bool Dirty, JsonNode? Value, string? Name, bool Conflict);
+
+    private SharedReceiptState SharedState(string key, string? colorId = null)
+    {
+        using var connection = database.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT s.is_dirty, s.value_json, c.name,
+                   EXISTS(SELECT 1 FROM sync_conflict WHERE item_kind='settings' AND item_uid=$key AND conflict_id>$before)
+            FROM (SELECT 1) LEFT JOIN shared_entry s ON s.entry_key=$key LEFT JOIN category c ON c.color_id=$color
+            """;
+        cmd.Parameters.AddWithValue("$key", key);
+        cmd.Parameters.AddWithValue("$color", (object?)colorId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$before", _conflictBefore);
+        using var reader = cmd.ExecuteReader();
+        reader.Read();
+        return new(!reader.IsDBNull(0) && reader.GetBoolean(0), reader.IsDBNull(1) ? null : JsonNode.Parse(reader.GetString(1)),
+            reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetBoolean(3));
+    }
+
+    private void SetSharedSync(JsonObject item, SharedReceiptState state, bool differs, bool signedIn, string? waiting)
+    {
+        item["sync"] = state.Dirty || differs ? "pending" : "synced";
+        string? reason = null;
+        if (differs) reason = state.Conflict ? "conflict" : "newer_revision";
+        else if (state.Dirty) reason = PendingChanges.Reason("pending", signedIn, waiting is null ? _appRunning : null)
+            ?? SharedSettingsSync.UnavailableReason(database) ?? waiting;
+        if (reason is null) item.Remove("reason");
+        else item["reason"] = reason;
     }
 
     private static IEnumerable<JsonObject> ReceiptItems(JsonObject receipt)
     {
-        foreach (var field in new[] { "event", "todo", "events", "todos" })
+        foreach (var field in new[] { "event", "todo", "events", "todos", "category" })
             if (receipt[field] is JsonObject item) yield return item;
             else if (receipt[field] is JsonArray items)
                 foreach (var value in items.OfType<JsonObject>()) yield return value;

@@ -14,6 +14,7 @@ public partial class SettingsDialog : Window
 {
     private readonly CategoryRepository _categories;
     private readonly SettingStore _settings;
+    private readonly Semester _openedSemester;
     private readonly Dictionary<string, string> _originalNames = [];
     private readonly Dictionary<string, TextBox> _nameBoxes = [];
 
@@ -24,10 +25,10 @@ public partial class SettingsDialog : Window
         _settings = settings;
         TextSizeBox.SelectedValue = settings.TextSizePercent.ToString(System.Globalization.CultureInfo.InvariantCulture);
         foreach (var category in categories.List()) AddRow(category);
-        var semester = settings.Semester;
-        StudentCheck.IsChecked = semester.Enabled;
-        TermStart.SelectedDate = semester.Start.ToDateTime(TimeOnly.MinValue);
-        TermWeeks.Text = semester.Weeks.ToString();
+        _openedSemester = settings.Semester;
+        StudentCheck.IsChecked = _openedSemester.Enabled;
+        TermStart.SelectedDate = _openedSemester.Start.ToDateTime(TimeOnly.MinValue);
+        TermWeeks.Text = _openedSemester.Weeks.ToString();
         DetailedBarsCheck.IsChecked = settings.DetailedBars;
         AutoStartCheck.IsChecked = AutoStart.IsEnabled;
         Loaded += (_, _) => _nameBoxes.Values.FirstOrDefault()?.Focus();
@@ -57,7 +58,7 @@ public partial class SettingsDialog : Window
     {
         try
         {
-            var semester = _settings.Semester with { Enabled = StudentCheck.IsChecked == true };
+            var semester = _openedSemester with { Enabled = StudentCheck.IsChecked == true };
             if (semester.Enabled)
             {
                 if (TermStart.SelectedDate is not { } date || !int.TryParse(TermWeeks.Text, out var weeks) || weeks < 1)
@@ -66,7 +67,7 @@ public partial class SettingsDialog : Window
             }
             _categories.Rename(_nameBoxes.Where(pair => pair.Value.Text.Trim() != _originalNames[pair.Key])
                 .ToDictionary(pair => pair.Key, pair => pair.Value.Text));
-            _settings.Semester = semester;
+            _settings.SaveSemesterEdit(_openedSemester, semester);
             _settings.DetailedBars = DetailedBarsCheck.IsChecked == true;
             _settings.TextSizePercent = int.Parse((string)TextSizeBox.SelectedValue, System.Globalization.CultureInfo.InvariantCulture);
         }

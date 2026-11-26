@@ -7,8 +7,8 @@ namespace DeskCal.Core;
 
 public sealed class Database
 {
-    private static readonly Action<SqliteCommand>[] Migrations = [MigrateToV1, MigrateToV2, MigrateToV3, MigrateToV4];
-    public const int LatestVersion = 4;
+    private static readonly Action<SqliteCommand>[] Migrations = [MigrateToV1, MigrateToV2, MigrateToV3, MigrateToV4, MigrateToV5, MigrateToV6];
+    public const int LatestVersion = 6;
     private readonly string _connectionString;
 
     private readonly Action<string>? _trace;
@@ -100,15 +100,8 @@ public sealed class Database
         command.CommandText = "SELECT COUNT(*) FROM category;";
         if ((long)command.ExecuteScalar()! == 0)
         {
-            command.CommandText = """
-                INSERT INTO category(color_id, name, color_hex) VALUES
-                ('1', '라벤더', '#7986CB'), ('2', '세이지', '#33B679'),
-                ('3', '포도', '#8E24AA'), ('4', '플라밍고', '#E67C73'),
-                ('5', '바나나', '#F6BF26'), ('6', '귤', '#F4511E'),
-                ('7', '공작', '#039BE5'), ('8', '흑연', '#616161'),
-                ('9', '블루베리', '#3F51B5'), ('10', '바질', '#0B8043'),
-                ('11', '토마토', '#D50000');
-                """;
+            command.CommandText = "INSERT INTO category(color_id, name, color_hex) VALUES " +
+                string.Join(", ", CategoryRepository.Defaults.Select(d => $"('{d.ColorId}', '{d.Name}', '{d.ColorHex}')")) + ";";
             command.ExecuteNonQuery();
         }
         transaction.Commit();
@@ -166,6 +159,34 @@ public sealed class Database
         using var stream = typeof(Database).Assembly.GetManifestResourceStream("DeskCal.Core.SchemaV1.sql")!;
         using var reader = new StreamReader(stream);
         command.CommandText = reader.ReadToEnd();
+        command.ExecuteNonQuery();
+    }
+
+    // 412 필드 병합(S4). sync_base는 마지막으로 Google과 맞춘 값(필드 묶음별 JSON)이다. 이것과 이 PC·Google 값을 비교해
+    // 서로 다른 필드는 둘 다 살리고, 같은 필드가 둘 다 바뀌었으면 Google 값을 남기고 이 PC 값은 sync_conflict.detail_json에 둔다.
+    // S4 이전에 동기화한 행은 sync_base가 없어 예전처럼 원격 우선이다.
+    private static void MigrateToV6(SqliteCommand command)
+    {
+        command.CommandText = """
+            ALTER TABLE event ADD COLUMN sync_base TEXT;
+            ALTER TABLE todo ADD COLUMN sync_base TEXT;
+            ALTER TABLE sync_conflict ADD COLUMN detail_json TEXT;
+            """;
+        command.ExecuteNonQuery();
+    }
+
+    // 기기 사이에 맞추는 설정(S6). 키마다 값과 버전(rev, 쓴 기기)을 둔다. 이 PC에서 바꾸고 아직 올리지 않은 값은 is_dirty이고,
+    // base_*는 바꿀 때 알던 버전(그보다 새 값이 먼저 올라갔으면 원격 우선), edit_seq는 올리는 사이 또 바꿨는지 판단에 쓴다.
+    private static void MigrateToV5(SqliteCommand command)
+    {
+        command.CommandText = """
+            CREATE TABLE shared_entry (
+                entry_key TEXT PRIMARY KEY, value_json TEXT NOT NULL, rev INTEGER NOT NULL, writer TEXT NOT NULL,
+                written_at TEXT NOT NULL, is_dirty INTEGER NOT NULL DEFAULT 0,
+                base_rev INTEGER NOT NULL DEFAULT 0, base_writer TEXT NOT NULL DEFAULT '', edit_seq INTEGER NOT NULL DEFAULT 0
+            );
+            ALTER TABLE sync_state ADD COLUMN last_error TEXT;
+            """;
         command.ExecuteNonQuery();
     }
 

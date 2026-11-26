@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using CalendarEvent = Google.Apis.Calendar.v3.Data.Event;
 using DeskCal.Core;
 using DeskCal.Mcp;
 using ModelContextProtocol.Client;
@@ -71,6 +73,152 @@ public sealed class McpToolTests : IAsyncLifetime
         return body;
     }
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public async Task SharedWriteReceiptReportsTheAdoptedValue(bool rename, bool different)
+    {
+        using var connection = _database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+        command.ExecuteNonQuery();
+        const string day = "2026-11-26";
+        var ids = Events.Create([new("A", day), new("B", day)]).Select(e => e.EventUid).ToArray();
+        var requested = ids.Reverse().ToArray();
+        var adopted = different ? ids : requested;
+        var name = different ? "원격 별칭" : "요청 별칭";
+        var key = rename ? "category_name:1" : "day_order:" + day;
+        var drive = new ReceiptDrive(key, rename ? JsonSerializer.SerializeToNode(name)! : JsonSerializer.SerializeToNode(adopted)!);
+        var tools = new CalendarTools(_database, async () =>
+        {
+            await new SharedSettingsSync(_database, drive).SyncAsync(default);
+            return SyncOutcome.Completed;
+        });
+        var result = rename
+            ? await tools.InvokeAsync("rename_category", JsonSerializer.SerializeToElement(new { color_id = "1", name = "요청 별칭" }), default)
+            : await tools.InvokeAsync("reorder_events", JsonSerializer.SerializeToElement(new { date = day, event_ids = requested }), default);
+        Assert.False(result.IsError == true);
+        var receipt = rename ? result.StructuredContent!.Value.GetProperty("category") : result.StructuredContent!.Value;
+        Assert.Equal(different ? "pending" : "synced", receipt.GetProperty("sync").GetString());
+        Assert.Equal(different, receipt.TryGetProperty("reason", out var reason));
+        if (different) Assert.Equal("conflict", reason.GetString());
+        if (rename)
+        {
+            Assert.Equal(name, receipt.GetProperty("name").GetString());
+            if (different) Assert.Equal("요청 별칭", receipt.GetProperty("requested_name").GetString());
+        }
+        else
+        {
+            Assert.Equal(adopted, receipt.GetProperty("events").EnumerateArray().Select(e => Id(e)));
+            if (different) Assert.Equal(requested, receipt.GetProperty("requested_event_ids").EnumerateArray().Select(e => e.GetString()));
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UnreadPeerKeepsSharedWriteReceiptPending(bool rename)
+    {
+        const string day = "2026-11-26";
+        using var connection = _database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+        command.ExecuteNonQuery();
+        var drive = new ReceiptDrive("category_name:1", JsonValue.Create("상대 별칭")!) { FailRead = true };
+        var tools = new CalendarTools(_database, async () =>
+        {
+            await new SharedSettingsSync(_database, drive).SyncAsync(default);
+            return SyncOutcome.Completed;
+        });
+        var ids = Events.Create([new("A", day)]).Select(e => e.EventUid).ToArray();
+        var result = rename
+            ? await tools.InvokeAsync("rename_category", JsonSerializer.SerializeToElement(new { color_id = "1", name = "로컬 별칭" }), default)
+            : await tools.InvokeAsync("reorder_events", JsonSerializer.SerializeToElement(new { date = day, event_ids = ids }), default);
+        Assert.False(result.IsError == true);
+        var receipt = rename ? result.StructuredContent!.Value.GetProperty("category") : result.StructuredContent!.Value;
+        Assert.Equal("pending", receipt.GetProperty("sync").GetString());
+        Assert.Equal(SharedSettingsSync.UnreadableDeviceFile, receipt.GetProperty("reason").GetString());
+        Assert.Equal(0, drive.Uploads);
+    }
+
+    private sealed class ReceiptDrive(string key, JsonNode value) : IAppDataStore
+    {
+        public bool FailRead { get; init; }
+        public int Uploads { get; private set; }
+        public Task<IReadOnlyList<AppDataFile>> ListAsync(CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<AppDataFile>>([new("remote", "deskcal-shared-other.json", null, null, "1")]);
+
+        public Task<string?> ReadAsync(string id, CancellationToken token)
+        {
+            if (FailRead) throw new HttpRequestException("download failed");
+            var entries = new JsonObject { [key] = new JsonObject { ["rev"] = 1, ["by"] = "other", ["value"] = value.DeepClone() } };
+            return Task.FromResult<string?>(new JsonObject { ["entries"] = entries }.ToJsonString());
+        }
+
+        public Task<AppDataFile> CreateAsync(string name, string content, CancellationToken token)
+        {
+            Uploads++;
+            return Task.FromResult(new AppDataFile("mine", name, null, null, "1"));
+        }
+        public Task<AppDataFile> UpdateAsync(string id, string content, CancellationToken token) => throw new NotSupportedException();
+        public Task DeleteAsync(string id, CancellationToken token) => throw new NotSupportedException();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcceptedOrderReceiptMatchesAgendaAfterCalendarPull(bool deleted)
+    {
+        const string day = "2026-11-26";
+        using var connection = _database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO setting VALUES ('google_token','offline')";
+        command.ExecuteNonQuery();
+        static CalendarEvent Item(string id) => new()
+        {
+            Id = id, Summary = id, ETag = "initial", Status = "confirmed", Start = new() { Date = day }, End = new() { Date = "2026-11-27" }
+        };
+        var calendar = new ReceiptCalendar { Batch = [Item("aaa"), Item("bbb")] };
+        var sync = new EventSync(_database, calendar);
+        await sync.SyncAsync(default);
+        var ids = Events.GetRecords().OrderBy(e => e.Title).Select(e => e.EventUid).ToArray();
+        var drive = new ReceiptDrive("day_order:" + day, new JsonArray("aaa", "bbb"));
+        var tools = new CalendarTools(_database, async () =>
+        {
+            var changed = Item("aaa");
+            changed.ETag = "changed";
+            if (deleted) changed.Status = "cancelled";
+            else changed.ExtendedProperties = new() { Private__ = new Dictionary<string, string> { ["deskcalDone"] = "1" } };
+            calendar.Batch = [changed];
+            await sync.SyncAsync(default);
+            await new SharedSettingsSync(_database, drive).SyncAsync(default);
+            return SyncOutcome.Completed;
+        });
+        var response = await tools.InvokeAsync("reorder_events", JsonSerializer.SerializeToElement(new { date = day, event_ids = ids }), default);
+        var receipt = response.StructuredContent!.Value;
+        Assert.Equal("synced", receipt.GetProperty("sync").GetString());
+        var reported = receipt.GetProperty("events").EnumerateArray().ToArray();
+        var expected = deleted ? new[] { ids[1] } : new[] { ids[1], ids[0] };
+        Assert.Equal(expected, reported.Select(e => Id(e)));
+        Assert.Equal(!deleted, reported.Last().GetProperty("is_done").GetBoolean());
+        var agenda = await tools.InvokeAsync("get_agenda", JsonSerializer.SerializeToElement(new { start_date = day, end_date = day }), default);
+        var group = agenda.StructuredContent!.Value.GetProperty("groups").EnumerateArray().Single(g => g.GetProperty("kind").GetString() == "date");
+        Assert.Equal(expected, group.GetProperty("day_order").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    private sealed class ReceiptCalendar : ICalendarRemote
+    {
+        public IReadOnlyList<CalendarEvent> Batch { get; set; } = [];
+        public Task<(IReadOnlyList<CalendarEvent> Items, string? NextSyncToken)> ListAsync(string? syncToken, CancellationToken token) =>
+            Task.FromResult((Batch, (string?)"next"));
+        public Task<CalendarEvent> GetAsync(string id, CancellationToken token) => throw new NotSupportedException();
+        public Task<CalendarEvent> InsertAsync(CalendarEvent item, CancellationToken token) => throw new NotSupportedException();
+        public Task<CalendarEvent> PatchAsync(string id, CalendarEvent item, string? etag, CancellationToken token) => throw new NotSupportedException();
+        public Task DeleteAsync(string id, string? etag, CancellationToken token) => throw new NotSupportedException();
+    }
+
     private static void AssertSnakeCase(JsonElement value)
     {
         if (value.ValueKind == JsonValueKind.Object)
@@ -94,7 +242,9 @@ public sealed class McpToolTests : IAsyncLifetime
     {
         using var connection = _database.OpenConnection();
         using var schema = connection.CreateCommand();
-        schema.CommandText = "DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
+        schema.CommandText = "ALTER TABLE event DROP COLUMN sync_base; ALTER TABLE todo DROP COLUMN sync_base; ALTER TABLE sync_conflict DROP COLUMN detail_json; " +
+            "DROP TABLE shared_entry; ALTER TABLE sync_state DROP COLUMN last_error; " +
+            "DROP TABLE task_attempt; DROP TABLE day_event_order; ALTER TABLE event DROP COLUMN checklist; PRAGMA user_version=1;";
         schema.ExecuteNonQuery();
         var path = Path.Combine(_directory, "nested", "deskcal.db");
         var clients = await Task.WhenAll(StartServer(path), StartServer(path));
@@ -186,7 +336,8 @@ public sealed class McpToolTests : IAsyncLifetime
         cmd.ExecuteNonQuery();
         var update = new { todo_id = uid, title = "변경" };
         var waiting = await Call("update_todo", update);
-        Assert.Equal("sync_deferred", waiting.GetProperty("todo").GetProperty("reason").GetString());
+        // 로그인(토큰)은 있는데 DB 옆 OAuth 클라이언트 파일이 없어 보낼 수 없다(S4: 사용 중·미로그인과 구분).
+        Assert.Equal("client_file_missing", waiting.GetProperty("todo").GetProperty("reason").GetString());
         using (AppPresence.Register(_database))
         {
             var on = await Call("update_todo", update);
@@ -217,7 +368,7 @@ public sealed class McpToolTests : IAsyncLifetime
         {
             cmd.CommandText = "UPDATE todo SET push_state='synced',is_dirty=0 WHERE title='확인됨';";
             cmd.ExecuteNonQuery();
-            return Task.FromResult(true);
+            return Task.FromResult(SyncOutcome.Completed);
         });
         var args = JsonSerializer.SerializeToElement(new { todos = new[] { new { title = "확인됨" }, new { title = "대기" } } });
         var response = (await tools.InvokeAsync("create_todos", args, default)).StructuredContent!.Value;
@@ -225,14 +376,19 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Equal("synced", response.GetProperty("todos")[0].GetProperty("sync").GetString());
         Assert.Equal("pending", response.GetProperty("todos")[1].GetProperty("sync").GetString());
 
-        var never = new TaskCompletionSource<bool>();
+        // S4: 다른 DeskCal(앱·다른 MCP)이 보내는 중이면 그쪽이 보낸다. "로그인 없음"과 구분한다.
+        var busy = await new CalendarTools(_database, () => Task.FromResult(SyncOutcome.Busy)).InvokeAsync("update_todo",
+            JsonSerializer.SerializeToElement(new { todo_id = Id(response.GetProperty("todos")[1], "todo_id"), memo = "사용 중" }), default);
+        Assert.Equal("sync_busy", busy.StructuredContent!.Value.GetProperty("todo").GetProperty("reason").GetString());
+
+        var never = new TaskCompletionSource<SyncOutcome>();
         tools = new CalendarTools(_database, () => never.Task);
         using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
         response = (await tools.InvokeAsync("create_todos", args, deadline.Token)).StructuredContent!.Value;
         Assert.True(response.GetProperty("saved_locally").GetBoolean());
         Assert.Equal("sync_timeout", response.GetProperty("todos")[0].GetProperty("reason").GetString());
         Assert.Equal(4, Todos.List().Count);
-        never.SetResult(false);
+        never.SetResult(SyncOutcome.Busy);
     }
 
     // 리뷰 A-1: 영수증의 5초 마감이 실제 Google 전송까지 취소해, 보내기 전에 결과 불명으로 표시한 생성이 needs_review로 남았다.
@@ -248,12 +404,12 @@ public sealed class McpToolTests : IAsyncLifetime
         }
         var remote = new GatedTasks();
         using var lifetime = new CancellationTokenSource();
-        Task<bool>? sending = null;
+        Task<SyncOutcome>? sending = null;
         var tools = new CalendarTools(_database, () => sending = SendAsync());
-        async Task<bool> SendAsync()
+        async Task<SyncOutcome> SendAsync()
         {
             await new TaskSync(_database, remote).SyncAsync(lifetime.Token);
-            return true;
+            return SyncOutcome.Completed;
         }
 
         var waited = Stopwatch.StartNew();
@@ -270,7 +426,7 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.False(remote.InsertCancelled);
 
         remote.Release();
-        Assert.True(await sending.WaitAsync(_timeout.Token));
+        Assert.Equal(SyncOutcome.Completed, await sending.WaitAsync(_timeout.Token));
         var stored = Todos.Get(Id(todo, "todo_id"));
         Assert.Equal("synced", stored.PushState);
         Assert.False(stored.IsDirty);
@@ -401,14 +557,15 @@ public sealed class McpToolTests : IAsyncLifetime
     public async Task DiscoversToolsWithAnnotationsAndEnums()
     {
         var tools = await _client.ListToolsAsync(cancellationToken: _timeout.Token);
-        Assert.Equal(19, tools.Count);
+        Assert.Equal(20, tools.Count);
         var rename = tools.Single(t => t.Name == "rename_category").ProtocolTool.InputSchema;
         Assert.Equal(new[] { "color_id", "name" }, rename.GetProperty("required").EnumerateArray().Select(p => p.GetString()));
+        Assert.Contains("other DeskCal devices", tools.Single(t => t.Name == "rename_category").Description);
         var reads = new[] { "get_agenda", "list_events", "get_event", "find_free_time", "list_todos", "list_categories" };
         foreach (var tool in tools)
         {
             Assert.Equal(reads.Contains(tool.Name), tool.ProtocolTool.Annotations!.ReadOnlyHint);
-            Assert.Equal(tool.Name.StartsWith("update_") || tool.Name == "rename_category", tool.ProtocolTool.Annotations.IdempotentHint);
+            Assert.Equal(tool.Name.StartsWith("update_") || tool.Name is "rename_category" or "reorder_events", tool.ProtocolTool.Annotations.IdempotentHint);
             Assert.Equal(tool.Name.StartsWith("delete_"), tool.ProtocolTool.Annotations.DestructiveHint);
         }
         var schema = tools.Single(t => t.Name == "create_events").ProtocolTool.InputSchema;
@@ -420,6 +577,49 @@ public sealed class McpToolTests : IAsyncLifetime
         Assert.Contains("entire series", tools.Single(t => t.Name == "delete_event").Description);
     }
 
+    // S7: 학생 모드가 켜져 있고 오늘이 학기 안이면 get_agenda에 앱 상태줄과 같은 현지 오늘의 주차가 붙는다.
+    // 조회 구간과 상관없고, 꺼져 있거나 학기 밖이면 필드가 없다(이전 클라이언트가 받던 모양과 같다).
+    [Fact]
+    public async Task AgendaReportsTodaysSemesterWeekOnlyWhenOn()
+    {
+        Assert.False((await Call("get_agenda")).TryGetProperty("semester_week", out _));
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        SemesterSettings.Write(_database, new Semester(true, today.AddDays(-8), 16));
+        var on = await Call("get_agenda", new { start_date = "2026-01-05", end_date = "2026-01-05" });
+        Assert.Equal(2, on.GetProperty("semester_week").GetProperty("current").GetInt32());
+        Assert.Equal(16, on.GetProperty("semester_week").GetProperty("total").GetInt32());
+        SemesterSettings.Write(_database, new Semester(true, today.AddDays(1), 16));
+        Assert.False((await Call("get_agenda")).TryGetProperty("semester_week", out _));
+    }
+
+    // S8: Claude가 get_agenda의 day_order를 보고 그날 순서를 통째로 다시 보낸다. 일정 자체는 바뀌지 않는다.
+    [Fact]
+    public async Task ReorderEventsUsesTheAgendaDayOrderAndRejectsStaleLists()
+    {
+        await Call("create_events", new { events = new[] { new { title = "첫째", start_date = "2026-12-01" }, new { title = "둘째", start_date = "2026-12-01" } } });
+        await Call("create_events", new { events = new[] { new { title = "셋째", start_date = "2026-12-01" } } });
+        await Call("create_events", new { events = new[] { new { title = "기간", start_date = "2026-11-30", end_date = "2026-12-02" } } });
+        string[] DayOrder(JsonElement agenda) => agenda.GetProperty("groups").EnumerateArray().Single(g => g.GetProperty("kind").GetString() == "date")
+            .GetProperty("day_order").EnumerateArray().Select(x => x.GetString()!).ToArray();
+        var order = DayOrder(await Call("get_agenda", new { start_date = "2026-12-01", end_date = "2026-12-01" }));
+        Assert.Equal(3, order.Length); // 여러 날 일정은 빠진다
+        var reversed = order.Reverse().ToArray();
+
+        var result = await Call("reorder_events", new { date = "2026-12-01", event_ids = reversed });
+        Assert.Equal("2026-12-01", result.GetProperty("date").GetString());
+        Assert.Equal(reversed, result.GetProperty("events").EnumerateArray().Select(e => Id(e)));
+        Pending(result);
+        Assert.Equal(reversed, DayOrder(await Call("get_agenda", new { start_date = "2026-12-01", end_date = "2026-12-01" })));
+
+        var stale = await Call("reorder_events", new { date = "2026-12-01", event_ids = reversed.Take(2).ToArray() }, error: true);
+        Assert.Contains("Current order", stale.GetProperty("error").GetString());
+        await Call("reorder_events", new { date = "2026-12-01", event_ids = new[] { reversed[0], reversed[0], reversed[1] } }, error: true);
+        var period = Events.GetRecords().Single(e => e.Title == "기간").EventUid;
+        Assert.Contains("multi-day", (await Call("reorder_events", new { date = "2026-12-01", event_ids = reversed.Prepend(period).ToArray() }, error: true))
+            .GetProperty("error").GetString());
+        Assert.All(Events.GetRecords(), e => Assert.Equal(1, e.LocalRevision));
+    }
+
     [Fact]
     public async Task RenameCategoryReturnsNewAliasAndPreservesExistingColor()
     {
@@ -427,6 +627,14 @@ public sealed class McpToolTests : IAsyncLifetime
         var changed = await Call("rename_category", new { color_id = "1", name = " 수업 " });
         Assert.Equal("수업", changed.GetProperty("category").GetProperty("name").GetString());
         Assert.Equal("#123456", changed.GetProperty("category").GetProperty("color_hex").GetString());
+        // S6: 별칭은 다른 기기와 맞출 변경으로 남는다(로그인 전이라 대기).
+        Pending(changed.GetProperty("category"));
+        using (var connection = _database.OpenConnection())
+        using (var shared = connection.CreateCommand())
+        {
+            shared.CommandText = "SELECT value_json || ':' || is_dirty FROM shared_entry WHERE entry_key='category_name:1'";
+            Assert.Equal("\"수업\":1", shared.ExecuteScalar());
+        }
         var result = await Call("list_events", new { start_date = "2026-11-03", category = "수업" });
         Assert.Equal(existing.EventUid, Id(result.GetProperty("events")[0]));
         var created = await Call("create_events", new { events = new[] { new { title = "새 수업", start_date = "2026-11-03", category = "수업" } } });

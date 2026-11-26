@@ -10,7 +10,7 @@ using ModelContextProtocol.Protocol;
 namespace DeskCal.Mcp;
 
 // send는 취소 토큰을 받지 않는다. 요청 취소나 영수증 마감이 진행 중인 Google 전송을 끊으면 안 된다(전송은 프로세스 수명 토큰을 쓴다).
-public sealed class CalendarTools(Database database, Func<Task<bool>>? send = null)
+public sealed class CalendarTools(Database database, Func<Task<SyncOutcome>>? send = null)
 {
     private readonly EventRepository _events = new(database);
     private readonly TodoRepository _todos = new(database);
@@ -25,7 +25,7 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
         {
             var input = new ToolInput(arguments);
             var isWrite = name is "rename_category" or "create_events" or "update_event" or "delete_event" or "restore_event" or "add_checklist_items" or "update_checklist_item" or "delete_checklist_item"
-                or "restore_checklist_item" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo";
+                or "restore_checklist_item" or "create_todos" or "update_todo" or "delete_todo" or "restore_todo" or "reorder_events";
             var output = new ToolOutput(database, _events, isWrite);
             body = database.Measure("execute", () => name switch
             {
@@ -34,10 +34,11 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
                 "get_event" => GetEvent(input, output),
                 "find_free_time" => FindFreeTime(input),
                 "list_todos" => ListTodos(input, output),
-                "rename_category" => RenameCategory(input),
+                "rename_category" => RenameCategory(input, output),
                 "list_categories" => ListCategories(input, output),
                 "create_events" => CreateEvents(input, output),
                 "update_event" => UpdateEvent(input, output),
+                "reorder_events" => ReorderEvents(input, output),
                 "delete_event" => SetEventDeleted(input, output, true),
                 "restore_event" => SetEventDeleted(input, output, false),
                 "add_checklist_items" => AddChecklistItems(input, output),
@@ -54,7 +55,8 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
             {
                 ChangeSignal.Notify();
                 output.AddReceipt(body);
-                if (send is not null && output.ShouldSend && name != "rename_category")
+                // 카테고리 별칭도 앱이 꺼져 있으면 MCP가 Drive 앱 전용 공간으로 올린다(S6).
+                if (send is not null && output.ShouldSend)
                     body = await output.SendAndVerifyAsync(body, send, cancellationToken);
             }
         }
@@ -100,22 +102,45 @@ public sealed class CalendarTools(Database database, Func<Task<bool>>? send = nu
         };
     }
 
-    private JsonObject RenameCategory(ToolInput input)
+    private JsonObject RenameCategory(ToolInput input, ToolOutput output)
     {
         input.Only("color_id", "name");
         var category = new CategoryRepository(database).Rename(input.Required("color_id"), input.Required("name"));
-        return ToolOutput.Object(new { Category = category });
+        return new JsonObject { ["category"] = output.CategoryOutput(category) };
     }
 
     private JsonObject GetAgenda(ToolInput input, ToolOutput output)
     {
         input.Only("start_date", "end_date");
         var agenda = new AgendaService(_events, _todos).GetAgenda(input.Date("start_date"), input.Date("end_date"));
-        return ToolOutput.Object(new
+        var dates = agenda.Groups.Where(g => g.Date is not null).Select(g => g.Date!.Value).ToArray();
+        var order = dates.Length == 0 ? null : DayEventOrder.Read(database, dates.Min(), dates.Max());
+        var groups = new JsonArray();
+        foreach (var g in agenda.Groups)
         {
-            Ddays = agenda.Ddays.Select(d => new { Event = output.Occurrence(d.Occurrence), d.DaysRemaining }),
-            Groups = agenda.Groups.Select(g => new { g.Kind, Date = g.Date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), Events = g.Events.Select(output.Occurrence), Todos = g.Todos.Select(output.Todo) })
-        });
+            var group = ToolOutput.Object(new { g.Kind, Date = g.Date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), Events = g.Events.Select(output.Occurrence), Todos = g.Todos.Select(output.Todo) });
+            // 앱 달력·우측과 같은 하루 안 순서. reorder_events에 이 목록을 새 순서로 보낸다. 여러 날 일정은 위에 고정이라 빠진다.
+            if (g.Date is { } date && order is not null)
+                group["day_order"] = new JsonArray(order.Sort(date, g.Events.Where(o => !DayEventOrder.IsPeriod(o)))
+                    .Select(o => (JsonNode)JsonValue.Create(DayEventOrder.Key(o))).ToArray());
+            groups.Add(group);
+        }
+        var result = ToolOutput.Object(new { Ddays = agenda.Ddays.Select(d => new { Event = output.Occurrence(d.Occurrence), d.DaysRemaining }) });
+        result["groups"] = groups;
+        // S7: 학생 모드가 켜져 있고 오늘이 학기 안이면 앱 상태줄과 같은 현지 오늘의 주차. 조회 구간과 상관없다. 아니면 필드를 생략한다.
+        if (SemesterSettings.WeekOf(database, agenda.Today) is var (week, weeks))
+            result["semester_week"] = new JsonObject { ["current"] = week, ["total"] = weeks };
+        return result;
+    }
+
+    // 하루 안 일정 순서(S8). 순서만 저장하고 일정 자체(시각·Google 일정)는 바꾸지 않는다.
+    private JsonObject ReorderEvents(ToolInput input, ToolOutput output)
+    {
+        input.Only("date", "event_ids");
+        var date = ToolInput.ParseDate(input.Required("date"));
+        var ids = input.Strings("event_ids");
+        if (ids.Length > 200) throw new ArgumentException("event_ids can contain at most 200 IDs.");
+        return output.OrderOutput(date, DayEventOrder.Reorder(_events, date, ids));
     }
 
     private JsonObject ListEvents(ToolInput input, ToolOutput output, DateOnly today)

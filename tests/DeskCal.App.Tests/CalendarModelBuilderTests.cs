@@ -20,6 +20,33 @@ public sealed class CalendarModelBuilderTests : IDisposable
         todos = new(database);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SavingOnlyTextSizeKeepsTheSemesterReceivedWhileSettingsWereOpen(bool initiallyEnabled)
+    {
+        var settings = new SettingStore(database);
+        var opened = new Semester(initiallyEnabled, new(2026, 3, 2), 14);
+        settings.Semester = opened;
+        var received = new Semester(true, new(2026, 9, 2), 16);
+        SemesterSettings.Write(database, received);
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE shared_entry SET is_dirty=0 WHERE entry_key='semester'";
+        command.ExecuteNonQuery();
+
+        settings.TextSizePercent = 130;
+        settings.SaveSemesterEdit(opened, opened);
+
+        Assert.Equal(130, settings.TextSizePercent);
+        Assert.Equal(received, settings.Semester);
+        Assert.False(PendingChanges.HasUnsent(database));
+        var edited = opened with { Enabled = true, Weeks = 15 };
+        settings.SaveSemesterEdit(opened, edited);
+        Assert.Equal(edited, settings.Semester);
+        Assert.True(PendingChanges.HasUnsent(database));
+    }
+
     private CalendarModelBuilder Builder() => new(events, todos, database);
 
     // feedback 3-7: +N 목록은 제목을 자르지 않고, 아래 줄에 시간 범위·기간·종일·할 일을 보여 준다.
